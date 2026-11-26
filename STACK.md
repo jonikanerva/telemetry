@@ -8,9 +8,10 @@
 > needed. One immutable image contains the server and built SPA files.
 
 **Adoption status (26 November 2026):** copied from agent-setup `05e0480`,
-profile `STACK-RUST.md`. Sections 0, 3, 5, 13, and 15 contain project facts.
-The application does not exist yet. The other sections are the profile
-baseline and become binding when the first application PR implements them.
+profile `STACK-RUST.md`. Sections 0, 1, 3, 5, 6, 13, and 15 contain
+project facts. The first application PR (#9) adds the Rust workspace and
+the ingest process skeleton. The other sections are the profile baseline
+and become binding when an application PR implements them.
 §13 lists the open gaps.
 
 Use with `DOCTRINE.md` (P1–P9) and the selected host contract. This is an
@@ -88,7 +89,7 @@ with Oxlint `no-restricted-imports` rules and inspect dynamic-loading gaps.
 
 ### Backend
 
-- **Language baseline:** Rust 1.99, edition 2024. Confirm the stable release and dependency MSRVs on adoption; pin the exact supported toolchain in `rust-toolchain.toml`, including rustfmt and Clippy.
+- **Language baseline:** Rust 1.100, edition 2024 (pinned 1.100.0, §15). Confirm the stable release and dependency MSRVs on adoption; pin the exact supported toolchain in `rust-toolchain.toml`, including rustfmt and Clippy.
 - **Minimum Rust version:** declare `rust-version` in workspace package metadata and inherit it in each crate. It must cover selected dependency MSRVs; lowering an adopted floor needs owner approval.
 - **Runtime:** native Linux binary in the declared container target. A local macOS build does not validate the Linux artifact or its CPU architecture.
 - **Package manager:** Cargo with workspace dependency inheritance. Commit `Cargo.lock`; use `--locked` on Cargo operations that support it and resolve/build/test dependencies.
@@ -298,19 +299,55 @@ and any CI invoke these entry points rather than separate tool pipelines.
 | `$TEST_CMD`   | `mise run test`   |
 | `$VERIFY_CMD` | `mise run verify` |
 
-**Interim verification contract.** The mise tasks do not exist until the
-first application PR. Until then, the explicit local verification contract
-for this repository is:
+**Project commands.** `mise.toml` defines the tasks and pins the auxiliary
+tools. In a fresh checkout, install mise and rustup, then run `mise trust`
+and `mise run setup`. mise reads the Rust version from `rust-toolchain.toml`
+(setting `idiomatic_version_file_enable_tools`), so a global mise `rust`
+entry cannot replace it.
 
-```sh
-jq empty config/server_config.json config/telemetry_config.json
-sh -n entrypoint.sh
-git ls-files | grep -E '^(\.env|secrets/|\.bin/)' && exit 1 || true
-```
+| Task     | Content                                                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `setup`  | Install the pinned tools of `mise.toml` (not the global mise tools) and the Rust toolchain, fetch the locked crates. No test service is needed yet. |
+| `format` | `cargo fmt --all`                                                                                                                    |
+| `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings`                                                                     |
+| `build`  | `cargo build --workspace --release --locked`                                                                                         |
+| `test`   | `cargo nextest run --workspace --locked` and `cargo test --doc --workspace --locked`                                                 |
+| `verify` | Format check without edits, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the JSON syntax of `config/`, the shell syntax of `entrypoint.sh`, no tracked `.env*`, `secrets/`, or `.bin/` path, `build`, and `test`. Stops at the first failure. |
+| `deps`   | The dependency freshness check below: the crates, the mise tools, the Rust toolchain, and the `FROM` images of the `Dockerfile` (newest `tesla/fleet-telemetry` release tag, current Debian stable release). |
+| `vuln`   | `cargo deny --locked check advisories`, `osv-scanner scan source -r .`, and `osv-scanner scan image --archive` for each `FROM` image of the `Dockerfile`. crane downloads each image for `linux/amd64` as a Docker archive, with `DOCKER_CONFIG` set to a temporary directory that holds an empty `config.json`, so the pulls are anonymous and no local credential file is read. No container runtime is needed. Runs every scan; fails when a scan fails or finds a vulnerability. |
 
-The commands check JSON syntax, shell syntax, and that no ignored secret
-path is tracked. They do not build or test the ingest image. §13 records
-this gap.
+Pinned tools: cargo-nextest 0.9.152, cargo-deny 0.22.1, cargo-shear 1.14.1,
+Gitleaks 8.30.1, osv-scanner 2.7.1, SQLx CLI 0.9.1 (features `postgres` and
+`rustls`, built from source), jq 1.8.2, and crane 0.22.1.
+
+Scope and gaps of `vuln`:
+
+- The image scan covers the two `FROM` images, not the image that Railway
+  builds. Only `/fleet-telemetry` comes from `tesla/fleet-telemetry`, so
+  the Debian 12 package findings of that image are not in production. The
+  packages that `apt-get` adds during the Railway build are not scanned
+  (§13).
+- `linux/amd64` is an assumption about the Railway host. It is not
+  verified.
+- The Rust toolchain and the mise tools have no scanner (§13).
+- An image scan of Debian always shows advisories that Debian has not
+  fixed. The lead triages each run and compares the counts with the last run.
+- `verify` does not include `vuln`. `vuln` fails on advisories that no
+  change in this repository can fix today, so `verify` would always fail.
+  `verify` keeps `cargo deny --locked check`, which covers the advisories
+  of the Rust dependencies. Reassess when issue #15 delivers a reviewed
+  ignore list for the known image advisories.
+
+Scope and gaps of `verify`:
+
+- Gitleaks scans the committed history (`gitleaks git --redact`). It does
+  not read uncommitted or ignored files, so it never reads `.env` or
+  `secrets/`. Commit the change before the final `verify`.
+- `cargo deny` reads the RustSec advisory database from the network.
+- `verify` does not build or test the ingest image. §13 records this gap.
+- No web code and no database code exist yet. Prettier, Oxlint, `tsc`,
+  Vitest, Playwright, `pnpm audit`, and the SQLx metadata check join
+  `verify` with the first change that needs them.
 
 - **format:** rustfmt and Prettier in write mode.
 - **lint:** `cargo clippy --workspace --all-targets --locked -- -D warnings`, type-aware Oxlint, and TypeScript 7 `tsc --noEmit` for web, client, and test code. Declare supported feature combinations; do not blindly enable incompatible features.
@@ -330,7 +367,7 @@ do not replace full verification. A missing required browser, database, or
 scanner is a gap, not a pass. Validate test connection configuration and
 isolation before creating, migrating, or dropping any database.
 
-**Dependency freshness check:** `cargo update --dry-run --verbose`, `pnpm outdated --recursive`, and `mise outdated --bump`. `cargo update` stays within SemVer-compatible versions, so also compare each direct crate requirement with its latest crates.io release. Compare `rust-toolchain.toml` with the latest stable Rust release. Compare each infrastructure version in §15, for example the database server, the container base image, and the source builder, with its latest stable release.
+**Dependency freshness check:** `cargo update --dry-run --verbose`, `pnpm outdated --recursive`, and `mise outdated --bump`. `cargo update` stays within SemVer-compatible versions, so also compare each direct crate requirement with its latest crates.io release. In this project, `cargo update --dry-run --verbose` (Cargo 1.100) also lists each locked crate that is behind its latest crates.io release across major versions, as `Unchanged <crate> <version> (available: <latest>)`. Checked on 26 November 2026 with a probe crate that requires `thiserror = "1"`: the output was `Unchanged thiserror v1.0.69 (available: v2.0.21)`. Compare `rust-toolchain.toml` with the latest stable Rust release. Compare each infrastructure version in §15, for example the database server, the container base image, and the source builder, with its latest stable release.
 
 **Vulnerability check:** `cargo deny check advisories`, `pnpm audit`, and `osv-scanner scan source -r .` for the lockfiles. `osv-scanner scan image <image>` for each container image. Compare the Rust toolchain and each infrastructure version in §15 with its vendor security advisories. Record each surface without scanner coverage.
 
@@ -430,6 +467,35 @@ Pin selected Cargo feature sets; avoid enabling everything by convenience.
 Authentication packages and their compatible store remain conditional §2.5
 adoption decisions. Snapshot, mutation, and coverage tools are optional when
 they address a named risk. Their versions belong in the adopting tool pins.
+
+### Pinned direct dependencies
+
+`Cargo.lock` pins the resolved versions. Each version below was the latest
+stable release on crates.io on 26 November 2026. Default features are off;
+the listed features are the complete set. `src/main.rs` of `crates/ingest`
+is the only reader of the environment and the command line.
+
+| Crate              | Version | Features                                                     | Why it earns its place                                                   | Licence           |
+| ------------------ | ------- | ------------------------------------------------------------ | ------------------------------------------------------------------------ | ----------------- |
+| axum               | 0.8.9   | none                                                         | Router and handler of `GET /health`                                      | MIT               |
+| hyper              | 1.13.0  | `http1`, `server`                                            | HTTP/1 connection with a header read timeout (`axum::serve` has none)    | MIT               |
+| hyper-util         | 0.1.21  | `service`, `tokio`                                           | Tokio I/O and timer adapters, router-to-hyper service adapter            | MIT               |
+| tokio              | 1.54.1  | `rt-multi-thread`, `net`, `signal`, `time`, `sync`, `macros` | Runtime, listener, SIGTERM and SIGINT, connection limit, deadlines       | MIT               |
+| tracing            | 0.1.44  | `std`                                                        | Structured log events                                                    | MIT               |
+| tracing-subscriber | 0.3.23  | `fmt`, `std`                                                 | Subscriber, level filter, and writer for the JSON formatter              | MIT               |
+| serde_json         | 1.0.154 | `std`                                                        | Correct JSON encoding of each log line                                   | MIT OR Apache-2.0 |
+| thiserror          | 2.0.21  | `std`                                                        | Error types whose text holds static words only                           | MIT OR Apache-2.0 |
+
+hyper and hyper-util replace the axum features `http1` and `tokio`, which
+pulled in the same two crates. `Cargo.lock` has 56 packages, as before
+the change. The other baseline lines, `jiff` included, are not
+dependencies yet. The first change that uses one pins its exact version
+here.
+
+Retained older transitive version: matchit 0.8.4 (0.8.6 exists), because
+axum 0.8.9 requires `=0.8.4`. Reassess with the next axum release. No TLS
+crate is in the tree: `cargo tree -i ring` and `cargo tree -i aws-lc-rs`
+find no package.
 
 ---
 
@@ -578,8 +644,8 @@ remain in GitHub.
 
 | Rule / scope | Reason and consequences | Compensating evidence | Responsible lead / reviewer / approval | Expiry or reassessment |
 | ------------ | ----------------------- | --------------------- | -------------------------------------- | ---------------------- |
-| §3: the five mise commands | The application does not exist yet. Only the ingest image and its configs are in the repository. | The interim verification contract in §3. | Lead: Claude Code. Approval: owner, with the adoption PR. | Expires with the first application PR, which implements the mise tasks. |
-| §3, §14: dependency freshness and vulnerability checks | No Cargo or pnpm manifest exists. No image scanner is set up. | Manual comparison of the pinned `tesla/fleet-telemetry` tag and the Debian base image with their latest releases, recorded in each PR. | Lead: Claude Code. Approval: owner, with the adoption PR. | Expires with the first application PR. |
+| §3, §14: vulnerability check of the built ingest image layer, the Rust toolchain, and the mise tools | The earlier exception for all freshness and vulnerability checks ends with this first application PR. `mise run vuln` now scans the crates in `Cargo.lock` and both `FROM` images of the `Dockerfile` as archives (crane and `osv-scanner scan image --archive`, no container runtime). Two surfaces stay without a scanner. (1) The image that Railway builds: it stays in the Railway registry, and no local container runtime can build it. The packages that `apt-get` adds during the build (`ca-certificates`, `libstdc++6`) are therefore not scanned. (2) The Rust toolchain and the mise tools: no advisory database that osv-scanner or cargo-deny reads has a record for the Rust toolchain, and no scanner reads the installed tool binaries. Consequence: a known vulnerability in these surfaces is found only by the manual comparison. | In each PR that runs the vulnerability check, record: the Rust toolchain against the GitHub security advisories of `rust-lang/rust`; each mise tool against OSV (crates.io or Go package) and the GitHub security advisories of its repository; the `apt-get` packages against OSV for `Debian:13`. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9). | Reassess when the repository gets a container build check, when the built image can be downloaded, or when a scanner covers the toolchain and the tools. |
+| §8: readable development formatter | The process has only the JSON formatter. One formatter gives one redaction path: the field allowlist exists once, and a second formatter cannot leak a field that the JSON formatter redacts. Nothing needs readable logs yet. Consequence: developers read the logs with `jq`. | The JSON formatter and its redaction tests in `crates/ingest/src/logging.rs`. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9). | Reassess when a developer workflow needs readable logs, and with the first web PR. |
 | §14: build and test of the ingest image before merge | No local container runtime is available to the lead. Railway builds the image after merge. | Post-release check: the service starts, the TLS certificate verifies, and the vehicle reconnects. | Lead: Claude Code. Approval: owner, with the adoption PR. | Reassess when the repository gets a container build check. |
 | §15: one image for server and SPA | The ingest service is a second image, because it is Tesla's upstream server. | The application still ships as one image. | Lead: Claude Code. Approval: owner, with the adoption PR. | Permanent while the upstream server is used. |
 
@@ -691,6 +757,7 @@ There is one environment: production. Read on 26 November 2026.
 | Railway                   | Hobby plan, project `calmdonut`, service `telemetry`     | Builds from `main` of `jonikanerva/telemetry`. A merge to `main` is a release.          |
 | Ingest server             | `tesla/fleet-telemetry:v0.10.1`                          | Upstream binary, copied into the image in `Dockerfile`.                                 |
 | Ingest base image         | `debian:trixie-slim`                                     | Debian 13 (trixie), the current stable release. Point release 13.8 on 26 November 2026. |
+| Rust toolchain            | 1.100.0, `rust-toolchain.toml`                           | Latest stable on 26 November 2026. Builds `crates/ingest`. The deployed image does not contain the Rust binary yet. |
 | Railway TCP proxy         | `zephyr.proxy.rlwy.net:57438` to container port 4443     | The vehicle's signed config contains host `telemetry.calmdonut.com` and port 57438.     |
 | DNS                       | Cloudflare, `telemetry` CNAME, DNS only                  | A proxied record breaks the vehicle mTLS connection.                                    |
 | Ingest TLS certificate    | Cloudflare Origin CA, ECC, valid until 22 November 2041  | Railway variables `TLS_CERT` and `TLS_KEY`. The Origin CA ECC root expires 15 August 2029. |

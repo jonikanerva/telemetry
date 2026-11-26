@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/ingest"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.100"
+publish = false
+
+# Cargo.lock pins the exact resolved versions. The requirements below name
+# the latest stable release at the time of the change (DOCTRINE.md P7).
+[workspace.dependencies]
+axum = { version = "0.8.9", default-features = false }
+hyper = { version = "1.13.0", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["service", "tokio"] }
+serde_json ={ version = "1.0.154", default-features = false, features = ["std"] }
+thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+unfulfilled_lint_expectations = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+let_underscore_must_use = "deny"

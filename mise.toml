@@ -1,0 +1,111 @@
+# Tool pins and the project commands (STACK.md §3).
+# rust-toolchain.toml owns the Rust version. The setting below makes mise
+# read that file, so that a global mise `rust` entry cannot replace it.
+
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]
+
+[tools]
+cargo-nextest = "0.9.152"
+cargo-deny = "0.22.1"
+"github:Boshen/cargo-shear" = "1.14.1"
+"cargo:sqlx-cli" = { version = "0.9.1", default-features = false, features = ["postgres", "rustls"], bin = "sqlx" }
+gitleaks = "8.30.1"
+osv-scanner = "2.7.1"
+jq = "1.8.2"
+crane = "0.22.1"
+
+[tasks.setup]
+description = "Install the pinned tools, the Rust toolchain, and the locked dependencies"
+run = [
+  # Name the tools: a plain `mise install` also installs the tools of the
+  # global mise config. Keep this list equal to [tools].
+  "mise install cargo-nextest cargo-deny github:Boshen/cargo-shear cargo:sqlx-cli gitleaks osv-scanner jq crane",
+  "rustup toolchain install",
+  "rustup show active-toolchain",
+  "cargo fetch --locked",
+  "echo 'setup: no test services are needed. The tests use no network and no database.'",
+]
+
+[tasks.format]
+description = "Format the Rust code"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Run Clippy with warnings as errors"
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+
+[tasks.build]
+description = "Build the release binary with the locked dependencies"
+run = "cargo build --workspace --release --locked"
+
+[tasks.test]
+description = "Run the tests and the doctests"
+run = [
+  "cargo nextest run --workspace --locked",
+  "cargo test --doc --workspace --locked",
+]
+
+[tasks.verify]
+description = "Run every required local check; stops at the first failure"
+run = [
+  "cargo fmt --all --check",
+  { task = "lint" },
+  "cargo deny --locked check",
+  "cargo shear",
+  "gitleaks git --redact --no-banner .",
+  "jq empty config/server_config.json config/telemetry_config.json",
+  "sh -n entrypoint.sh",
+  "! git ls-files | grep -E '^(\\.env|secrets/|\\.bin/)'",
+  { task = "build" },
+  { task = "test" },
+]
+
+[tasks.deps]
+description = "Dependency freshness check (STACK.md §3); reads crates.io and the Rust release channel"
+run = [
+  # `--verbose` lists each locked crate that is behind its latest crates.io
+  # release, also across major versions: "Unchanged <crate> (available: <latest>)".
+  "cargo update --dry-run --verbose",
+  "mise outdated --bump --no-global",
+  "echo \"pinned Rust: $(grep '^channel' rust-toolchain.toml)\"",
+  "curl -fsS https://static.rust-lang.org/dist/channel-rust-stable.toml | grep -A1 '^\\[pkg.rust\\]'",
+  # Images of the Dockerfile: the pinned FROM lines, the newest upstream
+  # release tag, and the current Debian stable release. crane reads its
+  # credentials from $DOCKER_CONFIG/config.json when that file exists. An
+  # empty config.json in a temporary directory makes the read anonymous.
+  "awk '/^FROM/ { print \"pinned image: \" $2 }' Dockerfile",
+  # An unreadable tag list fails the task: a missing check is not a pass.
+  "work=\"$(mktemp -d)\"; printf '{}' > \"$work/config.json\"; tag=\"$(DOCKER_CONFIG=\"$work\" crane ls tesla/fleet-telemetry | grep -E '^v[0-9]+[.][0-9]+[.][0-9]+$' | sort -V | tail -1)\"; rm -rf \"$work\"; test -n \"$tag\" || { echo 'deps: cannot read the tesla/fleet-telemetry tags'; exit 1; }; echo \"latest tesla/fleet-telemetry tag: $tag\"",
+  "curl -fsS https://deb.debian.org/debian/dists/stable/Release | grep -E '^(Codename|Version):'",
+]
+
+[tasks.vuln]
+description = "Vulnerability check (STACK.md §3): Rust dependencies and the FROM images of the Dockerfile"
+# Runs every scan and fails when one scan fails or finds a vulnerability.
+# crane downloads each FROM image for linux/amd64 as a Docker archive, so
+# no container runtime is needed. crane reads its credentials from
+# $DOCKER_CONFIG/config.json when that file exists. The task points
+# DOCKER_CONFIG at a temporary directory with an empty config.json, so the
+# pulls are anonymous and the local credential files are not read.
+run = """
+status=0
+cargo deny --locked check advisories || status=1
+osv-scanner scan source -r . || status=1
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+printf '{}' > "$work/config.json"
+export DOCKER_CONFIG="$work"
+for image in $(awk '/^FROM/ { print $2 }' Dockerfile); do
+  echo "image: $image"
+  if crane pull --platform linux/amd64 "$image" "$work/image.tar"; then
+    crane digest --platform linux/amd64 "$image"
+    osv-scanner scan image --archive "$work/image.tar" || status=1
+  else
+    echo "vuln: cannot download $image"
+    status=1
+  fi
+  rm -f "$work/image.tar"
+done
+exit "$status"
+"""

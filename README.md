@@ -45,6 +45,11 @@ log                      (planned: Rust application → PostgreSQL → web)
 | `Dockerfile`, `entrypoint.sh`  | Wrapper image for the upstream `fleet-telemetry` binary        |
 | `config/server_config.json`    | Ingest service configuration                                   |
 | `config/telemetry_config.json` | Telemetry config for the vehicle: host, port, CA, and signals  |
+| `crates/ingest/`               | Rust ingest process. Not deployed yet.                         |
+| `Cargo.toml`, `Cargo.lock`     | Rust workspace, lints, and locked dependencies                 |
+| `rust-toolchain.toml`          | Rust toolchain version                                         |
+| `mise.toml`                    | Tool pins and the project commands                             |
+| `clippy.toml`, `deny.toml`     | Clippy and cargo-deny settings                                 |
 | `VISION.md`                    | Product intent, non-goals, and privacy posture                 |
 | `STACK.md`                     | Technology, commands, infrastructure, and release rules        |
 | `DOCTRINE.md`                  | Quality principles P1–P9                                       |
@@ -109,14 +114,17 @@ Tesla removes the config when usage exceeds the billing limit.
 
 ## Verification
 
-Until the application exists, the repository uses the interim verification
-contract in [STACK.md](STACK.md) section 3:
+The project commands are mise tasks. Install
+[mise](https://mise.jdx.dev/) and [rustup](https://rustup.rs/), then run:
 
 ```sh
-jq empty config/server_config.json config/telemetry_config.json
-sh -n entrypoint.sh
-git ls-files | grep -E '^(\.env|secrets/|\.bin/)' && exit 1 || true
+mise trust
+mise run setup
+mise run verify
 ```
+
+`mise run verify` is the single local gate. [STACK.md](STACK.md) section 3
+lists the tasks and what each one checks.
 
 ## Contributing
 
