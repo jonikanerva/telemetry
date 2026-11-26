@@ -476,11 +476,11 @@ mod tests {
         .unwrap();
         assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
         assert!(started.elapsed() < Duration::from_secs(2));
-        tokio::time::timeout(Duration::from_secs(2), writer)
-            .await
-            .unwrap()
-            .unwrap();
-        server.stop().await;
+        // The server side is proven at once and without the kernel: the
+        // lifetime ended the connection task (its log line comes before the
+        // task returns), and the free slot shows that the task dropped its
+        // socket, because it drops the socket before its permit (a
+        // parameter drops after the locals).
         assert!(
             capture
                 .text()
@@ -488,6 +488,28 @@ mod tests {
             "{}",
             capture.text()
         );
+        // The client sees the close later, through its kernel. On macOS the
+        // runs are bimodal under load: the writer ends in less than 0.75 s,
+        // or it makes no progress at all and gets `BrokenPipe` after 4.6 to
+        // 5.6 s (1 to 4 % of the runs; a read of the client waits the same
+        // time and gets `ConnectionReset`). That is the persist timer of
+        // XNU: when the receive buffer of the server is full at the close,
+        // the blocked writer learns of the close only at its first
+        // zero-window probe, 5 s later (`TCPTV_PERSMIN` in
+        // `bsd/netinet/tcp_timer.h`, tag `xnu-12377.121.6`, line 179). The
+        // bound on macOS therefore covers that timer. Linux, the platform
+        // of production and CI, keeps the bound of 2 s; its behaviour was
+        // not measured here.
+        let close_bound = if cfg!(target_os = "macos") {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs(2)
+        };
+        tokio::time::timeout(close_bound, writer)
+            .await
+            .unwrap()
+            .unwrap();
+        server.stop().await;
     }
 
     #[tokio::test]
