@@ -27,7 +27,8 @@ It does not grant authority beyond the adopted project contract.
 
 - **Project risk rationale:** one person, the owner, depends on the system. The data contains the vehicle location history and the VIN; a leak shows where the owner is and when the owner is away. A collection failure loses history that cannot be collected again. Usage above the Tesla billing limit removes the vehicle telemetry configuration and suspends the Tesla API for the owner's Home Assistant. No other system depends on this product. The product sends no commands to the vehicle.
 - **Change risk:** assess each changed surface against that rationale. A risk label does not waive required evidence or review. Changes to the ingest service, the vehicle telemetry configuration, access control, and stored location data are material.
-- **Shape:** a monorepo with two deployed services. The ingest service is Tesla's `fleet-telemetry` reference server (Go, upstream binary, not rewritten). The application is one Rust service and one browser SPA, served from one origin.
+- **Phase scope (owner, 26 November 2026):** the first phase builds the ingest path and the raw storage. The web application and the derived periods (drives, charges, parked) come later. Until the first web PR, these parts of the profile do not apply, because the phase has no browser code: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. They become binding with the first web PR.
+- **Shape:** a monorepo. The first phase deploys one Railway service, `telemetry`. Its image runs Tesla's `fleet-telemetry` reference server (Go, upstream binary, not rewritten) and the Rust ingest process, which supervises the server and writes the records to PostgreSQL (`docs/adr/0001-ingestion-architecture.md`). The web application comes later as a second service: one Rust service and one browser SPA, served from one origin.
 - **Reason for Rust:** the owner selected Rust for the application server. The product has domain rules (units, periods, energy calculations) and a long-running ingestion path where strict types and explicit failure handling earn their cost.
 - **Critical execution paths:** server request decode, domain conversion, use case, and response; browser route, query/client boundary, view model, and render. Blocking work must not stall async I/O or the browser main thread.
 - **Applicable UI states:** initial loading, success, empty, stale usable data with refresh failure, unavailable data, offline, denied access, and product-specific states.
@@ -37,20 +38,24 @@ It does not grant authority beyond the adopted project contract.
 ### Repository layout and boundaries
 
 Two crates SHOULD be the starting point when the product has domain rules.
-A pass-through service without such rules MAY use one crate. Do not invent
+A pass-through service without such rules MAY use one crate. The ingest
+process is such a service: it stores the source values without
+interpretation, so `crates/ingest` is one crate. Do not invent
 concepts to populate a layer. Further splits need a current ownership,
 build-time, or maintenance benefit.
 
 ```text
 repo/
-  ingest/                # Planned home of the fleet-telemetry image and configs (now at the repo root)
+  ingest/                # Image, entrypoint, server config, railway.json of the ingest service (ADR 0001; now at the repo root)
   crates/
-    domain/src/          # Types, invariants, and rules
-    server/src/          # HTTP, use cases, adapters, configuration, lifecycle
+    ingest/src/          # Ingest process: gate, supervisor, ZMQ reader, PostgreSQL writer (ADR 0001)
+    ingest/proto/        # Vendored upstream .proto files of the deployed fleet-telemetry tag
+    domain/src/          # Types, invariants, and rules (web phase)
+    server/src/          # HTTP, use cases, adapters, configuration, lifecycle (web phase)
   packages/api-client/   # Generated SDK/validators and a small handwritten facade
   web/src/               # Routes, features, components, view models
   contract/openapi.json  # Generated and committed
-  migrations/            # Only with durable data
+  migrations/            # SQLx migrations; raw storage model in ADR 0002
   .sqlx/                 # Committed query metadata when SQLx macros are used
   e2e/                   # Browser journeys against the built service
   Cargo.toml
@@ -357,14 +362,15 @@ measurements. A microbenchmark is not production capacity evidence.
 
 ## 5. Persistence shape
 
-- **Storage:** PostgreSQL on Neon (Free plan) through SQLx. `VISION.md` requires durable data. Read on 26 November 2026: 1 GB storage for each project, 100 CU-hours each month, scale to zero after 5 minutes (cannot be disabled), 6 hours of restore history. Neon suspends the compute when the CU-hours are used, and rejects writes when the storage is full. Batch the writes and bound the raw signal volume so that the compute can scale to zero. The Neon project does not exist yet; record its PostgreSQL major version in §15 when it does.
+- **Storage:** PostgreSQL on Neon (Free plan) through SQLx. `VISION.md` requires durable data. Read on 26 November 2026: 1 GB storage for each project, 100 CU-hours each month, scale to zero after 5 minutes (cannot be disabled), 6 hours of restore history, computes up to 2 CU, 10 branches for each project. Source: <https://neon.com/docs/introduction/plans>. Neon suspends the compute when the CU-hours are used, and rejects writes when the storage is full. Batch the writes and bound the raw signal volume so that the compute can scale to zero. The Neon project is `telemetry` (§15). The ingest process writes a batch at the latest 15 minutes after the oldest queued record and keeps no idle connection, so that the compute can scale to zero (ADR 0001). The raw tables, value representation, idempotency keys, roles, and size estimate are in `docs/adr/0002-raw-storage-model.md`.
+- **Test databases:** tests that need PostgreSQL use the Neon branch `test` of the project. It has the production major version and no production data. Never reset it from its parent; that copies production data. The credentials stay outside the repository. The branch counts against the 1 GB of the project, and its compute uses the same 100 CU-hours: budget at most 20 active hours (5 CU-hours) each month. Tests close their connections when they end, so the compute scales to zero after 5 minutes.
 - **Entities and retention:** defined by `VISION.md`; technical browser caches require the same purpose and privacy assessment.
 - **Queries:** prefer SQLx checked query macros for static SQL. Commit `.sqlx` metadata and verify it against the migrated schema. Dynamic SQL needs bound parameters, explicit structural constraints, and integration tests; it does not acquire the same compile-time guarantee.
 - **Domain conversion:** validate rows when storage types permit values the domain forbids. A query type check does not establish authorization, isolation, or meaning.
 - **Constraints:** use applicable NOT NULL, CHECK, foreign keys, unique keys, and exclusion constraints. Test rejection and competing writes; read-before-write alone cannot enforce concurrent uniqueness.
 - **Atomicity:** use transactions for atomic operations. Define isolation, locking, or optimistic concurrency from the invariant. Do not publish partial success.
 - **Repeated requests:** define idempotency and outcome reconciliation, including a committed write followed by a lost response. Use keys and uniqueness where needed.
-- **Migrations:** numbered, reviewed migrations. Run SQLx migration tooling or a subcommand using SQLx's own migration support as a separate release step, not an implicit startup effect. Use expand-and-contract compatibility with running prior releases.
+- **Migrations:** numbered, reviewed migrations. Run SQLx migration tooling or a subcommand using SQLx's own migration support as a separate release step, not an implicit startup effect. Use expand-and-contract compatibility with running prior releases. In this project, `ingest migrate` runs as the Railway pre-deploy command with the role `telemetry_migrator` (ADR 0002; lead decision in §15). `ingest run` only checks that its embedded migrations are applied (ADR 0002).
 - **Recovery:** test empty-database setup, upgrade from supported prior schemas, and restore/roll-forward paths. Application rollback does not restore deleted data. Follow the authorized policy for destructive changes.
 - **Server version:** run the isolated test server on the same PostgreSQL major version as production. Read the production version on adoption and after each platform upgrade (`SHOW server_version`, read-only, or the platform's database image tag) and pin the test server to that major version. Record both versions. A migration test, query metadata check, or catalog snapshot from another major version is not evidence for production. A newer stable major version follows the `DOCTRINE.md` P7 infrastructure rule.
 - **Connection TLS:** enable one SQLx TLS feature that uses the same rustls crypto provider as the rest of the binary. With reqwest `rustls`, that is `tls-rustls-aws-lc-rs` (§7). The default `sslmode=prefer` uses TLS when the server offers it, checks no certificate chain, and fails the connection on a failed handshake instead of falling back to plain text. `sslmode=require` fails without a TLS feature. SQLx also reads `PGSSLMODE` when the URL has no `sslmode`. rustls rejects a server certificate that is not version 3, although `psql` accepts it. Before the first release, check the production `sslmode`, `PGSSLMODE`, and certificate version read-only.
@@ -392,10 +398,10 @@ added cost, and material lock-in follow the doctrine's escalation rules.
 | axum / tokio                                   | 0.8 / 1                   | HTTP and async runtime                                                           | (default) | (template) |
 | tower / tower-http                             | 0.5 / 0.7                 | Service middleware and static-file delivery                                      | (default) | (template) |
 | serde / serde_json / thiserror                 | 1 / 1 / 2                 | Wire types and typed errors                                                      | (default) | (template) |
-| jiff                                           | 0.2                       | Semantic time types                                                              | (default) | (template) |
+| jiff                                           | 1                         | Semantic time types; the first workspace PR pins the exact resolved version      | Lead      | 2026-11-26 |
 | utoipa / utoipa-axum                           | 6 / 0.3                   | OpenAPI routes and schemas                                                       | (default) | (template) |
 | tracing / tracing-subscriber                   | 0.1 / 0.3                 | Structured backend diagnostics                                                   | (default) | (template) |
-| sqlx / jiff-sqlx, conditional                  | 0.9 / 0.2                 | Durable data and Jiff database wrappers; TLS feature `tls-rustls-aws-lc-rs` (§5) | (default) | (template) |
+| sqlx / jiff-sqlx, conditional                  | 0.9 / 1                   | Durable data and Jiff database wrappers; TLS feature `tls-rustls-aws-lc-rs` (§5) | Lead      | 2026-11-26 |
 | uuid / rust_decimal, conditional               | 1 / 1                     | Typed identities and exact decimal quantities                                    | (default) | (template) |
 | reqwest, conditional                           | 0.13                      | External HTTP calls; feature `rustls` (aws-lc-rs provider)                       | (default) | (template) |
 | @hey-api/openapi-ts                            | 0.99, pin exact release   | Local client and validator generation                                            | (default) | (template) |
@@ -410,8 +416,16 @@ added cost, and material lock-in follow the doctrine's escalation rules.
 | tailwindcss, optional                          | 4                         | Styling when selected by the product                                             | (default) | (template) |
 
 Jiff SQLx values use adapter wrapper types; configure query type overrides
-or annotations deliberately and test their round trips. Utoipa's `jiff_0_2`,
-`uuid`, and decimal-related features must agree with actual serialization.
+or annotations deliberately and test their round trips. Utoipa's `uuid`
+and decimal-related features must agree with actual serialization.
+
+Known conflict (lead, 26 November 2026): the baseline names `jiff` 1, but
+utoipa 6.0.0, the newest release, has only the feature `jiff_0_2`. The
+ingest phase has no utoipa dependency, so the conflict does not affect it.
+The first web PR must resolve the utoipa and `jiff` pairing with
+compatibility evidence: a utoipa release with `jiff` 1 support, explicit
+schema overrides for the time types, or a reviewed §13 exception. Reassess
+when utoipa publishes `jiff` 1 support or when the first web PR starts.
 Pin selected Cargo feature sets; avoid enabling everything by convenience.
 Authentication packages and their compatible store remain conditional §2.5
 adoption decisions. Snapshot, mutation, and coverage tools are optional when
@@ -682,7 +696,9 @@ There is one environment: production. Read on 26 November 2026.
 | Ingest TLS certificate    | Cloudflare Origin CA, ECC, valid until 22 November 2041  | Railway variables `TLS_CERT` and `TLS_KEY`. The Origin CA ECC root expires 15 August 2029. |
 | Vehicle telemetry client  | 1.3.0, vehicle firmware 2026.39.100                      | Read from Tesla `fleet_status`.                                                         |
 | Tesla Fleet API           | Region `na`                                              | The owner's account is in the NA region although the vehicle is in Europe.              |
-| PostgreSQL                | Not provisioned                                          | Neon Free plan is selected (§5).                                                        |
+| PostgreSQL                | 18, Neon Free plan                                       | Project `telemetry`, region `aws-eu-central-1`, database `neondb`, branch `production`. Values from the owner; the storage PR reads `SHOW server_version`. No tables yet. |
+| Neon production compute   | Fixed 0.25 CU (autoscaling minimum and maximum 0.25)     | Lead decision (ADR 0001). Applied on 26 November 2026 through the Neon API on endpoint `ep-young-dawn-bgyaj83l`; the response showed 0.25 and 0.25, and `suspend_timeout_seconds` 0 (plan default, 5 minutes). Check the effective size and the consumption after the first week of ingest. |
+| PostgreSQL test database  | Neon branch `test`, fixed 0.25 CU                        | Created on 26 November 2026 from `production`, before it held vehicle data (§5). Shares the 100 CU-hours of the project; budget at most 5 CU-hours each month (ADR 0001). |
 
 Project-specific release rules:
 
@@ -692,17 +708,65 @@ Project-specific release rules:
   The vehicle reconnects by itself. Give each Railway service its own root
   directory and watch patterns, so that an application merge does not
   redeploy the ingest service.
+- Target layout (ADR 0001, applied by the deployment PR): the service
+  `telemetry` runs one image with the Rust ingest process as PID 1 and
+  `fleet-telemetry` as its child. The ingest process owns port 4443 and
+  forwards the vehicle connections only while it can take records.
+  `/ingest/railway.json` sets the Dockerfile path, the watch patterns, the
+  pre-deploy migration command, the healthcheck, 30 draining seconds, and
+  the restart policy `ALWAYS`.
 - Railway documentation does not state that the TCP proxy port is permanent.
   The port stayed the same over one redeploy. If the port changes, sign and
   send a new vehicle telemetry config (`config/telemetry_config.json`).
 - A change to the vehicle telemetry config needs the Tesla application
   private key and a Tesla OAuth token. Both stay on the owner's computer.
-  The owner authorises each config push.
 - Post-release check for the ingest service: the deployment status is
   `SUCCESS`, `openssl s_client` verifies the certificate against the Origin
   CA ECC root on port 57438, and the log shows a vehicle connection after the
   vehicle is next awake.
 - Recovery: redeploy the previous successful Railway deployment.
+
+Owner decisions of 26 November 2026 (lead authority):
+
+- The lead may change and send the vehicle telemetry config without a
+  separate owner approval when the estimated Tesla usage of the new config
+  stays below 3 USD each month. Record the estimate in the PR. A config with
+  a higher estimate needs the owner's approval.
+- The lead may create a second Railway service in project `calmdonut` when
+  the architecture needs it. The expected cost is about 1 to 2 USD each
+  month.
+- The lead may create Neon branches of project `telemetry` as isolated test
+  databases, and an application role with limited privileges.
+
+Lead decisions of 26 November 2026, within delegated authority (ADR 0001,
+section "Lead decisions"):
+
+- Neon roles: besides the application role `telemetry_ingest`, a second
+  least-privilege role `telemetry_migrator` owns schema `raw` and runs the
+  migrations. It serves the owner's intent and keeps `neondb_owner` out of
+  Railway. The lead reports this decision to the owner. Accepted risk: the
+  migrator URL is a service variable, so the running container can read it.
+  Reassess when Railway can limit a variable to the pre-deploy command, when
+  the migration step can run outside the service, or after a security
+  finding in the running container.
+- The production compute has a fixed size of 0.25 CU. Applied on
+  26 November 2026 (table above). Verify the effective size after the first
+  week of ingest.
+- The ingest flush interval defaults to 900 s. Reassess after 30 days of
+  measured awake hours.
+- The vehicle config does not set `delivery_policy` for now. Reassess with
+  evidence from the stored `is_resend` data or from Tesla documentation.
+- Accepted gate risk (ADR 0001, lead decision 6): the ingest gate does not
+  read TLS. A live peer that stalls inside the TLS handshake holds a
+  connection until it closes it. A flood that fills the bound of 1024
+  connections blocks the vehicle while it lasts, plus the dead-peer bound:
+  about 150 s for an idle gone peer (TCP keep-alive), about 925 to 1,045 s
+  for a gone peer with unacknowledged data (retransmission timeout with the
+  default `tcp_retries2` of 15). Both bounds equal the present upstream
+  server and are below the vehicle buffer of at least 2,500 s, on which
+  the vehicle then relies. `TCP_USER_TIMEOUT` was considered and not
+  adopted (ADR 0001). The lead reports this risk to the owner. Reassess at
+  the first `gate_full` event or on evidence of handshake-stalling peers.
 
 Record a purpose-based reason for each inapplicable obligation. The responsible
 lead verifies the integrated result within task authority. Main remains
