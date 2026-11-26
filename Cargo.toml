@@ -15,6 +15,8 @@ hyper = { version = "1.13.0", default-features = false, features = ["http1", "se
 hyper-util = { version = "0.1.21", default-features = false, features = ["service", "tokio"] }
 serde_json ={ version = "1.0.154", default-features = false, features = ["std"] }
 socket2 = { version = "0.6.5", default-features = false, features = ["all"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["json", "macros", "migrate", "postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "uuid"] }
+jiff-sqlx = { version = "1.0.0", default-features = false, features = ["postgres"] }
 thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
 tokio = { version = "1.54.1", default-features = false, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }

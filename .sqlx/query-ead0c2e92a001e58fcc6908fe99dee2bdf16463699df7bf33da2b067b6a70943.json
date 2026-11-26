@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO vehicle_signal (\n               created_at, received_at, int_value, float_value, latitude, longitude,\n               field, vehicle_id, value_type, is_resend, bool_value, text_value, json_value\n           )\n           SELECT * FROM UNNEST(\n               $1::timestamptz[], $2::timestamptz[], $3::bigint[], $4::double precision[],\n               $5::double precision[], $6::double precision[], $7::integer[], $8::smallint[],\n               $9::smallint[], $10::boolean[], $11::boolean[], $12::text[], $13::jsonb[]\n           )\n           ON CONFLICT DO NOTHING\n           RETURNING vehicle_id, field, created_at AS \"created_at: jiff_sqlx::Timestamp\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vehicle_id",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "vehicle_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "field",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "field"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TimestamptzArray",
+        "TimestamptzArray",
+        "Int8Array",
+        "Float8Array",
+        "Float8Array",
+        "Float8Array",
+        "Int4Array",
+        "Int2Array",
+        "Int2Array",
+        "BoolArray",
+        "BoolArray",
+        "TextArray",
+        "JsonbArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ead0c2e92a001e58fcc6908fe99dee2bdf16463699df7bf33da2b067b6a70943"
+}

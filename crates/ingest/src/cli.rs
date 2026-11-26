@@ -8,7 +8,7 @@ pub enum Command {
     /// Run the gate, the child `fleet-telemetry`, and the health endpoint
     /// until a shutdown signal arrives.
     Run,
-    /// Apply the database migrations. The repository has no migrations yet.
+    /// Apply the embedded database migrations, then exit.
     Migrate,
 }
 

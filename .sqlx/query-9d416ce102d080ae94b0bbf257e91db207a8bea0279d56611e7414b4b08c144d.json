@@ -1,0 +1,57 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO connectivity_event (\n               connection_id, created_at, received_at, status, vehicle_id, network_interface\n           )\n           SELECT * FROM UNNEST(\n               $1::uuid[], $2::timestamptz[], $3::timestamptz[], $4::integer[],\n               $5::smallint[], $6::text[]\n           )\n           ON CONFLICT DO NOTHING\n           RETURNING connection_id, status, created_at AS \"created_at: jiff_sqlx::Timestamp\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "connection_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connectivity_event",
+            "name": "connection_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "connectivity_event",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "connectivity_event",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TimestamptzArray",
+        "TimestamptzArray",
+        "Int4Array",
+        "Int2Array",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9d416ce102d080ae94b0bbf257e91db207a8bea0279d56611e7414b4b08c144d"
+}

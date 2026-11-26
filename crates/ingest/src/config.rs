@@ -113,6 +113,40 @@ fn absolute_path(
     }
 }
 
+/// Configuration of the `migrate` command.
+#[derive(Debug)]
+pub struct MigrateConfig {
+    /// The URL of the role `telemetry_migrator`, from
+    /// `MIGRATION_DATABASE_URL` (ADR 0002, "Roles and privileges"). The
+    /// storage always uses `sslmode=verify-full`, whatever the URL says.
+    pub database_url: SecretString,
+}
+
+impl MigrateConfig {
+    /// Reads the configuration of the `migrate` command. `var` works as in
+    /// [`RunConfig::from_vars`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when the variable is missing, empty, or not
+    /// UTF-8.
+    pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, ConfigError> {
+        const NAME: &str = "MIGRATION_DATABASE_URL";
+        let value = var(NAME).ok_or(ConfigError::Missing { name: NAME })?;
+        let url = value
+            .into_string()
+            .ok()
+            .filter(|url| !url.is_empty())
+            .ok_or(ConfigError::Invalid {
+                name: NAME,
+                reason: "expected a non-empty UTF-8 URL",
+            })?;
+        Ok(Self {
+            database_url: SecretString::new(url),
+        })
+    }
+}
+
 /// A configuration variable is missing or not valid.
 ///
 /// The fields hold only static text. The type cannot hold the value of a
@@ -279,6 +313,44 @@ mod tests {
             assert!(text.contains(name), "{text}");
             assert!(!text.contains("hunter2"), "{text}");
             assert!(!text.contains("example.invalid"), "{text}");
+        }
+    }
+
+    fn migrate_config(value: Option<&OsString>) -> Result<MigrateConfig, ConfigError> {
+        MigrateConfig::from_vars(|name| {
+            assert_eq!(name, "MIGRATION_DATABASE_URL");
+            value.cloned()
+        })
+    }
+
+    #[test]
+    fn reads_the_migration_url() {
+        let url = "postgresql://telemetry_migrator:hunter2@db.invalid/neondb";
+        let config = migrate_config(Some(&OsString::from(url))).unwrap();
+        assert_eq!(config.database_url.expose(), url);
+        assert!(!format!("{config:?}").contains("hunter2"));
+        assert!(!format!("{config:#?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn rejects_a_missing_or_empty_migration_url() {
+        assert_eq!(
+            migrate_config(None).unwrap_err(),
+            ConfigError::Missing {
+                name: "MIGRATION_DATABASE_URL"
+            }
+        );
+        for value in [OsString::new(), {
+            use std::os::unix::ffi::OsStringExt;
+            OsString::from_vec(vec![0xff])
+        }] {
+            assert!(matches!(
+                migrate_config(Some(&value)).unwrap_err(),
+                ConfigError::Invalid {
+                    name: "MIGRATION_DATABASE_URL",
+                    ..
+                }
+            ));
         }
     }
 

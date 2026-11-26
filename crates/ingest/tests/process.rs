@@ -1,7 +1,8 @@
 //! Tests of the `ingest` binary as a process: commands, configuration
 //! failures, the health endpoint, the closed gate, the child supervision
 //! with a fake `fleet-telemetry`, and the shutdown sequence on SIGTERM and
-//! SIGINT.
+//! SIGINT. The tests of `migrate` against a database are in
+//! `tests/storage/`, because the binary always uses the schema `raw`.
 //!
 //! The fake child is `tests/fixtures/fake-fleet-telemetry`. It opens no
 //! port. In this phase the gate stays closed (provisional rule of
@@ -454,10 +455,29 @@ fn run_with_an_invalid_port_does_not_log_the_value() {
 }
 
 #[test]
-fn migrate_reports_that_no_migrations_exist() {
+fn migrate_without_a_url_stops_with_a_safe_message() {
     let (status, process) = run_to_end::<&str>(&["migrate"], &[]);
-    assert_eq!(status.code(), Some(0));
-    assert_eq!(process.messages(), ["no_migrations"]);
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(process.messages(), ["invalid_configuration"]);
+    assert_eq!(
+        process.events[0]["error"],
+        "MIGRATION_DATABASE_URL is not set"
+    );
+}
+
+#[test]
+fn migrate_without_a_database_logs_a_static_code_only() {
+    // Port 1 on the loopback interface refuses the connection, so the
+    // command fails before TLS and before any session.
+    let url = "postgresql://telemetry_migrator:hunter2@127.0.0.1:1/neondb?sslmode=disable";
+    let (status, process) = run_to_end(&["migrate"], &[("MIGRATION_DATABASE_URL", url)]);
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(process.messages(), ["migrate_failed"]);
+    assert_eq!(process.events[0]["class"], "no_answer");
+    assert_eq!(process.events[0]["code"], "io");
+    let text = process.text();
+    assert!(!text.contains("hunter2"), "{text}");
+    assert!(!text.contains("telemetry_migrator"), "{text}");
 }
 
 #[test]

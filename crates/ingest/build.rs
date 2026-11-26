@@ -10,6 +10,10 @@
 //! - `schema_fields.rs` lists the field numbers of each message type. The
 //!   decode uses the list to find fields that the vendored schema does not
 //!   know (`src/decode/unknown_fields.rs`).
+//!
+//! The build also watches `migrations/` and `db/roles.sql`: `sqlx::migrate!`
+//! and `include_str!` embed them, and a procedural macro cannot ask Cargo
+//! to rebuild when a file of a directory changes.
 
 use std::error::Error;
 use std::fmt::Write as _;
@@ -44,6 +48,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     for file in PROTO_FILES {
         println!("cargo:rerun-if-changed={file}");
     }
+    println!("cargo:rerun-if-changed=../../migrations");
+    println!("cargo:rerun-if-changed=../../db/roles.sql");
     // `google/protobuf/timestamp.proto` is built into protox.
     let descriptors = protox::compile(PROTO_FILES, ["proto"])?;
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);

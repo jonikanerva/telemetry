@@ -1,0 +1,20 @@
+# nextest settings (STACK.md §3).
+#
+# The database tests (`crates/ingest/tests/storage/`) share one Neon
+# compute of 0.25 CU with other test runs. At most 8 of them run at the
+# same time, so a run opens about 32 connections at most. A database test
+# that hangs is stopped after 4 minutes. The size measurement is ignored
+# in `mise run verify` and writes 100,000 rows, so it gets 20 minutes.
+
+[test-groups]
+database = { max-threads = 8 }
+
+[[profile.default.overrides]]
+filter = "binary(storage) & test(measure_the_size_of_a_signal_row)"
+test-group = "database"
+slow-timeout = { period = "60s", terminate-after = 20 }
+
+[[profile.default.overrides]]
+filter = "binary(storage)"
+test-group = "database"
+slow-timeout = { period = "30s", terminate-after = 8 }

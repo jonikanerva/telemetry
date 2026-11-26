@@ -23,6 +23,13 @@
 //! values, a URL, or a credential. Do not pass such an error to the
 //! `error` field. Map it to a static code first, for example the SQLSTATE
 //! class, as ADR 0001 requires for the database writer.
+//!
+//! The allowlist applies to first-party events only: events whose target
+//! is `ingest` or starts with `ingest::`. A library writes its own events,
+//! and their field names say nothing about their values. `SQLx`, for
+//! example, writes the text of a server notice in its `message` field.
+//! For every other target the formatter writes `[redacted]` for every
+//! field, the message too, and keeps the level and the target.
 
 use std::fmt;
 
@@ -55,12 +62,19 @@ use tracing_subscriber::registry::LookupSpan;
 ///   the line was cut at 8 KiB.
 /// - `pid`, `exit_code`, `exit_signal`, and `delay_ms`: numbers of the
 ///   child supervision.
+/// - `applied` and `embedded`: migration counts of `ingest migrate`.
+/// - `class` and `code`: the static class and code of a database failure
+///   ([`crate::storage::StorageError`]).
 pub const ALLOWED_FIELDS: &[&str] = &[
+    "applied",
     "child_line",
+    "class",
+    "code",
     "connections",
     "count",
     "delay_ms",
     "duration_ms",
+    "embedded",
     "error",
     "exit_code",
     "exit_signal",
@@ -127,15 +141,17 @@ where
         mut writer: Writer<'_>,
         event: &Event<'_>,
     ) -> fmt::Result {
+        let metadata = event.metadata();
+        let target = metadata.target();
+        let first_party = target == "ingest" || target.starts_with("ingest::");
         let mut object = Map::new();
         event.record(&mut AllowlistVisitor {
-            allowed: self.allowed,
+            allowed: if first_party { self.allowed } else { &[] },
             object: &mut object,
         });
 
         let mut timestamp = String::new();
         SystemTime.format_time(&mut Writer::new(&mut timestamp))?;
-        let metadata = event.metadata();
         // Insert the reserved keys last, so that an event field cannot
         // replace them.
         object.insert("timestamp".to_owned(), Value::from(timestamp));
@@ -318,6 +334,24 @@ mod tests {
         for key in RESERVED_KEYS {
             assert!(!ALLOWED_FIELDS.contains(key), "{key} is reserved");
         }
+    }
+
+    #[test]
+    fn redacts_every_field_of_a_library_event() {
+        let (text, objects) = capture(ALLOWED_FIELDS, || {
+            info!(
+                target: "sqlx::postgres::notice",
+                message = "relation TESTVIN0000000001 already exists"
+            );
+            info!(target: "sqlx::query", error = "row value", "slow statement");
+        });
+        assert!(!text.contains("TESTVIN"), "{text}");
+        assert!(!text.contains("row value"), "{text}");
+        assert_eq!(objects[0]["message"], REDACTED);
+        assert_eq!(objects[0]["target"], "sqlx::postgres::notice");
+        assert_eq!(objects[0]["level"], "INFO");
+        assert_eq!(objects[1]["message"], REDACTED);
+        assert_eq!(objects[1]["error"], REDACTED);
     }
 
     #[test]

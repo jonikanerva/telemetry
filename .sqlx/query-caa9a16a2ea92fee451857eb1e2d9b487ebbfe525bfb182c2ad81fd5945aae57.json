@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO vehicle_error (\n               vehicle_id, created_at, name, tags, body, record_created_at, received_at\n           )\n           SELECT * FROM UNNEST(\n               $1::smallint[], $2::timestamptz[], $3::text[], $4::jsonb[], $5::text[],\n               $6::timestamptz[], $7::timestamptz[]\n           )\n           ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int2Array",
+        "TimestamptzArray",
+        "TextArray",
+        "JsonbArray",
+        "TextArray",
+        "TimestamptzArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "caa9a16a2ea92fee451857eb1e2d9b487ebbfe525bfb182c2ad81fd5945aae57"
+}
