@@ -23,7 +23,10 @@
 //! sees the closed state.
 //!
 //! Each change between open and closed records a `gate_opened` or
-//! `gate_closed` event (ADR 0002) in the sink.
+//! `gate_closed` event (ADR 0002) in the sink. Several tasks write the state
+//! (the supervisor, the pipeline, and the shutdown); the event is recorded
+//! inside the lock of the change, so the events keep the order of the
+//! changes.
 //!
 //! **Provisional rule of this phase.** The pipeline does not exist yet, so
 //! the pipeline value stays [`Pipeline::NotReady`] with the reason
@@ -158,7 +161,6 @@ impl Readiness {
     }
 
     fn update(&self, change: impl FnOnce(&mut GateState)) {
-        let mut transition = None;
         self.state.send_if_modified(|state| {
             let before = *state;
             change(state);
@@ -166,18 +168,17 @@ impl Readiness {
                 state.epoch = state.epoch.wrapping_add(1);
             }
             if before.is_open() != state.is_open() {
-                transition = Some(match state.closed_reason() {
+                let kind = match state.closed_reason() {
                     None => EventKind::GateOpened,
                     Some(reason) => EventKind::GateClosed { reason },
-                });
+                };
+                // Record while the watch channel holds its lock, so that the
+                // events of several writers keep the order of the changes.
+                // The sink returns at once (`EventSink::record`).
+                self.sink.record(IngestEvent::now(kind));
             }
             before != *state
         });
-        // Record outside the lock of the watch channel, so that a slow sink
-        // cannot hold the readers of the state.
-        if let Some(kind) = transition {
-            self.sink.record(IngestEvent::now(kind));
-        }
     }
 }
 
@@ -278,6 +279,37 @@ mod tests {
         readiness.set_pipeline(Pipeline::Ready);
         assert!(!readiness.state().is_open());
         assert_eq!(sink.names(), ["gate_opened", "gate_closed"]);
+    }
+
+    #[test]
+    fn the_events_of_several_writers_keep_the_order_of_the_changes() {
+        let (readiness, sink) = readiness();
+        readiness.set_pipeline(Pipeline::Ready);
+        let readiness = Arc::new(readiness);
+        let writers: Vec<_> = [true, false]
+            .into_iter()
+            .map(|running| {
+                let readiness = Arc::clone(&readiness);
+                std::thread::spawn(move || {
+                    for _ in 0..2000 {
+                        readiness.set_child_running(running);
+                        readiness.set_child_running(!running);
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        // The state changes alternate between open and closed, so the
+        // recorded events must alternate too.
+        let names = sink.names();
+        assert!(names.len() > 2);
+        for pair in names.windows(2) {
+            assert_ne!(pair[0], pair[1], "two equal events in a row");
+        }
+        let open = readiness.state().is_open();
+        assert_eq!(names.last() == Some(&"gate_opened"), open);
     }
 
     #[tokio::test]
