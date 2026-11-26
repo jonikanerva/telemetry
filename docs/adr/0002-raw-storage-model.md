@@ -2,7 +2,10 @@
 
 - Status: Accepted, 26 November 2026. Issue #4. The lead decided the open
   points within delegated authority on 26 November 2026 (ADR 0001, section
-  "Lead decisions").
+  "Lead decisions"). Amended by the storage change (issue #12): column
+  types of the wire numbers, keys of unknown length, the topic as bytes,
+  data errors through the batch split, the privileges through default
+  privileges, and the measured size.
 - Scope: the PostgreSQL schema for raw records, the database roles, and the
   migration step. ADR 0001 owns the path to the database.
 
@@ -54,29 +57,39 @@ sent them, after the upstream transformations named in ADR 0001.
 | ------------------------- | -------------------------------------- | ------------------------------------------------------------------------------ |
 | `raw.vehicle`             | each VIN                               | `vin`                                                                          |
 | `raw.vehicle_signal`      | each `Datum` of a `V` record           | primary key `(vehicle_id, field, created_at)`                                  |
-| `raw.vehicle_alert`       | each distinct alert state              | `(vehicle_id, name, started_at, ended_at, audiences)` `NULLS NOT DISTINCT`    |
-| `raw.vehicle_error`       | each error item                        | unique index `(vehicle_id, created_at, name, md5(tags::text), md5(body))` `NULLS NOT DISTINCT` |
+| `raw.vehicle_alert`       | each distinct alert state              | unique index `(vehicle_id, md5(name), started_at, ended_at, audiences)` `NULLS NOT DISTINCT` |
+| `raw.vehicle_error`       | each error item                        | unique index `(vehicle_id, created_at, md5(name), md5(tags::text), md5(body))` `NULLS NOT DISTINCT` |
 | `raw.connectivity_event`  | each connect or disconnect             | primary key `(connection_id, status, created_at)`                              |
-| `raw.unprocessed_record`  | each record that cannot be stored as rows | unique index `(topic, reason, md5(payload))`                                |
+| `raw.unprocessed_record`  | each record that cannot be stored as rows | unique index `(md5(topic), reason, md5(payload))`                           |
 | `raw.ingest_event`        | each event of the ingest process       | `(run_id, kind, occurred_at)`                                                  |
 
 Columns:
 
-- `raw.vehicle`: `id smallint` identity, `vin text NOT NULL UNIQUE`,
-  `first_seen_at timestamptz NOT NULL`. The VIN is stored only here.
+- `raw.vehicle`: `id smallint` identity, `vin text NOT NULL UNIQUE` with 1
+  to 64 bytes (CHECK; 64 is the X.509 limit of the certificate common name
+  that `fleet-telemetry` reads the VIN from), `first_seen_at timestamptz
+  NOT NULL`. The VIN is stored only here, as sent.
 - `raw.vehicle_signal`, in this order for alignment:
   `created_at timestamptz NOT NULL` (`Payload.created_at`),
   `received_at timestamptz NOT NULL`, `int_value bigint`,
   `float_value double precision`, `latitude double precision`,
-  `longitude double precision`, `vehicle_id smallint NOT NULL` (foreign key),
-  `field smallint NOT NULL` (number of the `Field` enum),
+  `longitude double precision`, `field integer NOT NULL` (number of the
+  `Field` enum), `vehicle_id smallint NOT NULL` (foreign key),
   `value_type smallint NOT NULL` (field number of the `Value` variant),
   `is_resend boolean NOT NULL`, `bool_value boolean`, `text_value text`,
   `json_value jsonb`.
+- Wire numbers: `field`, the alert `audiences`, and the connectivity
+  `status` are `int32` enums on the wire, and the vehicle can send any
+  number. Their columns are `integer`, so every value fits without a range
+  check. The largest `Field` number of the vendored schema is 280; the
+  wider column costs 8 B for each signal row (measured, "Expected size").
+  The process makes `value_type` (at most 60) and the vehicle ID itself;
+  they stay `smallint`.
 - `raw.vehicle_alert`: `vehicle_id`, `name text NOT NULL`,
-  `audiences smallint[] NOT NULL` (enum numbers), `started_at timestamptz`,
-  `ended_at timestamptz`, `created_at timestamptz NOT NULL` (of
-  `VehicleAlerts`), `received_at timestamptz NOT NULL`.
+  `audiences integer[] NOT NULL` (enum numbers, at most 64, CHECK),
+  `started_at timestamptz`, `ended_at timestamptz`, `created_at
+  timestamptz NOT NULL` (of `VehicleAlerts`), `received_at timestamptz NOT
+  NULL`.
 - `raw.vehicle_error`: `vehicle_id`, `created_at timestamptz` (of the item),
   `name text NOT NULL`, `tags jsonb NOT NULL`, `body text NOT NULL`,
   `record_created_at timestamptz NOT NULL` (of `VehicleErrors`),
@@ -87,30 +100,50 @@ Columns:
   (`started_at`, `ended_at`, `raw.vehicle_error.created_at`) can be
   missing and allow NULL.
 - `raw.connectivity_event`: `vehicle_id`, `connection_id uuid NOT NULL`,
-  `status smallint NOT NULL` (enum number), `network_interface text NOT NULL`
+  `status integer NOT NULL` (enum number), `network_interface text NOT NULL`
   (as sent, also when empty), `created_at timestamptz NOT NULL` (server
   clock), `received_at timestamptz NOT NULL`.
-- `raw.unprocessed_record`: `id bigint` identity, `topic text NOT NULL`,
-  `payload bytea NOT NULL` (the original protobuf bytes),
-  `reason text NOT NULL`, `sqlstate text`, `received_at timestamptz NOT NULL`.
+- `raw.unprocessed_record`: `id bigint` identity, `topic bytea NOT NULL`
+  (the first ZMQ frame; a topic can be any bytes, also bytes that are not
+  UTF-8 or a NUL byte, which `text` cannot hold), `payload bytea NOT NULL`
+  (the original protobuf bytes), `reason text NOT NULL`, `sqlstate text`,
+  `received_at timestamptz NOT NULL`.
   A CHECK constraint limits `reason` to `decode_failed`, `unknown_topic`,
   `missing_created_at`, `unknown_value_variant`, `unknown_fields`,
-  `conflicting_duplicate`, and `database_rejected`.
+  `conflicting_duplicate`, and `database_rejected`. `sqlstate` is set for
+  `database_rejected` only, and it is five characters from `0`-`9` and
+  `A`-`Z` (CHECK).
+  A new reason needs a migration that adds it to the CHECK constraint, in
+  the same release as the code. The order is then safe by construction:
+  the pre-deploy command applies the migration before the new binary
+  runs, and `ingest run` keeps the gate closed until every migration that
+  it embeds is applied. A reason that still fails the constraint makes
+  the record `database_rejected` with SQLSTATE 23514, so its bytes stay.
 - `raw.ingest_event`: `id bigint` identity, `run_id uuid NOT NULL` (random
   for each process start), `occurred_at timestamptz NOT NULL`,
   `kind text NOT NULL` (`started`, `stopped`, `gate_closed`, `gate_opened`,
   `degraded_mode`, `child_exited`, `records_dropped`, `zmq_shortfall`,
   `gate_full`),
-  `reason text`, `dropped_count integer`,
+  `reason text`, `dropped_count bigint` (it holds every unsigned 32-bit
+  count of the event sink),
   `first_received_at timestamptz`, `last_received_at timestamptz`. A
   `records_dropped`, `zmq_shortfall`, or `gate_full` row must have the
-  count and both times (CHECK). For `zmq_shortfall` and `gate_full`, the
+  count (at least 1) and both times, in order; the other kinds have none
+  of them (CHECK). For `zmq_shortfall` and `gate_full`, the
   times are the window of the count (`gate_full` counts refused
   connections, at most one row each minute).
 
 Indexes: the keys above, and one BRIN index on
 `raw.vehicle_signal (created_at)`. The derived phase adds the indexes it
 needs.
+
+A key with text of unknown length uses `md5()` of the text. A btree entry
+has a size limit, and a larger key fails with SQLSTATE 54000. That is not
+a data error, so the writer would retry it without end and block the
+queue. With `md5()` and the length limits above (VIN, audiences), only data
+errors (classes 22 and 23) depend on the values. `md5()` is a compression of
+the key, not a security measure; a collision would make two different
+values one key.
 
 ### Value representation
 
@@ -151,8 +184,15 @@ Unknown data:
   a newer vehicle schema can send it. The decode compares each field
   number with the vendored schema to find it. A record with an unknown
   value variant gets only the reason `unknown_value_variant`.
-- Text that PostgreSQL rejects (for example a NUL byte) is caught before the
-  insert and stored as unprocessed with reason `database_rejected`.
+- Text that PostgreSQL rejects (a NUL byte in `text` or in a JSON string),
+  an empty or too long VIN, and too many audiences fail the insert with a
+  data error (SQLSTATE 22021, 22P05, or 23514). The writer does not check
+  values before the insert: the batch split isolates the record ("Write
+  batching"), and the record goes to `raw.unprocessed_record` with reason
+  `database_rejected` and the real SQLSTATE. None of its rows are stored;
+  its bytes are. A VIN of 1 to 64 bytes in another form than 17
+  characters is stored as sent: it is the identity that `fleet-telemetry`
+  gives the connection.
 
 ### Time columns
 
@@ -163,6 +203,10 @@ Unknown data:
   message. It is not the receive time of `fleet-telemetry`, which ZMQ does
   not carry. For resent data, it can be much later than `created_at`.
 - A record without `created_at` is never given an invented time.
+- The storage truncates every instant to whole microseconds toward the
+  past before it binds it: the times of the payload (the decode already
+  did), the receive time, and the event times. A retry then binds the
+  same value.
 
 ### Idempotency
 
@@ -171,6 +215,13 @@ acknowledgement is safe.
 
 - Signals: the key excludes `is_resend` and `received_at`, because these
   differ between copies of the same datum. The first stored copy wins.
+- Equal values: two copies of a signal key are equal only when the variant
+  (`value_type`) and every value column are equal. Floats compare by their
+  bits, in the batch and against the table: a NaN equals the same NaN,
+  and `0.0` and `-0.0` differ. PostgreSQL returns the bits that it stored
+  (tested). Every other difference is a conflict, so the record is kept.
+  The same rule applies to the connectivity key, with the vehicle and the
+  network interface as the values.
 - Same key inside one batch: `RETURNING` cannot see a conflict between two
   rows of the same statement. The writer therefore compares the keys of a
   batch in memory first. An equal value is a duplicate and is dropped from
@@ -185,7 +236,13 @@ acknowledgement is safe.
   the replays. When the alert ends, its end time is a new row. A replay
   with other audiences is also a new row, because `audiences` is part of
   the key. The derived phase reads the latest state.
-- Errors: `md5` keeps the key small for long bodies and tag sets.
+- Errors: `md5` keeps the key small for long names, bodies, and tag sets.
+  Every column of an alert or an error item except the record times is in
+  its key, so a copy of a key is always a duplicate.
+- Vehicle: the writer selects the VIN first and inserts only a VIN that it
+  does not find. An `INSERT ... ON CONFLICT DO NOTHING` takes an identity
+  value also when it inserts nothing, and the ID is a `smallint`. The
+  writer keeps the IDs after the commit.
 - Connectivity: the server sets `connection_id` from the request header
   `X-TXID` when that header is a UUID, and makes a random UUID only
   otherwise
@@ -206,11 +263,20 @@ is normally one transaction:
    rows, with bound arrays.
 3. Commit.
 
-A transaction holds at most 5000 signal rows. The flush splits a larger
-queue into more transactions. After a data error (SQLSTATE class 22 or 23)
-the writer splits the batch into halves, each in its own transaction, to
-isolate the bad record (ADR 0001). Queue items leave memory only after
-their rows commit.
+A transaction holds at most 5000 signal rows and at most 8 MiB of message
+bytes (topic and payload; records without signal rows count here only).
+The writer splits a larger batch into more transactions; a record is never
+split, so a larger record is a transaction of its own. After a data error
+(SQLSTATE class 22 or 23) the writer splits the batch into halves, each in
+its own transaction, the first half first, to isolate the bad record (ADR
+0001); the first copy of a key still wins. Signal and connectivity rows go
+in key order, so two writers with the same keys take their locks in the
+same order. Alert, error, and unprocessed rows keep the order of the batch;
+a deadlock of two writers (SQLSTATE 40P01) is an answered failure, and the
+caller retries. Each transaction has a client deadline of 90 s, also for a
+connection that goes silent. A failed write tells the caller how many
+records at the start of the batch are stored. Queue items leave memory
+only after their rows commit.
 
 ### Expected size
 
@@ -238,8 +304,27 @@ limit is 450,000 signals (3 USD) in any case.
 | Owner limit                               | 450,000            | about 50 MB        | about 20 months |
 
 The other tables add less than 1 MB each month. These numbers are
-estimates. The storage PR measures `pg_total_relation_size` after a known
-number of rows.
+estimates.
+
+Measured on 26 November 2026 (PostgreSQL 18.7 on the Neon branch `test`,
+test `measure_the_size_of_a_signal_row` in
+`crates/ingest/tests/storage/size.rs`): 100,000 signal rows in 100
+flushes of 1,000 rows, 70 % numbers, 10 % locations, 10 % booleans, 10 %
+short text, after `VACUUM ANALYZE`.
+
+| Part                                   | Bytes for each row |
+| -------------------------------------- | -----------------: |
+| Tuple (`pg_column_size`), numeric row  | 65                 |
+| Tuple, location row                    | 73                 |
+| Heap (`pg_relation_size`)              | 76.6               |
+| Primary key                            | 34.2               |
+| BRIN index                             | 0.25               |
+| **Total (`pg_total_relation_size`)**   | **111.7**          |
+
+The total matches the estimate of about 110 B. The heap of the same rows
+with `field smallint` is 68.3 B for each row, so `integer` costs 8.3 B
+(about 7 % of the total). At the owner limit of 450,000 signals, that is
+about 3.7 MB more each month.
 
 ### Roles and privileges
 
@@ -253,13 +338,33 @@ reports this decision to the owner.
 
 | Role                  | Used by                                | Privileges                                                                                   |
 | --------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `telemetry_migrator`  | `ingest migrate` (pre-deploy command)   | Owns schema `raw` and its objects. `CONNECT` on `neondb`. Nothing outside `raw`.             |
-| `telemetry_ingest`    | `ingest run`                            | `CONNECT` on `neondb`. `USAGE` on schema `raw`. `SELECT`, `INSERT` on the `raw` tables and on `raw._sqlx_migrations` (`SELECT` only). `USAGE` on the identity sequences. No `UPDATE`, `DELETE`, `TRUNCATE`, or DDL. `CONNECTION LIMIT 5` (two deployments with 2 connections each can overlap during a deploy, plus one spare), `statement_timeout` 30 s, `search_path` `raw`. |
+| `telemetry_migrator`  | `ingest migrate` (pre-deploy command)   | Owns schema `raw` and its objects. `CONNECT` on `neondb`. Nothing outside `raw`. `search_path` `raw`. |
+| `telemetry_ingest`    | `ingest run`                            | `CONNECT` on `neondb`. `USAGE` on schema `raw`. `SELECT`, `INSERT` on the `raw` tables and on `raw._sqlx_migrations` (`SELECT` only). No privilege on the identity sequences: an `INSERT` into an identity column needs none (tested), and `nextval()` would let the role use up the `smallint` vehicle IDs. No `UPDATE`, `DELETE`, `TRUNCATE`, or DDL. `CONNECTION LIMIT 5` (two deployments with 2 connections each can overlap during a deploy, plus one spare), `statement_timeout` 30 s, `search_path` `raw`. |
 
-- `neondb_owner` creates the two roles and the schema once. It is never a
-  Railway variable.
-- Each migration that adds a table also grants the `telemetry_ingest`
-  privileges for that table.
+PUBLIC keeps the PostgreSQL defaults: `CONNECT` and `TEMPORARY` on the
+database, and `USAGE` on schema `public`, where PUBLIC cannot create. So
+`telemetry_ingest` can create temporary tables in its own session; it
+cannot create objects in `raw` or `public`.
+
+- `neondb_owner` creates the two roles and the schema once, with
+  `db/roles.sql` (`README.md`, "Database roles"). It is never a Railway
+  variable. The script is idempotent. It needs the `SET` option on
+  `telemetry_migrator` to create a schema for it (PostgreSQL 16 and
+  later), takes it for the run, and gives it back. It takes an advisory
+  lock, so two runs at the same time wait for each other instead of
+  failing on the privileges of the database.
+- The script sets the passwords as plain text. Neon refuses a SCRAM
+  verifier that the client computes ("Neon only supports being given
+  plaintext passwords", SQLSTATE XX000, tested), because the compute hands
+  each password to the Neon control plane. A server log line or an error
+  context of the `ALTER ROLE` statement can therefore show a password on
+  the Neon side. After a suspected leak, run the script again with new
+  passwords and update the Railway variables.
+- The script sets default privileges for `telemetry_migrator` in `raw`:
+  each table that the migrator creates gives `telemetry_ingest` `SELECT`
+  and `INSERT`. The migrations therefore name no role. Migration 0001
+  takes `INSERT` on `raw._sqlx_migrations` back, because SQLx creates that
+  table before the first migration.
 - Railway variables: `DATABASE_URL` (`telemetry_ingest`) and
   `MIGRATION_DATABASE_URL` (`telemetry_migrator`). `ingest run` reads only
   the first, `ingest migrate` only the second. Both use
@@ -286,7 +391,12 @@ reports this decision to the owner.
   changed migration is an answered failure: the gate stays closed, also
   after 120 s, and `/health` fails. Only a database with no answer leads
   to degraded mode (ADR 0001, gate condition 3). Migrations that the binary
-  does not know are allowed.
+  does not know are allowed, also for `ingest migrate`, so that the
+  pre-deploy command of an earlier release succeeds after a later release.
+- The SQL names no schema. Both commands set the `search_path` to `raw`
+  only. `ingest migrate` first checks that `raw` is the current schema,
+  so a missing schema fails before any statement. The tests use a schema
+  of their own in the same way.
 - Each migration must work with the previous release (expand and contract).
   A destructive step waits for a later release and needs the owner's
   approval when it deletes data.
@@ -298,8 +408,12 @@ reports this decision to the owner.
   before `production` held vehicle data, with a fixed compute of 0.25 CU.
   Never reset it from its parent, because that copies production data.
 - The test branch has the same PostgreSQL major version as production.
-- Tests clean up their data. The branch counts against the 1 GB of the
-  project.
+- Each test uses a schema of its own, and roles of its own where it needs
+  roles, named `itest_<unix seconds>_<random>`. The test removes them, also
+  after a failure. A later run removes the objects of a killed run after
+  6 hours. Two runs can therefore share the branch at the same time. The
+  tests refuse the production endpoint and a database with a schema
+  `raw`. The branch counts against the 1 GB of the project.
 - The test compute draws from the same 100 CU-hours as production. Budget:
   at most 20 active hours (5 CU-hours) each month (ADR 0001). Tests close
   their connections when they end, so the compute scales to zero after 5
@@ -360,18 +474,18 @@ model did not keep.
   `VehicleErrors`. No source states it. Rows in `raw.unprocessed_record`
   with reason `missing_created_at` and topic `alerts` or `errors` show a
   violation.
-- The size per row. The storage PR measures it.
 - That the vehicle never sends two different values for one field with the
   same `created_at`. The `conflicting_duplicate` count shows it.
-- Whether `INSERT` into an identity column needs `USAGE` on its sequence.
-  The grant is harmless; the storage PR tests the role.
-- That the rustls set-up of sqlx verifies the Neon certificate with
-  `sslmode=verify-full` (`STACK.md` §5).
 - Whether the vehicle reuses an `X-TXID` connection ID. The key does not
   depend on it.
 - That Neon counts child branches against the 1 GB of the project, and the
-  SQLSTATE of a write to a full Neon storage. The storage PR records both
-  where it can; the writer retries every error that is not a data error.
+  SQLSTATE of a write to a full Neon storage. The storage change could not
+  test either without filling the branch; the writer retries every error
+  that is not a data error.
+- The production `sslmode`, `PGSSLMODE`, and the certificate version
+  (`STACK.md` §5). The storage forces `sslmode=verify-full`, and the
+  certificate of the test branch verifies (tested). The production
+  endpoint was not contacted; the lead checks it read-only at release.
 
 ## Sources
 
