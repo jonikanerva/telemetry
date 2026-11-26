@@ -502,7 +502,7 @@ visible:
 | Restart during a database outage, including a Neon suspension after 100 CU-hours, which lasts until the next billing period [N1] | The queue that existed before the restart is lost (crash line). After the restart the gate stays closed for 120 s (vehicle buffer only), then opens in degraded mode. Then as in the outage line. | As in the crash and outage lines. A Neon suspension also shows as failed writes in the log. |
 | Shutdown flush fails within 20 s, for example a deploy during a database outage | The queue at shutdown. | The log has the count. A `stopped` event cannot be written. |
 | The child dies by itself | Messages in its libzmq send queue: milliseconds of data. | `child_exited` event. The count is unknown. |
-| The SUB socket stops receiving while the gate is open (for example the `zeromq` defect of "SUB socket", or a lost `Disconnected` event) | The records that the child dispatched and acked for at most two metrics periods (30 s), plus about 2 s for the read and the new socket; one more period (45 s) for a new socket of the same child or after a failed read. This holds each time the gate opens a stalled socket; after repeated stalls the gate stays closed for 30 s, doubling to 15 minutes, and the vehicle buffers. The vehicle does not resend acked records. | `zmq_shortfall` events with the count, the `gate_closed` event with the reason `subscriber_stalled`, and the log line `subscriber_rebuilt`. |
+| The SUB socket stops receiving while the gate is open (for example the `zeromq` defect of "SUB socket", or a lost `Disconnected` event) | The records that the child dispatches and acks until the stall rule decides: "SUB socket", "Detection bound" (less than 32.75 s with no failed metrics read, less than 62.75 s with failed reads; two failed reads in a row close the gate). This holds each time the gate opens a stalled socket; after repeated stalls the gate stays closed for 30 s, doubling to 15 minutes, and the vehicle buffers. The vehicle does not resend acked records. | `zmq_shortfall` events with the count, the `gate_closed` event with the reason `subscriber_stalled`, and the log line `subscriber_rebuilt`. |
 | A connection closes with messages that were sent but not acked (gate closing, deploy, rate limit) | Those messages, if the vehicle does not resend them (fact 1, not verified). | None in `ingest`. Stored `is_resend` values show whether resends happen. |
 | Accepted risk: a peer that stalls inside the TLS handshake | A live peer holds one connection until it closes it. A peer that goes away holds it until the dead-peer bound closes it (gate rule 3): about 150 s after its last answer when no data is unacknowledged (keep-alive), about 925 to 1,045 s when data is unacknowledged (retransmission timeout, `tcp_retries2` 15). Both are below the vehicle buffer of at least 2,500 s. This is the same class of exposure that upstream has today. If the Railway proxy terminates TCP, the close of a gone peer depends on the proxy (deployment check). | None for a single peer. |
 | Accepted risk: a flood that fills the 1024-connection bound | No new connection while the flood holds the bound: while the flooding peers keep their connections alive, plus the dead-peer bound after they go away (about 150 s idle, about 925 to 1,045 s with unacknowledged data). The vehicle cannot connect and relies on its own buffer (at least 2,500 s). Then as in the next line. | `gate_full` events, and gaps between `connectivity_event` rows. |
@@ -583,22 +583,29 @@ sections above leave open. Each point has a test.
     The crate has no option to turn off its reconnect; dropping a socket
     stops its reconnect task.
   - **Defence 2: the stall rule.** A rule that needs no event of the
-    crate, so that an unknown stall of the same class cannot last. Three
-    metrics reads `a`, `b`, `k` of one socket, one period apart: when the
-    child dispatched records between `a` and `b`, and the reader received
-    no record between `a` and `k`, the socket is stalled. A live
-    subscription receives every record that the child dispatched at
-    least one period before: a drop at the libzmq high water mark drops
-    the newest records, and the queued older ones still arrive. An idle
-    child dispatches nothing, so the rule cannot act while no vehicle is
-    connected. The rule takes the received count from a snapshot before
-    the metrics request, so a record that arrives during the request
-    does not look older than the counter of the child. A new socket of
-    the same child starts with no point, so records that the child
-    dispatched before the new subscription do not count against it. The
-    reader then clears gate condition 2 with the reason
-    `subscriber_stalled` and replaces the socket. The rule names the
-    socket that it judged, so a request cannot replace a newer socket.
+    crate, so that an unknown stall of the same class cannot last. Two
+    successful metrics reads `m` and `n` of one socket, with or without
+    failed reads between them: when the child dispatched records between
+    the response of `m` and the response of `n`, and the reader received
+    no record between the snapshot before the request of `m` and a
+    snapshot 2 s (the grace) after the response of `n`, the socket is
+    stalled. A live subscription receives each record that the child
+    dispatched before the response of `n` within milliseconds; the grace
+    covers a slow turn of the reader. A drop at the libzmq high water mark
+    drops the newest records, and the queued older ones still arrive. An
+    idle child dispatches nothing, so the rule cannot act while no
+    vehicle is connected. The first snapshot comes before the request, so
+    a record that arrives during the request of `m` does not look older
+    than the counter of the child. A new socket of the same child starts
+    with no point, so records that the child dispatched before the new
+    subscription do not count against it. A failed read keeps the last
+    point, so failed reads delay the decision but cannot prevent it.
+    (Review round 3 of PR #22, finding B3: the rule of round 2 compared
+    three reads, so one record received just after a snapshot moved the
+    decision out by one period.) The reader then clears gate condition 2
+    with the reason `subscriber_stalled` and replaces the socket. The
+    rule names the socket that it judged, so a request cannot replace a
+    newer socket.
   - **Repeated stalls.** The first stall gets a new socket at once. After
     each further stall in a row without a received record, the reader
     waits 30 s, doubling to 15 minutes, before the next socket, and gate
@@ -609,13 +616,45 @@ sections above leave open. Each point has a test.
   - **Period.** The shortfall check and the stall rule share one metrics
     read each 15 s (it was 60 s before review round 2). One read is a
     small HTTP request on the loopback interface.
-  - **Detection bound.** Records can be lost for at most two periods
-    (30 s) after the first record that the stalled socket did not
-    receive, plus the read deadline of 0.75 s and the replacement (at
-    most 1 s of drain and one connect). For a new socket of the same
-    child, and after a failed metrics read, add one period (45 s). This
+  - **Unreadable metrics.** After two failed metrics reads in a row, the
+    shortfall task clears gate condition 2 with the reason
+    `metrics_unreadable`, and it reads each 1 s until a read succeeds;
+    that read sets the condition true again. Without this rule, a dead
+    subscription could lose acked records without a bound while the
+    reads fail, because the stall rule needs successful reads. Two, not
+    one: a healthy child can answer one read late (the deadline is
+    0.75 s), and two failed reads in a row are 15 s apart. Cost: a child
+    whose metrics endpoint keeps failing keeps the gate closed, and the
+    vehicle buffers. That is a configuration fault of the child; it shows
+    as a `gate_closed` event with the reason `metrics_unreadable` and the
+    log lines `shortfall_read_failed` and `metrics_unreadable`. While a
+    child restarts, its reads fail too, but condition 1 already closes the
+    gate; the reads each 1 s open the condition about 1 s after the
+    metrics of the new child answer.
+  - **Detection bound.** This is the one statement of the bound; the
+    other texts refer to it. Let `P` be the read period (15 s), `G` the
+    grace (2 s), `D` the read deadline (0.75 s), and `f` the number of
+    failed reads between the start of the stall and the decision. For a
+    child that dispatches without a pause, the rule decides less than
+    `(2 + f) × P + D + G` after the first record that the stalled socket
+    did not receive. Two failed reads in a row close the gate ("Unreadable
+    metrics"), so while the gate is open at most one failed read lies
+    between two successful reads, and `f` is at most 2. With 15 s: less
+    than 32.75 s with no failed read, 47.75 s with one, and 62.75 s with
+    two. The worst case is a stall that starts just after the snapshot of
+    a read: the next read cannot decide, because its comparison still sees
+    the last received record. For a new socket of the same child, the
+    first lost record counts from the new socket. For a child that
+    dispatches with pauses, the bound counts time with dispatches: the
+    lost records come from at most two intervals between successful
+    reads (the interval in which the stall starts, and the interval of
+    the decision), and an interval without a dispatch loses nothing. The
+    decision clears gate condition 2 first, so the loss ends with it. The
     bound holds for each time that the gate opens a stalled socket;
-    between two such times the gate stays closed ("Repeated stalls"). In
+    between two such times the gate stays closed ("Repeated stalls"). The
+    tests `the_worst_case_timeline_meets_the_bound_of_adr_0001` and
+    `sporadic_dispatch_loses_records_of_two_dispatching_intervals_at_most`
+    (`pipeline/shortfall.rs`) pin these values. In
     that window `fleet-telemetry` acks each record after
     it hands the record to the PUB socket, and PUB drops it without a
     subscriber (fact 2, the `zmq` row of fact 3). So the vehicle does not
@@ -641,9 +680,34 @@ sections above leave open. Each point has a test.
     does not add one: the text of the crate can hold data, and the log
     allows only first-party fields. The failure is visible through
     first-party records instead: the `gate_closed` event with the reason
-    `subscriber_stalled`, the `zmq_shortfall` events, and the log line
-    `subscriber_rebuilt` with a static reason (`child_stopped`,
-    `peer_lost`, `subscribe_failed`, or `stalled`).
+    `subscriber_stalled` or `metrics_unreadable`, the `zmq_shortfall`
+    events, and the log lines `subscriber_rebuilt` with a static reason
+    (`child_stopped`, `peer_lost`, `subscribe_failed`, or `stalled`) and
+    `metrics_unreadable`.
+  - **Known limit: the window of the counter (review note N11).** The
+    reader can count a record before `fleet-telemetry` adds it to
+    `dispatch_total`, because the counter grows after `Dispatch` returns.
+    When the snapshot before a request and the response of that read both
+    fall into this gap of microseconds, and no other record arrives
+    before the grace of the next read, the rule asks for a new socket of
+    a healthy subscription. The cost is one replacement: the gate closes
+    for about 0.5 s, and the vehicle reconnects. A rule that ignores a
+    growth of one record would close this window, but it would also miss
+    a stall in which the child dispatches one record at a time. The test
+    `the_microsecond_window_of_the_counter_is_a_known_false_stall` pins
+    the limit.
+  - **Known limit: the reconnect task of the crate (review note N12).**
+    `try_reconnect` of `zeromq` 0.7.0 has no timeout and does not watch
+    the shutdown request. A reconnect task that is inside it when the
+    reader drops a socket lives until that attempt ends: with a peer that
+    never answers the handshake, the task and its TCP connection stay. If
+    the attempt succeeds, the task registers a peer on the dropped socket,
+    which nobody reads, and then sees the shutdown request and ends, which
+    closes the connection. The reader does not wait for such a task: the
+    tests `a_shutdown_in_the_drain_of_a_rebuild_ends_the_reader_within_its_bound`
+    and `a_shutdown_in_a_stall_wait_ends_the_reader_at_once` show that a
+    shutdown ends the reader within its bound, and the process ends with
+    `shutdown_background`, which drops every task that is left.
   - **Keep `zeromq` 0.7.0.** Reasons: it is pure Rust, with no C build
     and no `unsafe` in its `src/`; the libzmq binding was rejected above
     ("Crates"); the two defences make the reader independent of the
@@ -695,9 +759,14 @@ sections above leave open. Each point has a test.
     cadence. A passed check stays passed for the process.
   - Condition 2 (the reader): while the child runs and the socket is not
     settled, the reader is in a bounded connect attempt (5 s), a bounded
-    pause (at most 5 s), a bounded drain (at most 1 s), or the settle
-    time (250 ms) ("SUB socket" above). No step waits for an event of
-    the crate to start a settle time. A dropped `Disconnected` event or
+    subscribe (5 s), a pause after a failed connect (100 ms), a wait
+    after a lost peer (at most 5 s), a wait after a repeated stall (30 s
+    to 15 minutes; a child stop ends it), a bounded drain (at most 1 s),
+    or the settle time (250 ms) ("SUB socket" above). No step waits for
+    an event of the crate to start a settle time.
+  - Condition 2 (the shortfall task, "Unreadable metrics"): the condition
+    is false while the metrics reads fail; a read follows each 1 s, and
+    the first successful read sets it true. A dropped `Disconnected` event or
     another silent stall of a settled socket ends through the stall rule
     as soon as the child dispatches records. Premises in `zeromq` 0.7.0,
     read in its source: `peer_disconnected` sends `Disconnected` to the
@@ -942,6 +1011,25 @@ the PR changes the design and updates this ADR.
   PUB socket of the `zeromq` crate, not libzmq. The real binary needs
   libzmq through cgo and was not built. The deployment PR checks it: no
   `zmq_shortfall` event after the first vehicle connection of a start.
+- The SUB socket defences against the real binary (review round 3 of PR
+  #22, note N10):
+  - An exit of `fleet-telemetry` gives the end of the stream, and so the
+    `Disconnected` event, through libzmq: the log shows
+    `subscriber_disconnected` or `subscriber_rebuilt` with the reason
+    `child_stopped` at each child exit. Defence 1 is tested only with the
+    PUB socket of the `zeromq` crate and a fake peer.
+  - The false-positive rate of the stall rule in the first week: no
+    `gate_closed` event with the reason `subscriber_stalled`, and no
+    `subscriber_rebuilt` with the reason `stalled`. Record each one with
+    the counts of the shortfall check around it.
+  - `V`, `alerts`, and `errors` all go to the `zmq` dispatcher in the
+    configuration of `fleet-telemetry`. A counted record type that went to
+    another dispatcher would give false stalls in periods with only that
+    type.
+  - On a live libzmq subscription, a loss at the high water mark is
+    followed by the arrival of the older queued records, so a loss is
+    never the last traffic of a live socket (the premise of the stall
+    rule). A `zmq_shortfall` event without a following stall shows it.
 - Whether the container sees the client address of a connection through
   the Railway TCP proxy. Record the answer. A per-source limit is possible
   only if it does; that is a later decision.

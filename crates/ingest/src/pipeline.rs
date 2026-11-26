@@ -34,7 +34,7 @@
 //! | Socket rebuild | drain the old socket to its end, at most 1 s (quiet 200 ms); after a lost peer, wait 0, then 100 ms doubling to 5 s; after a stall, wait 0, then 30 s doubling to 15 minutes with the gate closed | ADR 0001, "SUB socket" |
 //! | Degraded mode | 120 s of no answer | ADR 0001, gate condition 3 |
 //! | Retry | 1 s, doubling to 5 minutes, with jitter; 60 minutes after three equal answered failures | ADR 0001, step 5 |
-//! | Shortfall check and stall rule | each 15 s, one HTTP read of at most 1 MiB within 0.75 s (the shutdown step bound of 1 s minus the step margin of 250 ms) | ADR 0001, "ZMQ shortfall check" and "SUB socket" |
+//! | Shortfall check and stall rule | each 15 s, one HTTP read of at most 1 MiB within 0.75 s (the shutdown step bound of 1 s minus the step margin of 250 ms); the second snapshot of the stall rule 2 s after the response; after 2 failed reads in a row, gate condition 2 is false and the reads come each 1 s until one succeeds | ADR 0001, "ZMQ shortfall check" and "SUB socket" |
 //! | Events | 10,000 events wait at most | this change |
 
 pub mod cadence;
@@ -95,6 +95,13 @@ pub struct Limits {
     /// below the vehicle buffer of 2,500 s, which holds the records while
     /// the gate is closed.
     pub stall_backoff_max: Duration,
+    /// The wait after a metrics response before the second snapshot of the
+    /// stall rule.
+    pub stall_grace: Duration,
+    /// The failed metrics reads in a row that close gate condition 2.
+    pub unreadable_after: u32,
+    /// The period of the metrics reads while they fail.
+    pub metrics_retry: Duration,
     /// The most events that wait for the writer.
     pub max_events: usize,
     /// The shortest time between two `records_dropped` events of the
@@ -123,6 +130,9 @@ impl Limits {
         rebuild_backoff_max: Duration::from_secs(5),
         stall_backoff_first: Duration::from_secs(30),
         stall_backoff_max: Duration::from_mins(15),
+        stall_grace: Duration::from_secs(2),
+        unreadable_after: 2,
+        metrics_retry: Duration::from_secs(1),
         max_events: 10_000,
         drop_event_interval: Duration::from_secs(60),
     };
@@ -148,10 +158,14 @@ mod tests {
         // A connect attempt beats its watchdog: it is far below the 30 s of
         // the reader.
         assert!(limits.connect_attempt < crate::watchdog::READER.limit);
-        // The stall rule decides within two periods; that bound of lost
-        // records stays far below the vehicle buffer of 2,500 s (ADR 0001,
-        // "SUB socket").
-        assert!(limits.shortfall_period * 2 <= Duration::from_secs(30));
+        // The loss bound of the stall rule (ADR 0001, "SUB socket",
+        // "Detection bound"): (2 + f) periods, plus the read deadline of
+        // 0.75 s and the grace, with at most f = 2 * (unreadable_after - 1)
+        // failed reads while the gate is open. These are its inputs.
+        assert_eq!(limits.stall_grace, Duration::from_secs(2));
+        assert_eq!(limits.unreadable_after, 2);
+        // More than one failed read: one slow read does not close the gate.
+        assert!(limits.unreadable_after > 1);
         // While the reader waits after repeated stalls, the gate is closed
         // and the vehicle buffers.
         assert!(limits.stall_backoff_max < Duration::from_secs(2_500));

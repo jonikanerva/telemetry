@@ -330,9 +330,13 @@ pub async fn run(config: RunConfig) -> Result<(), RunError> {
         period: limits.shortfall_period,
         max_body: limits.metrics_body_bytes,
         deadline: budget.shortfall_read.saturating_sub(STEP_MARGIN),
+        grace: limits.stall_grace,
+        unreadable_after: limits.unreadable_after,
+        retry: limits.metrics_retry,
         received,
         sink: Arc::clone(&sink),
         stalled,
+        conditions: Arc::clone(&conditions),
     };
     let shortfall_task = tokio::spawn(shortfall.run(final_read));
     let (stop_health, health_stop) = oneshot::channel::<()>();

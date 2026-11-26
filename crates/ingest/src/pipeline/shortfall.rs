@@ -43,6 +43,7 @@ use jiff::Timestamp;
 use tokio::sync::{oneshot, watch};
 use tracing::{info, warn};
 
+use super::conditions::Conditions;
 use super::metrics::{self, Dispatched};
 use crate::events::{CountWindow, EventKind, EventSink, IngestEvent};
 use crate::record::TOPIC_PREFIX;
@@ -237,73 +238,102 @@ impl Point {
 /// The stall rule of the SUB socket (ADR 0001, "SUB socket"): a liveness
 /// rule that needs no event of the `zeromq` crate.
 ///
-/// - **Rule.** Three reads `a`, `b`, and `k` of one socket, one period
-///   apart. When the child dispatched records between `a` and `b`, and
-///   the reader received no record between `a` and `k`, the socket is
-///   stalled. A live subscription receives every record that the child
-///   dispatched at least one period before: a drop at the libzmq high
-///   water mark drops the newest records, and the queued older ones still
-///   arrive. So the rule needs both conditions, and an idle child (no new
-///   dispatch) never gives a stall.
-/// - **Received count.** The rule takes the received count from a
-///   snapshot before the request, not after the response: a record that
-///   the reader counts after the request and the child counts after its
-///   response must not look like a record of an earlier period.
+/// - **Rule.** Two successful reads `m` and `n` of one socket, with failed
+///   reads between them or not. When the child dispatched records between
+///   the response of `m` and the response of `n`, and the reader received
+///   no record between the snapshot before the request of `m` and a
+///   snapshot [`super::Limits::stall_grace`] (2 s) after the response of
+///   `n`, the socket is stalled. A live subscription receives each record
+///   that the child dispatched before the response of `n` within
+///   milliseconds; the grace covers a slow turn of the reader. A drop at
+///   the libzmq high water mark drops the newest records, and the queued
+///   older ones still arrive. An idle child (no new dispatch) never gives a
+///   stall.
+/// - **Received count before the request.** A record that the reader
+///   counts after the request of `m` and the child counts after the
+///   response of `m` would otherwise look like a record of an earlier
+///   read.
 /// - **Start.** For a new generation, the first point is zero: the counter
 ///   of a new child and the received counts both start at 0, and no record
 ///   passes the closed gate before the socket settles. A new socket of the
 ///   same generation starts with no point, so records that the child
 ///   dispatched before the new subscription do not count against it. A
-///   counter that goes down (a read of the old child) and a failed read
-///   start the points again.
+///   counter that goes down (a read of another child) starts again. A
+///   failed read keeps the last point, so failed reads delay the decision
+///   but cannot prevent it.
+/// - **Bound.** ADR 0001, "SUB socket", "Detection bound", derives the
+///   worst case; the tests pin it.
 /// - **Repeated stalls.** The rule asks again at each stalled read; the
 ///   reader bounds the rate of new sockets ([`super::reader`]).
 #[derive(Debug, Clone, Default)]
 pub struct Liveness {
     key: Option<(u64, u64)>,
-    points: Vec<Point>,
+    last: Option<Point>,
 }
 
 impl Liveness {
-    /// A periodic read: `dispatched` from the response, `received` from
-    /// the snapshot before the request. Returns the number of the stalled
-    /// socket.
-    pub fn observe(&mut self, dispatched: Dispatched, received: Counts) -> Option<u64> {
-        let point = Point::of(dispatched, received);
-        let key = (received.generation, received.socket);
+    /// A successful periodic read: `dispatched` from the response,
+    /// `before` from the snapshot before the request, and `after` from the
+    /// snapshot one grace after the response. Returns the number of the
+    /// stalled socket.
+    pub fn observe(
+        &mut self,
+        dispatched: Dispatched,
+        before: Counts,
+        after: Counts,
+    ) -> Option<u64> {
+        let point = Point::of(dispatched, before);
+        let key = (before.generation, before.socket);
         if self.key != Some(key) {
             let new_generation = self
                 .key
-                .is_none_or(|(generation, _)| generation != received.generation);
-            self.points = if new_generation {
-                vec![Point::ZERO]
-            } else {
-                Vec::new()
-            };
+                .is_none_or(|(generation, _)| generation != before.generation);
+            self.last = new_generation.then_some(Point::ZERO);
             self.key = Some(key);
         }
-        if self
-            .points
-            .last()
-            .is_some_and(|last| point.dispatched < last.dispatched)
-        {
-            // A read of another child: start again.
-            self.points.clear();
-        }
-        let stalled = match self.points.as_slice() {
-            [.., a, b] => b.dispatched > a.dispatched && point.received == a.received,
-            _ => false,
-        };
-        self.points.push(point);
-        if self.points.len() > 2 {
-            self.points.remove(0);
-        }
+        let same_socket = (after.generation, after.socket) == key;
+        let received_after = Point::of(dispatched, after).received;
+        let stalled = self.last.is_some_and(|last| {
+            same_socket && point.dispatched > last.dispatched && received_after == last.received
+        });
+        self.last = Some(point);
         stalled.then_some(key.1)
     }
+}
 
-    /// A read failed: start the points again.
-    pub fn read_failed(&mut self) {
-        self.points.clear();
+/// The count of failed metrics reads in a row, for gate condition 2
+/// (ADR 0001, "SUB socket", "Unreadable metrics").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Readable {
+    failures: u32,
+    limit: u32,
+}
+
+impl Readable {
+    /// No failed read yet. `limit` failed reads in a row make the metrics
+    /// unreadable.
+    #[must_use]
+    pub const fn new(limit: u32) -> Self {
+        Self { failures: 0, limit }
+    }
+
+    /// A read failed. Returns true at the change to unreadable.
+    pub const fn failed(&mut self) -> bool {
+        self.failures = self.failures.saturating_add(1);
+        self.failures == self.limit
+    }
+
+    /// A read succeeded. Returns true at the change to readable.
+    pub const fn succeeded(&mut self) -> bool {
+        let was = self.is_unreadable();
+        self.failures = 0;
+        was
+    }
+
+    /// True after `limit` failed reads in a row.
+    #[must_use]
+    pub const fn is_unreadable(&self) -> bool {
+        self.failures >= self.limit
     }
 }
 
@@ -318,6 +348,13 @@ pub struct Shortfall {
     pub max_body: usize,
     /// The deadline of one read.
     pub deadline: Duration,
+    /// The wait after a response before the second snapshot of the stall
+    /// rule.
+    pub grace: Duration,
+    /// The failed reads in a row that make the metrics unreadable.
+    pub unreadable_after: u32,
+    /// The period of the reads while the metrics are unreadable.
+    pub retry: Duration,
     /// The counts of the reader.
     pub received: Arc<Received>,
     /// The sink of the `zmq_shortfall` events.
@@ -325,6 +362,8 @@ pub struct Shortfall {
     /// The number of the socket that the stall rule found stalled. The
     /// reader replaces that socket ([`super::reader`]).
     pub stalled: watch::Sender<Option<u64>>,
+    /// The owner of gate condition 2, for unreadable metrics.
+    pub conditions: Arc<Conditions>,
 }
 
 impl Shortfall {
@@ -332,51 +371,66 @@ impl Shortfall {
     pub async fn run(self, mut final_read: oneshot::Receiver<()>) {
         let mut check = Check::new(Timestamp::now());
         let mut liveness = Liveness::default();
-        let mut tick =
-            tokio::time::interval_at(tokio::time::Instant::now() + self.period, self.period);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut readable = Readable::new(self.unreadable_after);
+        let mut next = tokio::time::Instant::now() + self.period;
         // A dropped sender also asks for the end, without a read.
         let requested = loop {
             tokio::select! {
-                _ = tick.tick() => {
+                () = tokio::time::sleep_until(next) => {
                     // The stall rule needs the received count before the
                     // request ([`Liveness`]).
                     let before = self.received.snapshot();
-                    // The request of the final read stops a periodic read,
-                    // so that the final read gets its whole step bound.
+                    // The request of the final read stops a periodic read
+                    // and its grace, so that the final read gets its whole
+                    // step bound.
                     let read = metrics::read(self.port, self.max_body, self.deadline);
                     tokio::pin!(read);
-                    tokio::select! {
-                        read = &mut read => {
-                            if let Ok(dispatched) = read.as_ref()
-                                && let Some(socket) = liveness.observe(*dispatched, before)
-                            {
-                                warn!("subscriber_stalled");
-                                self.stalled.send_replace(Some(socket));
-                            }
-                            self.observe(&mut check, &mut liveness, read, false);
-                        }
+                    let read = tokio::select! {
+                        read = &mut read => read,
                         requested = &mut final_read => break requested.is_ok(),
+                    };
+                    let dispatched = read.as_ref().ok().copied();
+                    self.observe(&mut check, &mut readable, read, false);
+                    if let Some(dispatched) = dispatched {
+                        tokio::select! {
+                            () = tokio::time::sleep(self.grace.min(self.period)) => {}
+                            requested = &mut final_read => break requested.is_ok(),
+                        }
+                        let after = self.received.snapshot();
+                        if let Some(socket) = liveness.observe(dispatched, before, after) {
+                            warn!("subscriber_stalled");
+                            self.stalled.send_replace(Some(socket));
+                        }
                     }
+                    let now = tokio::time::Instant::now();
+                    next = if readable.is_unreadable() {
+                        now + self.retry.min(self.period)
+                    } else {
+                        (next + self.period).max(now)
+                    };
                 }
                 requested = &mut final_read => break requested.is_ok(),
             }
         };
         if requested {
             let read = metrics::read(self.port, self.max_body, self.deadline).await;
-            self.observe(&mut check, &mut liveness, read, true);
+            self.observe(&mut check, &mut readable, read, true);
         }
     }
 
     fn observe(
         &self,
         check: &mut Check,
-        liveness: &mut Liveness,
+        readable: &mut Readable,
         read: Result<Dispatched, metrics::ReadError>,
         last: bool,
     ) {
         match read {
             Ok(dispatched) => {
+                if readable.succeeded() {
+                    info!("metrics_readable");
+                    self.conditions.set_metrics_readable(true);
+                }
                 // After the response: see the module documentation.
                 let received = self.received.snapshot();
                 let now = Timestamp::now();
@@ -396,8 +450,11 @@ impl Shortfall {
             }
             Err(error) => {
                 check.read_failed();
-                liveness.read_failed();
                 warn!(reason = error.as_str(), "shortfall_read_failed");
+                if readable.failed() && !last {
+                    warn!("metrics_unreadable");
+                    self.conditions.set_metrics_readable(false);
+                }
             }
         }
     }
@@ -474,13 +531,33 @@ mod tests {
         }
     }
 
+    /// One successful read of the stall rule on socket `socket` of
+    /// generation `generation`: the counter, the received count before the
+    /// request, and the received count one grace after the response.
+    fn read(
+        rule: &mut Liveness,
+        (generation, socket): (u64, u64),
+        counter: u64,
+        before: u64,
+        after: u64,
+    ) -> Option<u64> {
+        rule.observe(
+            dispatched(counter, 0, 0),
+            on(generation, socket, before),
+            on(generation, socket, after),
+        )
+    }
+
+    const SOCKET_1: (u64, u64) = (1, 1);
+
     #[test]
     fn a_socket_that_receives_nothing_while_the_child_dispatches_is_stalled() {
+        // A new generation starts at zero, so the first read can decide.
         let mut rule = Liveness::default();
-        // A new generation starts at zero. The first read already shows
-        // dispatched records; the second read shows that none arrived.
-        assert_eq!(rule.observe(dispatched(3, 0, 0), on(1, 1, 0)), None);
-        assert_eq!(rule.observe(dispatched(5, 0, 0), on(1, 1, 0)), Some(1));
+        assert_eq!(read(&mut rule, SOCKET_1, 3, 0, 0), Some(1));
+        // The same reads with the records received within the grace.
+        let mut rule = Liveness::default();
+        assert_eq!(read(&mut rule, SOCKET_1, 3, 0, 3), None);
     }
 
     #[test]
@@ -488,71 +565,159 @@ mod tests {
         let mut rule = Liveness::default();
         // Idle: the counter does not grow.
         for _ in 0..10 {
-            assert_eq!(rule.observe(dispatched(0, 0, 0), on(1, 1, 0)), None);
+            assert_eq!(read(&mut rule, SOCKET_1, 0, 0, 0), None);
         }
-        // Live: each dispatched record arrives, also with a delay of one
-        // read.
+        // Live: the records of each read arrive within the grace.
         let mut rule = Liveness::default();
-        for read in 1..10 {
+        for step in 1..10 {
             assert_eq!(
-                rule.observe(dispatched(read * 10, 0, 0), on(1, 1, (read - 1) * 10)),
+                read(&mut rule, SOCKET_1, step * 10, (step - 1) * 10, step * 10),
                 None
             );
         }
         // A drop at the high water mark: the newest records are lost, and
         // the queued older ones still arrive.
         let mut rule = Liveness::default();
-        assert_eq!(rule.observe(dispatched(1_000, 0, 0), on(1, 1, 400)), None);
-        assert_eq!(rule.observe(dispatched(1_500, 0, 0), on(1, 1, 1_000)), None);
-        assert_eq!(rule.observe(dispatched(1_500, 0, 0), on(1, 1, 1_000)), None);
-        assert_eq!(rule.observe(dispatched(1_500, 0, 0), on(1, 1, 1_000)), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 1_000, 400, 1_000), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 1_500, 1_000, 1_000), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 1_500, 1_000, 1_000), None);
     }
 
     #[test]
     fn a_new_socket_of_the_same_child_starts_with_its_own_reads() {
         let mut rule = Liveness::default();
-        assert_eq!(rule.observe(dispatched(3, 0, 0), on(1, 1, 0)), None);
-        assert_eq!(rule.observe(dispatched(6, 0, 0), on(1, 1, 0)), Some(1));
+        assert_eq!(read(&mut rule, SOCKET_1, 3, 0, 0), Some(1));
         // Socket 2 of the same child. The records that the child
-        // dispatched before the new subscription (6 to 8) do not count
+        // dispatched before the new subscription (3 to 8) do not count
         // against socket 2: its first read is its first point.
-        assert_eq!(rule.observe(dispatched(8, 0, 0), on(1, 2, 0)), None);
-        assert_eq!(rule.observe(dispatched(8, 0, 0), on(1, 2, 0)), None);
-        assert_eq!(rule.observe(dispatched(8, 0, 0), on(1, 2, 0)), None);
+        assert_eq!(read(&mut rule, (1, 2), 8, 0, 0), None);
+        assert_eq!(read(&mut rule, (1, 2), 8, 0, 0), None);
         // A stall of socket 2 itself, while the child goes on dispatching:
         // asked at each stalled read.
-        assert_eq!(rule.observe(dispatched(9, 0, 0), on(1, 2, 0)), None);
-        assert_eq!(rule.observe(dispatched(10, 0, 0), on(1, 2, 0)), Some(2));
-        assert_eq!(rule.observe(dispatched(11, 0, 0), on(1, 2, 0)), Some(2));
+        assert_eq!(read(&mut rule, (1, 2), 9, 0, 0), Some(2));
+        assert_eq!(read(&mut rule, (1, 2), 10, 0, 0), Some(2));
     }
 
     #[test]
-    fn a_record_counted_before_the_child_counts_it_is_no_stall() {
-        // The received count comes from the snapshot before the request.
-        // A record that arrives after that snapshot and before the child
-        // counts it shows up in the next read on both sides.
+    fn a_record_that_arrives_during_the_request_is_no_stall() {
+        // The record arrives after the snapshot before the request of the
+        // first read, and the child counts it after that response. The
+        // second read sees the counter grow, and the record is already in
+        // the snapshot of the first read after its grace.
         let mut rule = Liveness::default();
-        assert_eq!(rule.observe(dispatched(5, 0, 0), on(1, 1, 5)), None);
-        assert_eq!(rule.observe(dispatched(6, 0, 0), on(1, 1, 6)), None);
-        assert_eq!(rule.observe(dispatched(6, 0, 0), on(1, 1, 6)), None);
-        assert_eq!(rule.observe(dispatched(6, 0, 0), on(1, 1, 6)), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 5, 5, 6), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 6, 6, 6), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 6, 6, 6), None);
     }
 
     #[test]
-    fn a_new_child_a_read_of_the_old_child_or_a_failed_read_start_again() {
+    fn the_microsecond_window_of_the_counter_is_a_known_false_stall() {
+        // ADR 0001, "SUB socket", note N11: the reader counts a record
+        // before `fleet-telemetry` adds it to `dispatch_total`. When the
+        // snapshot before the request and the response both fall into that
+        // gap of microseconds, and no other record follows, the rule asks
+        // for a new socket. This test pins the known limit.
         let mut rule = Liveness::default();
-        assert_eq!(rule.observe(dispatched(50, 0, 0), on(1, 1, 50)), None);
-        // A late read of the old child with the counts of the new one.
-        assert_eq!(rule.observe(dispatched(60, 0, 0), on(2, 2, 0)), None);
-        // The new child: its counter is below the old one.
-        assert_eq!(rule.observe(dispatched(0, 0, 0), on(2, 2, 0)), None);
-        assert_eq!(rule.observe(dispatched(0, 0, 0), on(2, 2, 0)), None);
-        // A failed read: the next two reads cannot decide.
-        assert_eq!(rule.observe(dispatched(5, 0, 0), on(2, 2, 0)), None);
-        rule.read_failed();
-        assert_eq!(rule.observe(dispatched(10, 0, 0), on(2, 2, 0)), None);
-        assert_eq!(rule.observe(dispatched(15, 0, 0), on(2, 2, 0)), None);
-        assert_eq!(rule.observe(dispatched(20, 0, 0), on(2, 2, 0)), Some(2));
+        assert_eq!(read(&mut rule, SOCKET_1, 5, 6, 6), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 6, 6, 6), Some(1));
+    }
+
+    #[test]
+    fn a_failed_read_keeps_the_last_point_and_a_lower_counter_starts_again() {
+        let mut rule = Liveness::default();
+        assert_eq!(read(&mut rule, SOCKET_1, 0, 0, 0), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 2, 0, 2), None);
+        // A failed read gives no call. The next read compares with the
+        // last successful one, so failed reads delay the decision but
+        // cannot prevent it.
+        assert_eq!(read(&mut rule, SOCKET_1, 5, 2, 2), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 7, 2, 2), Some(1));
+        // A counter that goes down is another child: no decision on it.
+        let mut rule = Liveness::default();
+        assert_eq!(read(&mut rule, SOCKET_1, 20, 20, 20), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 10, 20, 20), None);
+        assert_eq!(read(&mut rule, SOCKET_1, 12, 20, 20), Some(1));
+    }
+
+    /// The timeline of the stall rule in milliseconds: reads each
+    /// `PERIOD`, the second snapshot `GRACE` after each read, and one
+    /// record dispatched each second at `offset + k * 1000`. Records that
+    /// the child dispatches up to `last_received` arrive at once; later
+    /// ones are lost. The child dispatches nothing in `idle`. Reads with an
+    /// index in `failed` fail. Returns the time of the first stall request.
+    fn first_request(
+        offset: u64,
+        last_received: u64,
+        idle: std::ops::Range<u64>,
+        failed: &[u64],
+    ) -> Option<u64> {
+        const PERIOD: u64 = 15_000;
+        const GRACE: u64 = 2_000;
+        let records = |until: u64| -> u64 {
+            let count = (0..=until / 1_000)
+                .map(|k| offset + k * 1_000)
+                .filter(|&at| at <= until && !idle.contains(&at))
+                .count();
+            u64::try_from(count).unwrap()
+        };
+        let received = |at: u64| records(at.min(last_received));
+        let mut rule = Liveness::default();
+        for index in 0..40 {
+            if failed.contains(&index) {
+                continue;
+            }
+            let at = index * PERIOD;
+            if read(
+                &mut rule,
+                SOCKET_1,
+                records(at),
+                received(at),
+                received(at + GRACE),
+            )
+            .is_some()
+            {
+                return Some(at + GRACE);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_worst_case_timeline_meets_the_bound_of_adr_0001() {
+        // ADR 0001, "SUB socket", "Detection bound": records can be lost
+        // for less than (2 + f) * P + G + D, with f failed reads, P = 15 s,
+        // G = 2 s, and D = the read deadline (0 in this model). The worst
+        // case: the stall starts just after the snapshot of a read. Here
+        // the last received record is dispatched at 30.001 s, and the
+        // first lost one at 31.001 s.
+        let first_lost = 31_001;
+        let decided = first_request(1, 30_001, 0..0, &[]).unwrap();
+        assert_eq!(decided, 62_000);
+        assert!(decided - first_lost < 2 * 15_000 + 2_000);
+        // One failed read (at 45 s): one more period.
+        let decided = first_request(1, 30_001, 0..0, &[3]).unwrap();
+        assert_eq!(decided, 77_000);
+        assert!(decided - first_lost < 3 * 15_000 + 2_000);
+        // Two failed reads, not in a row (at 45 s and 75 s): two more
+        // periods. Two failed reads in a row close the gate instead
+        // ("Unreadable metrics").
+        let decided = first_request(1, 30_001, 0..0, &[3, 5]).unwrap();
+        assert_eq!(decided, 92_000);
+        assert!(decided - first_lost < 4 * 15_000 + 2_000);
+        // A socket that is dead from its start in a new generation: the
+        // first read after the first dispatch decides.
+        assert_eq!(first_request(1, 0, 0..0, &[]), Some(17_000));
+    }
+
+    #[test]
+    fn sporadic_dispatch_loses_records_of_two_dispatching_intervals_at_most() {
+        // Review round 3, the sporadic case: a record at 0.5 s arrives, a
+        // record at 1.5 s is lost, and the child is idle from 2 s to
+        // 100 s. The rule decides at the first read after the dispatch
+        // starts again: the records of 100 s to 107 s are lost too. In
+        // time with dispatches, the bound of the timeline test holds.
+        let decided = first_request(500, 500, 2_000..100_000, &[]).unwrap();
+        assert_eq!(decided, 107_000);
     }
 
     #[test]
@@ -728,6 +893,10 @@ mod tests {
             received: Arc::new(Received::default()),
             sink: Arc::new(crate::events::recording::RecordingSink::default()),
             stalled: watch::Sender::new(None),
+            grace: Duration::from_millis(10),
+            unreadable_after: 2,
+            retry: Duration::from_millis(50),
+            conditions: test_conditions(),
         };
         let (request, final_read) = oneshot::channel();
         let task = tokio::spawn(shortfall.run(final_read));
@@ -740,6 +909,91 @@ mod tests {
         let elapsed = requested.elapsed();
         assert!(elapsed >= deadline, "{elapsed:?}");
         assert!(elapsed < Duration::from_millis(1_600), "{elapsed:?}");
+    }
+
+    fn test_conditions() -> Arc<Conditions> {
+        let sink: Arc<dyn EventSink> = Arc::new(crate::events::recording::RecordingSink::default());
+        let readiness = Arc::new(crate::readiness::Readiness::new(Arc::clone(&sink)));
+        Arc::new(Conditions::new(readiness, sink))
+    }
+
+    #[test]
+    fn two_failed_reads_in_a_row_make_the_metrics_unreadable_until_a_read_succeeds() {
+        let mut readable = Readable::new(2);
+        assert!(!readable.failed());
+        assert!(!readable.is_unreadable());
+        // One slow or failed read is no reason to close the gate.
+        assert!(!readable.succeeded());
+        assert!(!readable.failed());
+        assert!(readable.failed(), "the change to unreadable");
+        assert!(readable.is_unreadable());
+        assert!(!readable.failed(), "only the change counts");
+        assert!(readable.succeeded(), "the change to readable");
+        assert!(!readable.is_unreadable());
+    }
+
+    #[tokio::test]
+    async fn unreadable_metrics_close_condition_2_and_a_read_opens_it() {
+        // A port that refuses each connection: the reads fail.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let sink: Arc<dyn EventSink> = Arc::new(crate::events::recording::RecordingSink::default());
+        let readiness = Arc::new(crate::readiness::Readiness::new(Arc::clone(&sink)));
+        let conditions = Arc::new(Conditions::new(readiness, sink));
+        conditions.set_settled(true);
+        let shortfall = Shortfall {
+            port,
+            period: Duration::from_millis(50),
+            max_body: 1024,
+            deadline: Duration::from_millis(200),
+            grace: Duration::from_millis(10),
+            unreadable_after: 2,
+            retry: Duration::from_millis(20),
+            received: Arc::new(Received::default()),
+            sink: Arc::new(crate::events::recording::RecordingSink::default()),
+            stalled: watch::Sender::new(None),
+            conditions: Arc::clone(&conditions),
+        };
+        let (request, final_read) = oneshot::channel();
+        let task = tokio::spawn(shortfall.run(final_read));
+        let start = std::time::Instant::now();
+        while conditions.pipeline() != crate::readiness::Pipeline::NotReady("metrics_unreadable") {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // The metrics come back: the next read opens the condition.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = [0_u8; 1024];
+                let _read = stream.read(&mut request).await;
+                let body = "dispatch_total{record_type=\"V\"} 0\n";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _written = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        let start = std::time::Instant::now();
+        while conditions.pipeline()
+            != crate::readiness::Pipeline::NotReady("database_check_pending")
+        {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "{:?}",
+                conditions.pipeline()
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        drop(request);
+        task.await.unwrap();
     }
 
     /// A metrics server whose `V` counter grows by `step` with each read.
@@ -781,6 +1035,10 @@ mod tests {
             received,
             sink: Arc::new(crate::events::recording::RecordingSink::default()),
             stalled,
+            grace: Duration::from_millis(10),
+            unreadable_after: 2,
+            retry: Duration::from_millis(50),
+            conditions: test_conditions(),
         };
         let (request, final_read) = oneshot::channel();
         let task = tokio::spawn(shortfall.run(final_read));
@@ -832,10 +1090,72 @@ mod tests {
             received,
             sink: Arc::new(crate::events::recording::RecordingSink::default()),
             stalled,
+            grace: Duration::from_millis(10),
+            unreadable_after: 2,
+            retry: Duration::from_millis(50),
+            conditions: test_conditions(),
         };
         let (request, final_read) = oneshot::channel();
         let task = tokio::spawn(shortfall.run(final_read));
         tokio::time::sleep(Duration::from_millis(500)).await;
+        drop(request);
+        task.await.unwrap();
+        assert_eq!(*requests.borrow(), None);
+    }
+
+    #[tokio::test]
+    async fn a_record_in_flight_at_a_read_arrives_within_the_grace() {
+        // The second response says 1 dispatched record, and that record
+        // reaches the reader 100 ms after the response. The grace of
+        // 300 ms sees it; without the grace, the rule would see a
+        // dispatched record that never arrived.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let received = Arc::new(Received::default());
+        received.connected(true);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let counts = Arc::clone(&received);
+        tokio::spawn(async move {
+            let mut requests = 0_u32;
+            while let Ok((mut stream, _)) = listener.accept().await {
+                requests += 1;
+                let value = u64::from(requests >= 2);
+                if requests == 2 {
+                    let counts = Arc::clone(&counts);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        counts.count(b"tesla_telemetry_V");
+                    });
+                }
+                let mut request = [0_u8; 1024];
+                let _read = stream.read(&mut request).await;
+                let body = format!("dispatch_total{{record_type=\"V\"}} {value}\n");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _written = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        let (stalled, requests) = watch::channel(None);
+        let shortfall = Shortfall {
+            port,
+            period: Duration::from_millis(500),
+            max_body: 1024,
+            deadline: Duration::from_secs(1),
+            grace: Duration::from_millis(300),
+            unreadable_after: 2,
+            retry: Duration::from_millis(50),
+            received,
+            sink: Arc::new(crate::events::recording::RecordingSink::default()),
+            stalled,
+            conditions: test_conditions(),
+        };
+        let (request, final_read) = oneshot::channel();
+        let task = tokio::spawn(shortfall.run(final_read));
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
         drop(request);
         task.await.unwrap();
         assert_eq!(*requests.borrow(), None);

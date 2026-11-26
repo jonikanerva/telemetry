@@ -6,6 +6,7 @@
 //! | Condition | Reporter | Values |
 //! | --------- | -------- | ------ |
 //! | 2: the SUB socket is connected and settled | [`super::reader`] | settled, not settled, or stalled |
+//! | 2: the metrics of the child are readable, so the stall rule has evidence | [`super::shortfall`] | readable, or unreadable |
 //! | 3: the start-up check passed, or degraded mode | [`super::writer`] | [`Database`] |
 //! | 4: the queue did not close the gate | [`super::queue`] | below the high mark, or closed |
 //!
@@ -18,7 +19,7 @@
 //!
 //! The combined value names the first condition that is not met, in the
 //! order of ADR 0001, as the reason of the closed gate: `subscriber_not_settled`,
-//! `subscriber_stalled`,
+//! `subscriber_stalled`, `metrics_unreadable`,
 //! `database_check_pending`, `database_refused`, or `queue_high_mark`.
 //! Degraded mode with every other condition met gives
 //! [`Pipeline::Degraded`]: the gate opens, and `/health` fails.
@@ -58,6 +59,7 @@ enum Subscriber {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct State {
     subscriber: Subscriber,
+    metrics_readable: bool,
     database: Database,
     queue_closed: bool,
 }
@@ -68,6 +70,9 @@ impl State {
             Subscriber::Settled => {}
             Subscriber::NotSettled => return Pipeline::NotReady("subscriber_not_settled"),
             Subscriber::Stalled => return Pipeline::NotReady("subscriber_stalled"),
+        }
+        if !self.metrics_readable {
+            return Pipeline::NotReady("metrics_unreadable");
         }
         let degraded = match self.database {
             Database::Pending => return Pipeline::NotReady("database_check_pending"),
@@ -99,6 +104,7 @@ impl Conditions {
     pub fn new(readiness: Arc<Readiness>, sink: Arc<dyn EventSink>) -> Self {
         let state = State {
             subscriber: Subscriber::NotSettled,
+            metrics_readable: true,
             database: Database::Pending,
             queue_closed: false,
         };
@@ -126,6 +132,15 @@ impl Conditions {
     /// `subscriber_stalled`, so the `gate_closed` event shows the stall.
     pub fn set_stalled(&self) {
         self.update(|state| state.subscriber = Subscriber::Stalled);
+    }
+
+    /// The part of gate condition 2 that the shortfall task owns: false
+    /// after some failed metrics reads in a row, so that the stall rule
+    /// has no evidence that the subscription is live. The reason of the
+    /// closed gate is `metrics_unreadable`. The next successful read sets
+    /// it true (ADR 0001, "SUB socket", "Unreadable metrics").
+    pub fn set_metrics_readable(&self, readable: bool) {
+        self.update(|state| state.metrics_readable = readable);
     }
 
     /// Gate condition 3. A change to [`Database::Degraded`] records the

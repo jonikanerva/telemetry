@@ -28,8 +28,13 @@
 //!   cannot hold the condition false. The condition is false while the
 //!   reader replaces a socket, with the reason `subscriber_stalled` after a
 //!   stall. Invariant: while the child runs and the socket is not settled,
-//!   the reader is in a bounded connect attempt, a bounded pause, a
-//!   bounded drain, or the settle time (ADR 0001, "No permanent close").
+//!   the reader is in a bounded connect attempt (5 s), a bounded subscribe
+//!   (5 s), a pause after a failed connect (100 ms), a wait after a lost
+//!   peer (at most 5 s), a wait after a repeated stall (30 s to 15
+//!   minutes; a child stop ends it), a bounded drain (at most 1 s), or the
+//!   settle time (250 ms) (ADR 0001, "No permanent close"). The shortfall
+//!   task owns the other part of condition 2, unreadable metrics; the next
+//!   successful read ends it ([`super::shortfall`]).
 //! - **Rebuild order.** The reader first clears gate condition 2, so the
 //!   gate closes and no new record is dispatched. Then it reads the old
 //!   socket to its end: the `Disconnected` event of its peer, after which

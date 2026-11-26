@@ -333,6 +333,84 @@ async fn a_second_stall_in_a_row_waits_with_the_gate_closed() {
     drop(publisher);
 }
 
+/// A reader with a long wait after a repeated stall, in that wait: the
+/// gate closed with `subscriber_stalled`, socket 2 replaced, no socket 3.
+async fn in_a_stall_wait() -> (zeromq::PubSocket, Run) {
+    let (publisher, endpoint) = publisher().await;
+    let limits = Limits {
+        stall_backoff_first: Duration::from_secs(60),
+        ..Limits::PRODUCTION
+    };
+    let run = Run::start_with(endpoint, limits);
+    run.wait_ready_on(1).await;
+    run.stalled.send_replace(Some(1));
+    run.wait_ready_on(2).await;
+    run.stalled.send_replace(Some(2));
+    run.wait_until(Duration::from_secs(5), "the stall wait", |run| {
+        run.conditions.pipeline() == Pipeline::NotReady("subscriber_stalled")
+    })
+    .await;
+    // The drain of 200 ms without a message is over; the wait has begun.
+    sleep(Duration::from_millis(500)).await;
+    assert_eq!(run.received.snapshot().socket, 2);
+    (publisher, run)
+}
+
+#[tokio::test]
+async fn a_child_stop_ends_the_wait_after_a_stall() {
+    // Review round 3, note N8: a restarted child does not wait for the
+    // rest of a stall wait (here 60 s).
+    let (publisher, run) = in_a_stall_wait().await;
+    run.readiness.set_child_running(false);
+    run.readiness.set_child_running(true);
+    run.wait_ready_on(3).await;
+    assert_eq!(run.received.snapshot().generation, 2);
+    run.stop().await;
+    drop(publisher);
+}
+
+#[tokio::test]
+async fn a_shutdown_in_a_stall_wait_ends_the_reader_at_once() {
+    // Review round 3, note N12.
+    let (publisher, run) = in_a_stall_wait().await;
+    let started = Instant::now();
+    run.stop().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(publisher);
+}
+
+#[tokio::test]
+async fn a_shutdown_in_the_drain_of_a_rebuild_ends_the_reader_within_its_bound() {
+    // Review round 3, note N12. The old socket keeps its live peer, so its
+    // drain would last 10 s; the shutdown drain of 100 ms ends it.
+    let (publisher, endpoint) = publisher().await;
+    let limits = Limits {
+        rebuild_quiet: Duration::from_secs(10),
+        rebuild_drain: Duration::from_secs(10),
+        ..Limits::PRODUCTION
+    };
+    let run = Run::start_with(endpoint, limits);
+    run.wait_ready_on(1).await;
+    run.stalled.send_replace(Some(1));
+    run.wait_until(Duration::from_secs(5), "the rebuild", |run| {
+        run.conditions.pipeline() == Pipeline::NotReady("subscriber_stalled")
+    })
+    .await;
+    let started = Instant::now();
+    run.stop().await;
+    // The bound of the drain (100 ms), plus the turns of the reader.
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(publisher);
+}
+
 #[tokio::test]
 async fn a_rebuild_reads_every_message_that_the_old_socket_received() {
     let (mut publisher, endpoint) = publisher().await;
@@ -466,8 +544,11 @@ async fn trial(kind: Trial) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_child_that_ends_after_the_handshake_does_not_stop_the_subscription() {
     // Review round 2 of PR #22, finding B2. The trigger is a race, so the
-    // trial count can be raised with `READER_B2_TRIALS` for evidence runs;
-    // the suite runs each kind once.
+    // trial count can be raised with `READER_B2_TRIALS` for evidence runs.
+    // One round has one trial of each kind with a reported stop and eight
+    // trials without one: only those show the order of connect and
+    // subscribe (review round 3, note N9), and each of them finds the old
+    // order in about 3 of 5 trials.
     let trials: usize = std::env::var("READER_B2_TRIALS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -476,6 +557,13 @@ async fn a_child_that_ends_after_the_handshake_does_not_stop_the_subscription() 
         Trial::Restart,
         Trial::LateStop,
         Trial::FirstChild,
+        Trial::NoStop,
+        Trial::NoStop,
+        Trial::NoStop,
+        Trial::NoStop,
+        Trial::NoStop,
+        Trial::NoStop,
+        Trial::NoStop,
         Trial::NoStop,
     ];
     let mut failed = Vec::new();
