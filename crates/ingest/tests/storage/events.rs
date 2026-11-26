@@ -51,26 +51,25 @@ fn every_kind() -> Vec<IngestEvent> {
 #[tokio::test]
 async fn events_of_every_kind_are_stored_once() {
     with_migrated(|db| async move {
-        let pool = db.pool();
+        let options = db.options.clone();
         let run = Uuid::from_u128(42);
         let events = every_kind();
         // The pipeline writes from a task of its own; the spawn proves that
         // the future is `Send`.
         let first = {
-            let (pool, events) = (pool.clone(), events.clone());
-            tokio::spawn(async move { write_events(&pool, run, &events, &mut || {}).await })
+            let (options, events) = (options.clone(), events.clone());
+            tokio::spawn(async move { write_events(&options, run, &events, &mut || {}).await })
                 .await
                 .unwrap()
                 .unwrap()
         };
         assert_eq!(first, EventOutcome { inserted: 9, duplicates: 0, rejected: 0 });
         // A retry of the same events.
-        let retry = write_events(&pool, run, &events, &mut || {}).await.unwrap();
+        let retry = write_events(&options, run, &events, &mut || {}).await.unwrap();
         assert_eq!(retry, EventOutcome { inserted: 0, duplicates: 9, rejected: 0 });
         // Another run is another key.
-        let other = write_events(&pool, Uuid::from_u128(43), &events[..1], &mut || {}).await.unwrap();
+        let other = write_events(&options, Uuid::from_u128(43), &events[..1], &mut || {}).await.unwrap();
         assert_eq!(other.inserted, 1);
-        pool.close().await;
 
         let mut conn = db.owner().await;
         assert_eq!(count(&mut conn, "ingest_event").await, 10);
@@ -104,7 +103,7 @@ async fn events_of_every_kind_are_stored_once() {
 #[tokio::test]
 async fn an_event_that_the_table_rejects_does_not_stop_the_others() {
     with_migrated(|db| async move {
-        let pool = db.pool();
+        let options = db.options.clone();
         // `timestamptz` starts at 4713 BC, `jiff::Timestamp` earlier: the
         // insert fails with SQLSTATE 22008, a data error.
         let rejected = IngestEvent {
@@ -117,7 +116,7 @@ async fn an_event_that_the_table_rejects_does_not_stop_the_others() {
             event(EventKind::GateFull(window(2)), 3),
         ];
         let mut beats = 0;
-        let outcome = write_events(&pool, Uuid::from_u128(1), &events, &mut || beats += 1)
+        let outcome = write_events(&options, Uuid::from_u128(1), &events, &mut || beats += 1)
             .await
             .unwrap();
         assert_eq!(
@@ -130,17 +129,16 @@ async fn an_event_that_the_table_rejects_does_not_stop_the_others() {
         );
         // One insert of all events, then one insert for each event.
         assert_eq!(beats, 1 + events.len());
-        let single = write_events(&pool, Uuid::from_u128(1), &[rejected], &mut || {})
+        let single = write_events(&options, Uuid::from_u128(1), &[rejected], &mut || {})
             .await
             .unwrap();
         assert_eq!(single.rejected, 1);
         assert_eq!(
-            write_events(&pool, Uuid::from_u128(1), &[], &mut || {})
+            write_events(&options, Uuid::from_u128(1), &[], &mut || {})
                 .await
                 .unwrap(),
             EventOutcome::default()
         );
-        pool.close().await;
     })
     .await;
 }

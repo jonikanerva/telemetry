@@ -37,8 +37,8 @@ fn value(record: i64, index: i32) -> SignalValue {
 #[ignore = "writes 100,000 rows; run it on its own (module documentation)"]
 async fn measure_the_size_of_a_signal_row() {
     with_migrated(|db| async move {
-        let pool = db.pool();
-        let mut writer = Writer::new(pool.clone());
+        let options = db.options.clone();
+        let mut writer = Writer::new(options.clone());
         // 100 flushes. Each flush holds 20 records of 50 datums, one
         // record each 15 s, as a car that streams during a drive.
         for flush in 0..100_i64 {
@@ -55,7 +55,6 @@ async fn measure_the_size_of_a_signal_row() {
                 .collect();
             writer.write(&queued(&messages), &mut || {}).await.unwrap();
         }
-        pool.close().await;
 
         let mut conn = db.owner().await;
         execute(&mut conn, "VACUUM ANALYZE vehicle_signal").await;

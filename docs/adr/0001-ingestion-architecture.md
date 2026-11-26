@@ -255,8 +255,12 @@ thread, outside the Tokio runtime:
 - The reader, the writer, and the gate acceptor each update a heartbeat
   timestamp at least once a second, also when they have no work.
 - The writer's heartbeat covers its waits: every database call has a
-  deadline (connect 15 s, statement 30 s), and the writer also beats while
-  it sleeps before a retry. So a live writer always beats within 120 s.
+  deadline (connect 15 s, statement 30 s, each transaction attempt 90 s on
+  the client, the close 5 s). The storage calls a progress hook of the
+  writer after the connect and before each transaction attempt, so the
+  longest wait without a beat is one attempt and the close, 95 s. The
+  writer also beats while it sleeps before a retry. So a live writer
+  always beats within 120 s.
 - If the heartbeat of the reader or of the gate acceptor is older than
   30 s, or the heartbeat of the writer is older than 120 s, the watchdog
   logs the task name and ends the process with `std::process::exit`.
@@ -413,9 +417,15 @@ with reason `unknown_fields` (ADR 0002, "Unknown data").
    manual in any case, and a shorter cadence would keep the compute awake
    during a long rejection. Without the restart, the next attempt can come
    up to 60 minutes later, which is longer than the vehicle buffer.
-6. The connection pool has at most 2 connections, none when idle, an idle
-   timeout of 30 s, and a connect timeout of 15 s. No connection stays open
-   between flushes (fact 9).
+6. No connection pool. Each database call (a flush, an event insert, the
+   start-up check) opens its own connection with a connect timeout of 15 s,
+   runs all its transactions on it, and closes it before it returns. No
+   connection stays open between flushes (fact 9), and none is used by two
+   calls. Reason (PR #19, review round 2): a pool returns a used
+   connection and checks it with a round trip that has no time limit in
+   `SQLx` 0.9.1, so a server that goes silent at that moment could hold a
+   pool slot without bound and stall the writer. A pool earns nothing
+   here: one writer and a flush every 15 minutes.
 
 Why 15 minutes. At 0.25 CU, 100 CU-hours allow 400 active hours in a
 730-hour month. A flush interval under 5 minutes keeps the compute active
@@ -739,8 +749,8 @@ the PR changes the design and updates this ADR.
   acked, without `delivery_policy: latest`. Tesla documents no default
   value.
 - Whether the vehicle resends a rate-limited message before it reconnects.
-- Whether an idle connection keeps a Neon compute active. The pool closes
-  idle connections, so the answer does not change the design.
+- Whether an idle connection keeps a Neon compute active. No connection
+  stays open between calls, so the answer does not change the design.
 
 ## Sources
 

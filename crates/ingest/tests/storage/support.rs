@@ -15,8 +15,8 @@
 //! - removes the objects of earlier runs that are older than 6 hours, for
 //!   example after a killed run. A live run of another agent is younger, so
 //!   it is not touched;
-//! - closes every connection that it opens. The pools of a test close when
-//!   the test drops them.
+//! - closes every connection that it opens. The storage calls of a test
+//!   close their own connections.
 
 use std::collections::hash_map::RandomState;
 use std::future::Future;
@@ -34,12 +34,12 @@ use ingest::record::{
 };
 use ingest::storage::{
     MIGRATE_STATEMENT_TIMEOUT, MIGRATOR, QueuedRecord, RUN_STATEMENT_TIMEOUT, RoleSetup, Schema,
-    apply_roles, connect_options, migrate, run_pool,
+    apply_roles, connect_options, migrate,
 };
 use jiff::Timestamp;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
-use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool, Row};
+use sqlx::{AssertSqlSafe, Connection, PgConnection, Row};
 
 /// The Neon endpoint of the production branch (`STACK.md` §15).
 const PRODUCTION_ENDPOINT: &str = "ep-young-dawn-bgyaj83l";
@@ -120,11 +120,6 @@ impl TestDb {
     /// A connection of the owner role with the schema in its `search_path`.
     pub async fn owner(&self) -> PgConnection {
         PgConnection::connect_with(&self.options).await.unwrap()
-    }
-
-    /// The pool of `ingest run` for this schema, as the owner role.
-    pub fn pool(&self) -> PgPool {
-        run_pool(self.options.clone())
     }
 
     /// Runs the embedded migrations as `ingest migrate` does.

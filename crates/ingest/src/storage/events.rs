@@ -13,10 +13,11 @@
 use std::time::Duration;
 
 use jiff_sqlx::ToSqlx;
-use sqlx::PgPool;
+use sqlx::PgConnection;
+use sqlx::postgres::PgConnectOptions;
 use uuid::Uuid;
 
-use super::connect::{CallConnection, RUN_CALL_DEADLINE, within};
+use super::connect::{RUN_CALL_DEADLINE, close_after, connect, within};
 use super::error::{FailureClass, Phase, StorageError, classify};
 use super::rows::floor_micros;
 use crate::events::IngestEvent;
@@ -44,8 +45,12 @@ pub struct EventOutcome {
 /// of its own, so one wrong event does not stop the others; it counts the
 /// rejected events.
 ///
-/// `progress` runs before each insert, so it runs at least once every
-/// [`RUN_CALL_DEADLINE`] while the call lasts (the storage module
+/// The call opens one connection with [`super::connect`] (at most
+/// [`super::CONNECT_TIMEOUT`]), runs every insert on it, and closes it
+/// before it returns, on every path. No events open no connection.
+///
+/// `progress` runs before each insert, so the longest wait without a
+/// progress call is one insert and the close (the storage module
 /// documentation, "Progress"). The pipeline beats the watchdog there.
 ///
 /// # Errors
@@ -57,24 +62,46 @@ pub struct EventOutcome {
 /// event and calls the function again; the insert is idempotent, so a
 /// stored event becomes a duplicate.
 pub async fn write_events(
-    pool: &PgPool,
+    options: &PgConnectOptions,
     run_id: Uuid,
     events: &[IngestEvent],
     progress: &mut (dyn FnMut() + Send),
 ) -> Result<EventOutcome, StorageError> {
-    write_events_within(pool, run_id, events, progress, RUN_CALL_DEADLINE).await
+    write_events_within(options, run_id, events, progress, RUN_CALL_DEADLINE).await
 }
 
 /// [`write_events`] with another deadline for each insert, for the tests.
 pub(crate) async fn write_events_within(
-    pool: &PgPool,
+    options: &PgConnectOptions,
+    run_id: Uuid,
+    events: &[IngestEvent],
+    progress: &mut (dyn FnMut() + Send),
+    deadline: Duration,
+) -> Result<EventOutcome, StorageError> {
+    if events.is_empty() {
+        return Ok(EventOutcome::default());
+    }
+    let mut conn = connect(options).await?;
+    let result = insert_all(&mut conn, run_id, events, progress, deadline).await;
+    close_after(
+        conn,
+        result
+            .as_ref()
+            .map_or_else(|error| error.answered(), |_| true),
+    )
+    .await;
+    result
+}
+
+async fn insert_all(
+    conn: &mut PgConnection,
     run_id: Uuid,
     events: &[IngestEvent],
     progress: &mut (dyn FnMut() + Send),
     deadline: Duration,
 ) -> Result<EventOutcome, StorageError> {
     progress();
-    match insert(pool, run_id, events, deadline).await {
+    match insert(conn, run_id, events, deadline).await {
         Ok(inserted) => Ok(EventOutcome {
             inserted,
             duplicates: count(events.len()).saturating_sub(inserted),
@@ -84,7 +111,7 @@ pub(crate) async fn write_events_within(
             let mut outcome = EventOutcome::default();
             for event in events {
                 progress();
-                match insert(pool, run_id, std::slice::from_ref(event), deadline).await {
+                match insert(conn, run_id, std::slice::from_ref(event), deadline).await {
                     Ok(1) => outcome.inserted += 1,
                     Ok(_) => outcome.duplicates += 1,
                     Err(error) if error.class == FailureClass::Data => outcome.rejected += 1,
@@ -106,16 +133,16 @@ fn count(length: usize) -> u64 {
 }
 
 async fn insert(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     run_id: Uuid,
     events: &[IngestEvent],
     deadline: Duration,
 ) -> Result<u64, StorageError> {
-    within(deadline, insert_now(pool, run_id, events)).await
+    within(deadline, insert_now(conn, run_id, events)).await
 }
 
 async fn insert_now(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     run_id: Uuid,
     events: &[IngestEvent],
 ) -> Result<u64, StorageError> {
@@ -151,7 +178,6 @@ async fn insert_now(
         })
         .collect();
     // One statement is one implicit transaction.
-    let mut call = CallConnection::acquire(pool).await?;
     let result = sqlx::query!(
         r#"INSERT INTO ingest_event (
                run_id, occurred_at, kind, reason, dropped_count, first_received_at, last_received_at
@@ -170,13 +196,8 @@ async fn insert_now(
         &first as _,
         &last as _,
     )
-    .execute(call.get()?)
+    .execute(&mut *conn)
     .await
-    .map_err(|error| classify(Phase::Statement, &error));
-    call.finish(
-        result
-            .as_ref()
-            .map_or_else(|error| error.answered(), |_| true),
-    );
-    Ok(result?.rows_affected())
+    .map_err(|error| classify(Phase::Statement, &error))?;
+    Ok(result.rows_affected())
 }

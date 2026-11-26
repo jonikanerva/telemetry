@@ -274,16 +274,19 @@ in key order, so two writers with the same keys take their locks in the
 same order. Alert, error, and unprocessed rows keep the order of the batch;
 a deadlock of two writers (SQLSTATE 40P01) is an answered failure, and the
 caller retries. Each transaction has a client deadline of 90 s, also for a
-connection that goes silent. After the deadline the writer closes the
-connection at once and frees its pool slot; a connection goes back to the
-pool only after the server answered. A failed write tells the caller how
-many records at the start of the batch are stored. After a break during a
+connection that goes silent. One call of the writer opens one connection,
+runs all its transactions on it, and closes it before it returns; there
+is no pool (ADR 0001, "Delivery path", step 6). After the deadline the
+writer drops the connection, which closes the socket at once. A failed
+write tells the caller how many records at the start of the batch are
+stored. After a break during a
 `COMMIT`, the transaction whose `COMMIT` broke can be stored too (the
 records from that count to the end of that transaction), and the
-idempotent re-send covers it. The writer calls a progress hook of the caller before
-each transaction attempt, so the caller beats the watchdog at least every
-90 s also during a long split. Queue items leave memory only after their
-rows commit.
+idempotent re-send covers it. The writer calls a progress hook of the
+caller after the connect, before each transaction attempt, so the
+longest wait without a beat is one attempt and the close (95 s), also
+during a long split. Queue items leave memory only after their rows
+commit.
 
 ### Expected size
 
@@ -346,7 +349,7 @@ reports this decision to the owner.
 | Role                  | Used by                                | Privileges                                                                                   |
 | --------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `telemetry_migrator`  | `ingest migrate` (pre-deploy command)   | Owns schema `raw` and its objects. `CONNECT` on `neondb`. Nothing outside `raw`. `search_path` `raw`. |
-| `telemetry_ingest`    | `ingest run`                            | `CONNECT` on `neondb`. `USAGE` on schema `raw`. `SELECT`, `INSERT` on the `raw` tables and on `raw._sqlx_migrations` (`SELECT` only). No privilege on the identity sequences: an `INSERT` into an identity column needs none (tested), and `nextval()` would let the role use up the `smallint` vehicle IDs. No `UPDATE`, `DELETE`, `TRUNCATE`, or DDL. `CONNECTION LIMIT 5` (two deployments with 2 connections each can overlap during a deploy, plus one spare), `statement_timeout` 30 s, `search_path` `raw`. |
+| `telemetry_ingest`    | `ingest run`                            | `CONNECT` on `neondb`. `USAGE` on schema `raw`. `SELECT`, `INSERT` on the `raw` tables and on `raw._sqlx_migrations` (`SELECT` only). No privilege on the identity sequences: an `INSERT` into an identity column needs none (tested), and `nextval()` would let the role use up the `smallint` vehicle IDs. No `UPDATE`, `DELETE`, `TRUNCATE`, or DDL. `CONNECTION LIMIT 5`: a process holds one connection for each running call, at most 2 (the writer and the start-up check), two deployments can overlap during a deploy, plus one spare, `statement_timeout` 30 s, `search_path` `raw`. |
 
 PUBLIC keeps the PostgreSQL defaults: `CONNECT` and `TEMPORARY` on the
 database, and `USAGE` on schema `public`, where PUBLIC cannot create. So

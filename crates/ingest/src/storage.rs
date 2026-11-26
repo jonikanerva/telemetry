@@ -9,7 +9,7 @@
 //! | Step | Call |
 //! | ---- | ---- |
 //! | Connection settings of `ingest run` | [`connect_options`] with `DATABASE_URL`, [`Schema::raw`], and [`RUN_STATEMENT_TIMEOUT`] |
-//! | Pool | [`run_pool`]: at most 2 connections, none while idle |
+//! | Connections | None held: each call of [`check_migrations`], [`Writer::write`], and [`write_events`] opens its own connection with these settings and closes it before it returns ("Connections" below) |
 //! | Start-up check (gate condition 3) | [`check_migrations`] |
 //! | Flush | [`Writer::write`] with the queued records in queue order and a progress hook; [`WriteOutcome`] has the counts, [`WriteError`] the failure |
 //! | Events | [`write_events`] with the run ID, the events of the event sink ([`crate::events::IngestEvent`]), and a progress hook |
@@ -35,8 +35,8 @@
 //!
 //! - `NoAnswer`: no session started (network, TLS, the connect timeout of
 //!   15 s, a server error before the session other than class 28), the
-//!   connection broke in a session (I/O, protocol, the pool closed), or a
-//!   call passed its client deadline. A certificate failure comes back as
+//!   connection broke in a session (I/O, protocol), or a call passed its
+//!   client deadline. A certificate failure comes back as
 //!   code `io`.
 //! - `Answered`: an authentication error (class 28), a missing or changed
 //!   migration, a missing schema, and every SQLSTATE in a session outside
@@ -58,32 +58,55 @@
 //! `records[committed..]` and write them again. Every insert is
 //! idempotent, so nothing is stored twice.
 //!
+//! # Connections
+//!
+//! The storage has no pool. Each call of [`check_migrations`],
+//! [`Writer::write`], and [`write_events`] opens one connection with
+//! [`connect`], runs all its transactions on it, and closes it before it
+//! returns. No connection is used by two calls or kept between calls.
+//!
+//! - **Why no pool.** A pool returns a used connection and checks it with
+//!   a round trip that has no time limit in `SQLx` 0.9.1. A server that
+//!   goes silent in that moment would hold a pool slot without bound, and
+//!   with two slots the writer could stall again. The pool also earns
+//!   nothing here: one writer, a flush every 15 minutes, and no idle
+//!   connection may stay open, so the Neon compute scales to zero between
+//!   flushes (ADR 0001, fact 9).
+//! - **One connection for all transactions of a call**, so the split of a
+//!   batch with rejected records pays no new TLS connection for each
+//!   attempt.
+//! - **The end of a call.** After an answer (success, an answered error,
+//!   or a data error), the call closes the connection with `Terminate`,
+//!   within 5 s. After a passed deadline or a broken session, or when the
+//!   caller drops the future, the connection is dropped, which closes the
+//!   socket at once without an await.
+//! - **A failure in the middle of a call** ends the call with that error,
+//!   as before. The call does not connect again; the caller retries the
+//!   rest.
+//! - **Connections at the same time.** A process holds one connection for
+//!   each call that runs. The pipeline of ADR 0001 runs one writer task
+//!   (records and events, one call at a time) and the start-up check, so
+//!   it holds at most 2. The role `telemetry_ingest` has `CONNECTION LIMIT
+//!   5`: two processes during a deploy, and one spare.
+//!
 //! # Deadlines
 //!
 //! | Path | Bound |
 //! | ---- | ----- |
-//! | Connect of the pool, also inside a write | 15 s ([`CONNECT_TIMEOUT`], acquire timeout) |
-//! | Connect of [`connect`] (`ingest migrate`, the role script) | 15 s on the client |
+//! | Connect of every call ([`connect`]: `ingest run`, `ingest migrate`, the role script) | 15 s on the client ([`CONNECT_TIMEOUT`]) |
 //! | One statement of `ingest run`, also a `COMMIT` and the lock wait of a competing writer | 30 s on the server ([`RUN_STATEMENT_TIMEOUT`]) |
-//! | One transaction of [`Writer::write`], one insert of [`write_events`], [`check_migrations`] | 90 s on the client ([`RUN_CALL_DEADLINE`]), from the acquire to the commit, also for a connection that goes silent in a session. After the deadline the connection closes its socket at once and frees its pool slot, so the next call opens a new connection. |
+//! | One transaction attempt of [`Writer::write`], one insert of [`write_events`] | 90 s on the client ([`RUN_CALL_DEADLINE`]), from the `BEGIN` to the `COMMIT`, also for a connection that goes silent in a session. After the deadline the call ends and drops its connection, which closes the socket at once. |
+//! | All of [`check_migrations`]: connect, read, close | 90 s on the client ([`RUN_CALL_DEADLINE`]) |
+//! | The close at the end of a call after an answer | 5 s on the client; then the drop closes the socket |
 //! | One statement of `ingest migrate`, also the wait for the advisory lock of the migrator | 5 minutes on the server ([`MIGRATE_STATEMENT_TIMEOUT`]) |
 //! | All of [`migrate`] | 15 minutes on the client ([`MIGRATE_DEADLINE`]) |
 //! | [`apply_roles`], also the wait for the advisory lock of the script | the statement timeout of its connection on the server, 90 s on the client |
 //!
-//! Two limits of these bounds:
-//!
-//! - **A slow but live transaction.** 90 s covers the connect and some
-//!   statements of 30 s each, not every statement of a transaction at its
-//!   server limit. Such a transaction ends as `NoAnswer` on the client, the
-//!   server rolls it back, and the caller retries it. The byte bound makes
-//!   this unlikely: 8 MB in one transaction took about 6 s.
-//! - **The release of a connection after an answer.** A connection goes
-//!   back to the pool only after the server answered the call. `SQLx` then
-//!   checks it with a round trip that has no time limit. When the server
-//!   goes silent in that moment, the check waits until the operating system
-//!   gives up the TCP connection, and the pool has one connection less
-//!   until then. Every other path closes the connection at once
-//!   (`connect.rs`, `CallConnection`).
+//! A limit of these bounds: **a slow but live transaction.** 90 s covers
+//! some statements of 30 s each, not every statement of a transaction at
+//! its server limit. Such a transaction ends as `NoAnswer` on the client,
+//! the server rolls it back, and the caller retries it. The byte bound
+//! makes this unlikely: 8 MB in one transaction took about 6 s.
 //!
 //! # Progress
 //!
@@ -94,14 +117,24 @@
 //! each attempt of a split, each insert of a rejected record, and each
 //! event insert. The pipeline beats the watchdog in the hook.
 //!
-//! The guarantee: two runs of the hook, and the last run and the return of
-//! the call, are at most one [`RUN_CALL_DEADLINE`] (90 s) and some
-//! microseconds of local work apart. The writer limit of the watchdog is
-//! 120 s ([`crate::watchdog::WRITER`]), so a live writer that beats in the
-//! hook and before each call never meets it. The margin is 30 s. A larger
-//! `RUN_CALL_DEADLINE` or a smaller watchdog limit makes it smaller; the
-//! writer module stops the build when the margin is less than 10 s.
-//! [`check_migrations`] is one call of at most 90 s and needs no hook.
+//! The guarantee, when the caller beats before each call and in the hook.
+//! The longest wait without a beat is:
+//!
+//! - from the call start to the first hook run: the connect, at most 15 s
+//!   ([`CONNECT_TIMEOUT`]). The hook runs after the connect, before the
+//!   first attempt, so the connect and the first attempt are never one
+//!   wait;
+//! - between two hook runs: one attempt, at most 90 s
+//!   ([`RUN_CALL_DEADLINE`]);
+//! - from the last hook run to the return: one attempt and the close, at
+//!   most 90 s + 5 s = 95 s.
+//!
+//! Each wait also has some microseconds of local work. The writer limit of
+//! the watchdog is 120 s ([`crate::watchdog::WRITER`]), so the margin is
+//! 25 s. A larger connect timeout, attempt deadline, or close timeout, or a
+//! smaller watchdog limit, makes it smaller; the writer module stops the
+//! build when the margin is less than 10 s. [`check_migrations`] is one
+//! call of at most 90 s and needs no hook.
 //!
 //! # Cost of rejected records
 //!
@@ -185,7 +218,7 @@ mod writer;
 
 pub use connect::{
     CONNECT_TIMEOUT, MIGRATE_DEADLINE, MIGRATE_STATEMENT_TIMEOUT, RUN_CALL_DEADLINE,
-    RUN_STATEMENT_TIMEOUT, Schema, connect, connect_options, run_pool,
+    RUN_STATEMENT_TIMEOUT, Schema, connect, connect_options,
 };
 pub use error::{ErrorCode, FailureClass, SqlState, StorageError};
 pub use events::{EventOutcome, write_events};

@@ -8,11 +8,11 @@
 //!
 //! | Phase | Failure | Class |
 //! | ----- | ------- | ----- |
-//! | Connect (the pool opens a session) | SQLSTATE class 28 (authentication) | [`FailureClass::Answered`] |
+//! | Connect (a session opens) | SQLSTATE class 28 (authentication) | [`FailureClass::Answered`] |
 //! | Connect | Every other failure: network, TLS, timeout, a server error before the session exists | [`FailureClass::NoAnswer`] |
 //! | Statement (a session exists) | SQLSTATE class 22 or 23 | [`FailureClass::Data`] |
 //! | Statement | Every other SQLSTATE, a row that does not decode, a missing or changed migration | [`FailureClass::Answered`] |
-//! | Statement | The connection breaks (I/O, TLS, protocol), the pool closes | [`FailureClass::NoAnswer`] |
+//! | Statement | The connection breaks (I/O, TLS, protocol) | [`FailureClass::NoAnswer`] |
 //!
 //! [`StorageError::is_retryable`] is true for every class except
 //! [`FailureClass::Data`]: ADR 0001 retries every error except the data
@@ -109,10 +109,12 @@ pub enum ErrorCode {
     Io,
     /// A TLS error, for example a certificate that does not verify.
     Tls,
-    /// The pool found no free connection, or could not open one, before
-    /// its acquire timeout.
+    /// A client deadline passed: the connect timeout, the deadline of a
+    /// transaction attempt, or the deadline of a whole call.
     Timeout,
-    /// The pool is closed.
+    /// A `SQLx` pool is closed. The storage opens no pool since review
+    /// round 2 of PR #19; the code stays for the classification of every
+    /// `SQLx` error.
     PoolClosed,
     /// The server sent a message that the client did not expect.
     Protocol,
@@ -189,8 +191,8 @@ impl StorageError {
     }
 
     /// True when the server answered: every class except
-    /// [`FailureClass::NoAnswer`]. Only then may the connection of the call
-    /// go back to the pool (`CallConnection`).
+    /// [`FailureClass::NoAnswer`]. Only then does a call close its
+    /// connection gracefully; otherwise it drops it (`close_after`).
     pub(crate) const fn answered(self) -> bool {
         !matches!(self.class, FailureClass::NoAnswer)
     }
@@ -200,7 +202,7 @@ impl StorageError {
 /// documentation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
-    /// The pool opens or hands out a connection.
+    /// A connection opens.
     Connect,
     /// A statement runs on a session that exists.
     Statement,

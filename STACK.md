@@ -602,7 +602,7 @@ is the only reader of the environment and the command line.
 | prost-build, build | 0.14.6  | none                                                         | Generates the Rust types of `crates/ingest/proto/` in `build.rs`         | Apache-2.0        |
 | protox, build and dev | 0.10.0 | none                                                       | Parses the `.proto` files in Rust, so no `protoc` binary is needed; the tests read the schema with it | MIT OR Apache-2.0 |
 | proptest, dev      | 1.12.0  | `std`                                                        | Property tests of the decode with arbitrary bytes                        | MIT OR Apache-2.0 |
-| sqlx               | 0.9.1   | `postgres`, `runtime-tokio`, `tls-rustls-aws-lc-rs`, `migrate`, `macros`, `uuid`, `json` | PostgreSQL pool, checked query macros, embedded migrations, TLS with certificate verification (ADR 0001, ADR 0002) | MIT OR Apache-2.0 |
+| sqlx               | 0.9.1   | `postgres`, `runtime-tokio`, `tls-rustls-aws-lc-rs`, `migrate`, `macros`, `uuid`, `json` | PostgreSQL connections (no pool; ADR 0001, "Delivery path", step 6), checked query macros, embedded migrations, TLS with certificate verification (ADR 0001, ADR 0002) | MIT OR Apache-2.0 |
 | jiff-sqlx          | 1.0.0   | `postgres`                                                   | `timestamptz` and `timestamptz[]` binds of `jiff::Timestamp` (§10)        | Unlicense OR MIT  |
 
 hyper and hyper-util replace the axum features `http1` and `tokio`, which
@@ -629,7 +629,8 @@ direct dependency keeps `all` when that transitive path changes.
 `Cargo.lock` has 118 packages, as after the decode change.
 
 Storage (issue #12): `Cargo.lock` now has 238 packages. sqlx brings the
-rustls stack with the aws-lc-rs provider, the pool, and the macros.
+rustls stack with the aws-lc-rs provider and the macros. The storage uses
+no `SQLx` pool.
 `Cargo.lock` also lists `sqlx-mysql`, `sqlx-sqlite`, `libsqlite3-sys`, and
 `ring`: optional dependencies of `sqlx-macros-core` that Cargo records but
 does not build (`cargo tree -i ring --target all` and `cargo tree -i

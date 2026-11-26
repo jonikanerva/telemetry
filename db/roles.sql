@@ -32,8 +32,10 @@
 --
 -- 1. It creates both roles with SQL, so neither role is a member of
 --    `neon_superuser`. Both can log in. The ingest role has CONNECTION
---    LIMIT 5, `statement_timeout` 30 s, and `search_path` set to the
---    schema; the migrator role has the same `search_path`.
+--    LIMIT 5 (a process holds at most 2 connections, one for each running
+--    call: the writer and the start-up check; two processes overlap during
+--    a deploy; one spare), `statement_timeout` 30 s, and `search_path` set
+--    to the schema; the migrator role has the same `search_path`.
 -- 2. It grants CONNECT on the current database to both roles.
 -- 3. It creates the schema, owned by the migrator role. The migrator then
 --    owns every object that `ingest migrate` creates in it.

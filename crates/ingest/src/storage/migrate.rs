@@ -6,11 +6,9 @@ use std::time::Duration;
 
 use sqlx::migrate::Migrator;
 use sqlx::postgres::PgConnectOptions;
-use sqlx::{Connection, PgConnection, PgPool};
+use sqlx::{Connection, PgConnection};
 
-use super::connect::{
-    CallConnection, MIGRATE_DEADLINE, RUN_CALL_DEADLINE, Schema, connect, within,
-};
+use super::connect::{MIGRATE_DEADLINE, RUN_CALL_DEADLINE, Schema, close_after, connect, within};
 use super::error::{ErrorCode, FailureClass, Phase, StorageError, classify, classify_migrate};
 
 /// The migrations in `migrations/` at the repository root. The binary
@@ -127,7 +125,8 @@ async fn read_applied(conn: &mut PgConnection) -> Result<HashMap<i64, Vec<u8>>, 
 ///
 /// One round trip: it reads `_sqlx_migrations` and checks that every
 /// migration that the binary embeds is applied with the same checksum.
-/// Migrations that the binary does not know are allowed. The call has
+/// Migrations that the binary does not know are allowed. The call opens
+/// its own connection, reads, and closes the connection, all within
 /// [`super::RUN_CALL_DEADLINE`] on the client.
 ///
 /// | Result | Meaning for the gate (ADR 0001, condition 3) |
@@ -139,25 +138,27 @@ async fn read_applied(conn: &mut PgConnection) -> Result<HashMap<i64, Vec<u8>>, 
 /// # Errors
 ///
 /// Returns the [`StorageError`] of the table above.
-pub async fn check_migrations(pool: &PgPool) -> Result<(), StorageError> {
-    check_migrations_within(pool, RUN_CALL_DEADLINE).await
+pub async fn check_migrations(options: &PgConnectOptions) -> Result<(), StorageError> {
+    check_migrations_within(options, RUN_CALL_DEADLINE).await
 }
 
 /// [`check_migrations`] with another deadline, for the tests.
 pub(crate) async fn check_migrations_within(
-    pool: &PgPool,
+    options: &PgConnectOptions,
     deadline: Duration,
 ) -> Result<(), StorageError> {
-    within(deadline, check(pool)).await
+    within(deadline, check(options)).await
 }
 
-async fn check(pool: &PgPool) -> Result<(), StorageError> {
-    let mut call = CallConnection::acquire(pool).await?;
-    let read = read_applied(call.get()?).await;
-    call.finish(
+async fn check(options: &PgConnectOptions) -> Result<(), StorageError> {
+    let mut conn = connect(options).await?;
+    let read = read_applied(&mut conn).await;
+    close_after(
+        conn,
         read.as_ref()
             .map_or_else(|error| error.answered(), |_| true),
-    );
+    )
+    .await;
     let applied = match read {
         Ok(applied) => applied,
         // 42P01: the table `_sqlx_migrations` does not exist, so no

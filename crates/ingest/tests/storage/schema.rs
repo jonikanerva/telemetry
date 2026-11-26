@@ -92,15 +92,14 @@ async fn migrations_build_every_table_from_an_empty_schema() {
 
         // The gate calls the check from a task of its own; the spawn proves
         // that the future is `Send`.
-        let pool = db.pool();
+        let options = db.options.clone();
         let checked = {
-            let pool = pool.clone();
-            tokio::spawn(async move { check_migrations(&pool).await })
+            let options = options.clone();
+            tokio::spawn(async move { check_migrations(&options).await })
                 .await
                 .unwrap()
         };
         assert_eq!(checked, Ok(()));
-        pool.close().await;
     })
     .await;
 }
@@ -136,15 +135,15 @@ async fn migrate_refuses_a_schema_that_does_not_exist() {
 #[tokio::test]
 async fn the_run_check_finds_missing_and_changed_migrations() {
     with_schema(|db| async move {
-        let pool = db.pool();
-        let missing = check_migrations(&pool).await.unwrap_err();
+        let options = db.options.clone();
+        let missing = check_migrations(&options).await.unwrap_err();
         assert_eq!(
             (missing.class, missing.code),
             (FailureClass::Answered, ErrorCode::MigrationMissing)
         );
 
         db.migrate().await;
-        assert_eq!(check_migrations(&pool).await, Ok(()));
+        assert_eq!(check_migrations(&options).await, Ok(()));
 
         let mut conn = db.owner().await;
         execute(
@@ -152,7 +151,7 @@ async fn the_run_check_finds_missing_and_changed_migrations() {
             "UPDATE _sqlx_migrations SET checksum = '\\x00' WHERE version = 1",
         )
         .await;
-        let changed = check_migrations(&pool).await.unwrap_err();
+        let changed = check_migrations(&options).await.unwrap_err();
         assert_eq!(
             (changed.class, changed.code),
             (FailureClass::Answered, ErrorCode::MigrationChanged)
@@ -171,10 +170,9 @@ async fn the_run_check_finds_missing_and_changed_migrations() {
              VALUES (9999, 'later release', true, '\\x01', 1)",
         )
         .await;
-        let missing = check_migrations(&pool).await.unwrap_err();
+        let missing = check_migrations(&options).await.unwrap_err();
         assert_eq!(missing.code, ErrorCode::MigrationMissing);
         conn.close().await.unwrap();
-        pool.close().await;
     })
     .await;
 }
@@ -190,9 +188,8 @@ async fn an_unknown_later_migration_is_allowed() {
         )
         .await;
         conn.close().await.unwrap();
-        let pool = db.pool();
-        assert_eq!(check_migrations(&pool).await, Ok(()));
-        pool.close().await;
+        let options = db.options.clone();
+        assert_eq!(check_migrations(&options).await, Ok(()));
         let outcome = migrate(&migrate_options(&db.schema), &db.schema)
             .await
             .unwrap();
@@ -420,10 +417,8 @@ async fn the_reason_check_allows_every_reason_of_the_code() {
 async fn the_run_check_without_a_database_is_no_answer() {
     // Port 1 on the loopback interface refuses every connection.
     let options = owner_options(&Schema::raw()).host("127.0.0.1").port(1);
-    let pool = ingest::storage::run_pool(options);
-    let error = check_migrations(&pool).await.unwrap_err();
+    let error = check_migrations(&options).await.unwrap_err();
     assert_eq!(error.class, FailureClass::NoAnswer, "{error}");
-    pool.close().await;
 }
 
 #[tokio::test]
@@ -433,13 +428,12 @@ async fn a_silent_server_stops_every_call_at_its_deadline() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let options = migrate_options(&Schema::raw()).host("127.0.0.1").port(port);
-    let pool = ingest::storage::run_pool(options.clone());
     let raw = Schema::raw();
     let started = std::time::Instant::now();
     let (connected, migrated, checked) = tokio::join!(
         ingest::storage::connect(&options),
         migrate(&options, &raw),
-        check_migrations(&pool),
+        check_migrations(&options),
     );
     let elapsed = started.elapsed();
     let timeout = (FailureClass::NoAnswer, ErrorCode::Timeout);
@@ -452,6 +446,5 @@ async fn a_silent_server_stops_every_call_at_its_deadline() {
     // The connect timeout is 15 s.
     assert!(elapsed >= std::time::Duration::from_secs(14), "{elapsed:?}");
     assert!(elapsed < std::time::Duration::from_secs(25), "{elapsed:?}");
-    pool.close().await;
     drop(listener);
 }

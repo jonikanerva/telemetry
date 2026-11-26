@@ -5,9 +5,12 @@ use std::ops::Range;
 use std::time::Duration;
 
 use jiff_sqlx::ToSqlx;
-use sqlx::{Connection, PgConnection, PgPool, Postgres, Transaction};
+use sqlx::postgres::PgConnectOptions;
+use sqlx::{Connection, PgConnection, Postgres, Transaction};
 
-use super::connect::{CallConnection, RUN_CALL_DEADLINE, within};
+use super::connect::{
+    CLOSE_TIMEOUT, CONNECT_TIMEOUT, RUN_CALL_DEADLINE, close_after, connect, within,
+};
 use super::error::{ErrorCode, FailureClass, Phase, SqlState, StorageError, classify};
 use super::rows::{
     ConnectivityKey, ConnectivityValue, Plan, QueuedRecord, Reason, SignalKey, SignalValueColumns,
@@ -26,20 +29,32 @@ pub const MAX_SIGNAL_ROWS_PER_TRANSACTION: usize = 5_000;
 /// branch.
 pub const MAX_BYTES_PER_TRANSACTION: usize = 8 * 1024 * 1024;
 
-/// The longest local work between two calls of the progress hook outside
-/// of a call deadline: the bookkeeping between two transactions, which
-/// takes microseconds. The rest of the margin is for the beat of the
-/// pipeline and the check period of the watchdog (1 s).
+/// The smallest margin between the longest wait of a call without a
+/// progress call and the writer limit of the watchdog. It covers the local
+/// work between two transactions (microseconds), the beat of the pipeline,
+/// and the check period of the watchdog (1 s).
 const PROGRESS_MARGIN: Duration = Duration::from_secs(10);
 
-// The progress guarantee of `Writer::write` (storage module documentation,
-// "Progress"): two calls of the hook are at most one call deadline and the
-// local work apart, and that must stay below the writer limit of the
-// watchdog. A larger deadline or a smaller watchdog limit stops the build.
+/// The longest wait of a call without a progress call (storage module
+/// documentation, "Progress"):
+///
+/// - from the call start (the caller beats before it) to the first
+///   progress call: the connect, at most [`CONNECT_TIMEOUT`];
+/// - between two progress calls: one attempt, at most
+///   [`RUN_CALL_DEADLINE`];
+/// - from the last progress call to the return: one attempt and the close,
+///   at most [`RUN_CALL_DEADLINE`] + [`CLOSE_TIMEOUT`].
+const LONGEST_WAIT_SECS: u64 = {
+    let connect = CONNECT_TIMEOUT.as_secs();
+    let last = RUN_CALL_DEADLINE.as_secs() + CLOSE_TIMEOUT.as_secs();
+    if connect > last { connect } else { last }
+};
+
+// 95 s + 10 s <= 120 s. A larger deadline or close timeout, or a smaller
+// watchdog limit, stops the build.
 const _: () = assert!(
-    RUN_CALL_DEADLINE.as_secs() + PROGRESS_MARGIN.as_secs()
-        <= crate::watchdog::WRITER.limit.as_secs(),
-    "RUN_CALL_DEADLINE leaves no margin below the writer limit of the watchdog"
+    LONGEST_WAIT_SECS + PROGRESS_MARGIN.as_secs() <= crate::watchdog::WRITER.limit.as_secs(),
+    "a call can wait too long between two progress calls for the watchdog"
 );
 
 /// The counts of one call of [`Writer::write`]. They hold numbers only, so
@@ -114,12 +129,23 @@ pub struct WriteError {
 ///
 /// The writer keeps the vehicle IDs that it has read or created, so a
 /// flush needs no vehicle statement after the first one. It holds no
-/// connection between two calls; the pool closes idle connections.
-#[derive(Debug)]
+/// connection between two calls: each call of [`Writer::write`] opens its
+/// own connection and closes it before it returns.
 pub struct Writer {
-    pool: PgPool,
+    options: PgConnectOptions,
     vehicles: HashMap<String, VehicleId>,
     call_deadline: Duration,
+}
+
+/// Shows no connection settings: the `Debug` text of `PgConnectOptions`
+/// holds the password.
+impl std::fmt::Debug for Writer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Writer")
+            .field("vehicles", &self.vehicles.len())
+            .field("call_deadline", &self.call_deadline)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The failure of one transaction.
@@ -128,16 +154,6 @@ enum AttemptError {
     Data(SqlState),
     /// Any other failure: the caller retries the batch.
     Other(StorageError),
-}
-
-impl AttemptError {
-    /// True when the server answered (`CallConnection::finish`).
-    const fn answered(&self) -> bool {
-        match self {
-            Self::Data(_) => true,
-            Self::Other(error) => error.answered(),
-        }
-    }
 }
 
 impl From<StorageError> for AttemptError {
@@ -168,11 +184,12 @@ impl Progress<'_> {
 }
 
 impl Writer {
-    /// Makes a writer that uses `pool` ([`super::run_pool`]).
+    /// Makes a writer that connects with `options` ([`super::connect_options`]
+    /// with [`super::RUN_STATEMENT_TIMEOUT`]). It opens no connection yet.
     #[must_use]
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(options: PgConnectOptions) -> Self {
         Self {
-            pool,
+            options,
             vehicles: HashMap::new(),
             call_deadline: RUN_CALL_DEADLINE,
         }
@@ -184,12 +201,6 @@ impl Writer {
     pub(crate) fn with_call_deadline(mut self, deadline: Duration) -> Self {
         self.call_deadline = deadline;
         self
-    }
-
-    /// The pool of the writer.
-    #[must_use]
-    pub fn pool(&self) -> &PgPool {
-        &self.pool
     }
 
     /// Writes the records, in their order, and returns the counts.
@@ -211,51 +222,73 @@ impl Writer {
     ///   that fails. That record goes to `unprocessed_record` with reason
     ///   `database_rejected` in a transaction of its own. The other records
     ///   commit.
+    /// - One connection for the whole call: the call opens it with
+    ///   [`super::connect`] (at most [`super::CONNECT_TIMEOUT`]), runs every
+    ///   transaction on it, and closes it before it returns, on every path.
+    ///   An empty batch opens no connection.
     /// - `progress` runs before every transaction attempt: each transaction
     ///   of the batch, each attempt of a split, and each insert of a
-    ///   rejected record. Two runs of `progress` are therefore at most one
-    ///   [`RUN_CALL_DEADLINE`] and some microseconds of local work apart,
-    ///   also when one call of `write` lasts many minutes. The pipeline
-    ///   beats the watchdog there (storage module documentation,
-    ///   "Progress").
+    ///   rejected record. The longest wait without a progress call is one
+    ///   attempt and the close (95 s), also when one call of `write` lasts
+    ///   many minutes. The pipeline beats the watchdog there (storage module
+    ///   documentation, "Progress").
     ///
     /// # Errors
     ///
     /// Returns a [`WriteError`] at the first failure that is not a data
     /// error of a record: the failure, the number of records at the start
-    /// of the batch that are stored, and the counts so far. The storage
-    /// module documentation says how the caller treats each class.
+    /// of the batch that are stored, and the counts so far. The call ends
+    /// there; it does not connect again. The storage module documentation
+    /// says how the caller treats each class.
     pub async fn write(
         &mut self,
         records: &[QueuedRecord<'_>],
         progress: &mut (dyn FnMut() + Send),
     ) -> Result<WriteOutcome, WriteError> {
+        let mut outcome = WriteOutcome::default();
+        if records.is_empty() {
+            return Ok(outcome);
+        }
+        let mut conn = connect(&self.options).await.map_err(|error| WriteError {
+            error,
+            committed: 0,
+            outcome,
+        })?;
         let mut progress = Progress {
             hook: progress,
             attempts: 0,
         };
-        let mut outcome = WriteOutcome::default();
+        let mut failure = None;
         for chunk in chunks(records) {
-            if let Err((error, committed)) = self
-                .write_isolating(records, chunk, &mut outcome, &mut progress)
+            if let Err(failed) = self
+                .write_isolating(&mut conn, records, chunk, &mut outcome, &mut progress)
                 .await
             {
-                outcome.attempts = progress.attempts;
-                return Err(WriteError {
-                    error,
-                    committed,
-                    outcome,
-                });
+                failure = Some(failed);
+                break;
             }
         }
         outcome.attempts = progress.attempts;
-        Ok(outcome)
+        close_after(
+            conn,
+            failure.as_ref().is_none_or(|(error, _)| error.answered()),
+        )
+        .await;
+        match failure {
+            None => Ok(outcome),
+            Some((error, committed)) => Err(WriteError {
+                error,
+                committed,
+                outcome,
+            }),
+        }
     }
 
-    /// Writes `records[range]`. On a failure, returns it with the index of
-    /// the first record that is not stored.
+    /// Writes `records[range]` on `conn`. On a failure, returns it with the
+    /// index of the first record that is not stored.
     async fn write_isolating(
         &mut self,
+        conn: &mut PgConnection,
         records: &[QueuedRecord<'_>],
         range: Range<usize>,
         outcome: &mut WriteOutcome,
@@ -271,13 +304,13 @@ impl Writer {
                 continue;
             }
             progress.attempt();
-            match self.attempt(slice).await {
+            match self.attempt(conn, slice).await {
                 Ok(done) => outcome.add(done),
                 Err(AttemptError::Other(error)) => return Err((error, start)),
                 Err(AttemptError::Data(state)) => {
                     if let [record] = slice {
                         let rejected = self
-                            .reject(record, state, progress)
+                            .reject(conn, record, state, progress)
                             .await
                             .map_err(|error| (error, start))?;
                         outcome.add(rejected);
@@ -292,31 +325,22 @@ impl Writer {
         Ok(())
     }
 
-    /// Writes `records` in one transaction, with the call deadline.
+    /// Writes `records` in one transaction on `conn`, with the call
+    /// deadline. After a passed deadline the session is in an unknown
+    /// state; the error is `NoAnswer`, so the call ends and drops the
+    /// connection.
     async fn attempt(
         &mut self,
+        conn: &mut PgConnection,
         records: &[QueuedRecord<'_>],
     ) -> Result<WriteOutcome, AttemptError> {
-        tokio::time::timeout(self.call_deadline, self.attempt_now(records))
-            .await
-            .unwrap_or(Err(AttemptError::Other(StorageError::new(
-                FailureClass::NoAnswer,
-                ErrorCode::Timeout,
-            ))))
-    }
-
-    async fn attempt_now(
-        &mut self,
-        records: &[QueuedRecord<'_>],
-    ) -> Result<WriteOutcome, AttemptError> {
-        let mut call = CallConnection::acquire(&self.pool).await?;
-        let result = self.attempt_on(call.get()?, records).await;
-        call.finish(
-            result
-                .as_ref()
-                .map_or_else(AttemptError::answered, |_| true),
-        );
-        let (outcome, new_vehicles) = result?;
+        let (outcome, new_vehicles) =
+            tokio::time::timeout(self.call_deadline, self.attempt_on(conn, records))
+                .await
+                .unwrap_or(Err(AttemptError::Other(StorageError::new(
+                    FailureClass::NoAnswer,
+                    ErrorCode::Timeout,
+                ))))?;
         // Keep the IDs only after the commit: a rolled-back insert has no
         // row.
         self.vehicles.extend(new_vehicles);
@@ -401,6 +425,7 @@ impl Writer {
     /// the CHECK list, and a SQLSTATE, so the schema accepts it.
     async fn reject(
         &self,
+        conn: &mut PgConnection,
         record: &QueuedRecord<'_>,
         state: SqlState,
         progress: &mut Progress<'_>,
@@ -421,7 +446,7 @@ impl Writer {
         let mut inserted = None;
         for rows in [&rows[..], &rows[..1]] {
             progress.attempt();
-            match self.insert_rejected(record, rows).await? {
+            match self.insert_rejected(conn, record, rows).await? {
                 Ok(count) => {
                     inserted = Some(count);
                     break;
@@ -447,25 +472,11 @@ impl Writer {
     /// of its own. The inner `Err` is a data error of the insert.
     async fn insert_rejected(
         &self,
+        conn: &mut PgConnection,
         record: &QueuedRecord<'_>,
         rows: &[UnprocessedRow],
     ) -> Result<Result<u64, SqlState>, StorageError> {
-        within(self.call_deadline, self.insert_rejected_now(record, rows)).await
-    }
-
-    async fn insert_rejected_now(
-        &self,
-        record: &QueuedRecord<'_>,
-        rows: &[UnprocessedRow],
-    ) -> Result<Result<u64, SqlState>, StorageError> {
-        let mut call = CallConnection::acquire(&self.pool).await?;
-        let result = insert_rejected_on(call.get()?, record, rows).await;
-        call.finish(
-            result
-                .as_ref()
-                .map_or_else(|error| error.answered(), |_| true),
-        );
-        result
+        within(self.call_deadline, insert_rejected_on(conn, record, rows)).await
     }
 }
 
