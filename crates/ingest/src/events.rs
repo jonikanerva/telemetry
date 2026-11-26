@@ -11,6 +11,14 @@
 //! I/O or for a lock that another task holds for a long time, because the
 //! gate acceptor and the supervisor call it inside their loops. The sink
 //! owns the memory bound of the events that it keeps.
+//!
+//! [`crate::readiness::Readiness`] calls `record` while it holds the lock of
+//! the gate state, so that the events keep the order of the changes. A sink
+//! must therefore not call back into `Readiness` from `record` (for example
+//! to close the gate at the high mark of a queue): that call would wait for
+//! the same lock on the same thread. Change the gate state after `record`
+//! returns. And a `record` that blocks also blocks every reader of the gate
+//! state; the watchdog then ends the process.
 
 use jiff::Timestamp;
 use tracing::info;
@@ -165,7 +173,8 @@ impl CountWindow {
 
 /// The receiver of the `ingest_event` records.
 pub trait EventSink: Send + Sync {
-    /// Takes one event. Returns at once (module documentation).
+    /// Takes one event. Returns at once, does not block, and does not call
+    /// into [`crate::readiness::Readiness`] (module documentation).
     fn record(&self, event: IngestEvent);
 }
 
