@@ -492,12 +492,13 @@ is the only reader of the environment and the command line.
 | axum               | 0.8.9   | none                                                         | Router and handler of `GET /health`                                      | MIT               |
 | hyper              | 1.13.0  | `http1`, `server`                                            | HTTP/1 connection with a header read timeout (`axum::serve` has none)    | MIT               |
 | hyper-util         | 0.1.21  | `service`, `tokio`                                           | Tokio I/O and timer adapters, router-to-hyper service adapter            | MIT               |
-| tokio              | 1.54.1  | `rt-multi-thread`, `net`, `signal`, `time`, `sync`, `macros` | Runtime, listener, SIGTERM and SIGINT, connection limit, deadlines       | MIT               |
+| socket2            | 0.6.5   | `all`                                                        | TCP keep-alive with idle time, interval, and probe count on accepted gate sockets (ADR 0001, gate rule 3); `with_retries` needs `all` | MIT OR Apache-2.0 |
+| tokio              | 1.54.1  | `rt-multi-thread`, `net`, `signal`, `time`, `sync`, `macros`, `io-util`, `process` | Runtime, listeners, SIGTERM and SIGINT, connection limits, deadlines, the gate copy (`io-util`), the child process (`process`) | MIT               |
 | tracing            | 0.1.44  | `std`                                                        | Structured log events                                                    | MIT               |
 | tracing-subscriber | 0.3.23  | `fmt`, `std`                                                 | Subscriber, level filter, and writer for the JSON formatter              | MIT               |
 | serde_json         | 1.0.154 | `std`                                                        | Correct JSON encoding of each log line                                   | MIT OR Apache-2.0 |
 | thiserror          | 2.0.21  | `std`                                                        | Error types whose text holds static words only                           | MIT OR Apache-2.0 |
-| jiff               | 1.0.3   | `std`                                                        | `Timestamp` of the record times (§10)                                    | Unlicense OR MIT  |
+| jiff               | 1.0.3   | `std`                                                        | `Timestamp` of the record times and of the `ingest_event` records (§10)  | Unlicense OR MIT  |
 | prost              | 0.14.6  | `derive`, `std`                                              | Protobuf decode of the `fleet-telemetry` payloads (ADR 0001)             | Apache-2.0        |
 | prost-types, also build | 0.14.6 | `std`                                                   | `google.protobuf.Timestamp` of the generated types; `build.rs` reads the schema descriptors with it | Apache-2.0 |
 | uuid               | 1.29.3  | `std`                                                        | Typed connection ID of a `connectivity` record (ADR 0002)                | Apache-2.0 OR MIT |
@@ -520,6 +521,13 @@ exception: `foldhash` (Zlib), which `prost-build` needs through
 `petgraph`. Two duplicate versions are new, at the warning level of
 `cargo deny`: `hashbrown` 0.15 (`petgraph`) next to 0.17, and `syn` 2
 (`prost-derive`) next to 3.
+
+Gate and child supervision (issue #11): `socket2` and the tokio features
+`io-util` and `process` are new; the tests also use the tokio feature
+`test-util` (a paused clock). tokio already pulled `socket2` 0.6.5 with
+`all` through its feature `net`, so `Cargo.lock` gets no new package; the
+direct dependency keeps `all` when that transitive path changes.
+`Cargo.lock` has 118 packages, as after the decode change.
 
 Retained older transitive version: matchit 0.8.4 (0.8.6 exists), because
 axum 0.8.9 requires `=0.8.4`. Reassess with the next axum release. No TLS
