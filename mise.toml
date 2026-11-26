@@ -118,12 +118,20 @@ run = [
   # and the runner label, with the newest release tags. git ls-remote reads
   # the public tags; no token is needed. The step fails when it cannot read a tag
   # list, or when an action SHA is not the commit of its tag comment.
-  # The workflow check is a strict allowlist of lines, not a YAML parser
-  # (like the Dockerfile check of `vuln`): each line with a `uses`,
-  # `version`, or `runs-on` key must have the one allowed form, each mise
-  # action step must have a `version` input, each job must have one
-  # `runs-on`, and YAML anchors and aliases are not allowed. Anything else
-  # fails, and the check must change together with the workflow.
+  # The workflow check is a strict allowlist, not a YAML parser (like the
+  # Dockerfile check of `vuln`):
+  # - `.github/` holds only `workflows/` and `pull_request_template.md`,
+  #   and `.github/workflows/` holds only `ci.yml`. A new workflow file or
+  #   a new directory (for example a composite action in
+  #   `.github/actions/`) fails until this check covers it in the same PR.
+  # - In `ci.yml`, each line with a `uses`, `version`, or `runs-on` key
+  #   must have the one allowed form. A line with a `container`,
+  #   `services`, or `image` key always fails (no container image is
+  #   allowed yet). Each mise action step must have a `version` input,
+  #   each job must have one `runs-on`, and YAML anchors and aliases are
+  #   not allowed.
+  # Anything else fails, and the check must change together with the
+  # workflow. Limits: STACK.md §3, "Dependency freshness check".
   '''
   workflow=.github/workflows/ci.yml
   export GIT_TERMINAL_PROMPT=0
@@ -132,18 +140,28 @@ run = [
   tags() { git ls-remote --tags "https://github.com/$1"; }
   newest() { sed -n 's#^[0-9a-f]*[[:space:]]refs/tags/\(v[0-9]*[.][0-9]*[.][0-9]*\)$#\1#p' | sort -V | tail -1; }
   [ -f "$workflow" ] || { echo "deps: $workflow is missing"; exit 1; }
+  # Only the known entries in .github/ and .github/workflows/.
+  extra="$(find .github -mindepth 1 -maxdepth 1 ! -name workflows ! -name pull_request_template.md; find .github/workflows -mindepth 1 ! -path "$workflow")"
+  if [ -n "$extra" ]; then
+    printf '%s\n' "$extra" | while IFS= read -r entry; do
+      echo "deps: unexpected entry $entry"
+    done
+    echo "deps: .github/ may hold only workflows/ci.yml and pull_request_template.md. GitHub runs every workflow file in .github/workflows/, and the CI pin check reads only $workflow. Extend the CI pin step of the deps task (mise.toml) in the same PR as a new workflow file, action, or other entry."
+    status=1
+  fi
   uses_form=' +- uses: [a-z0-9-]+/[a-z0-9._-]+@[0-9a-f]{40} # v[0-9]+[.][0-9]+[.][0-9]+'
   version_form=' +version: [0-9]+[.][0-9]+[.][0-9]+'
   runs_form=' +runs-on: ubuntu-[0-9]+[.]04'
   # Every line with one of the keys (also quoted, also without "- ") and
-  # every anchor or alias must be an allowed line.
-  bad="$(grep -nE '(uses|version|runs-on).?[[:space:]]*:|^[^#]*[&*][A-Za-z0-9_-]' "$workflow" |
+  # every anchor or alias must be an allowed line. The keys container,
+  # services, and image have no allowed form.
+  bad="$(grep -nE '(uses|version|runs-on|container|services|image).?[[:space:]]*:|^[^#]*[&*][A-Za-z0-9_-]' "$workflow" |
     grep -vE "^[0-9]+:($uses_form|$version_form|$runs_form)$" | sed 's/^\([0-9]*\):/\1: /' || true)"
   if [ -n "$bad" ]; then
     printf '%s\n' "$bad" | while IFS= read -r line; do
       echo "deps: $workflow line $line"
     done
-    echo "deps: the lines above are outside the allowlist. Allowed: '- uses: <owner>/<repo>@<40 lowercase hex> # vX.Y.Z' (a full release tag), 'version: X.Y.Z' (the mise action input), and 'runs-on: ubuntu-NN.04'. $fix"
+    echo "deps: the lines above are outside the allowlist. Allowed: '- uses: <owner>/<repo>@<40 lowercase hex> # vX.Y.Z' (a full release tag), 'version: X.Y.Z' (the mise action input), and 'runs-on: ubuntu-NN.04'. No container, services, or image key is allowed. $fix"
     status=1
   fi
   # Each mise action step: the next two lines are "with:" and "version:".
