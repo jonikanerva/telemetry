@@ -90,56 +90,55 @@ description = "Vulnerability check (STACK.md §3): Rust dependencies and the FRO
 # pulls are anonymous and the local credential files are not read.
 # Each image scan reads the reviewed ignore file
 # docs/security/osv-scanner-<repository with / as ->.toml. The entries rely
-# on premises of the Dockerfile and config/server_config.json
+# on premises of the Dockerfile, entrypoint.sh, and config/server_config.json
 # (docs/security/image-advisories.md). The task checks these premises first
 # and fails when one breaks, so that the triage is done again.
 # The script is a TOML literal string: backslashes reach the shell as written.
 run = '''
 status=0
-# Read the Dockerfile as instructions: drop comment lines and join
-# continuation lines. Instruction names are compared without letter case.
-dockerfile="$(awk '
-  /^[[:space:]]*#/ { next }
-  { line = line $0 }
-  /\\$/ { sub(/\\$/, " ", line); next }
-  { print line; line = "" }
-  END { if (line != "") print line }
-' Dockerfile)"
-if printf '%s\n' "$dockerfile" | grep -qE '<<'; then
-  echo "vuln: the Dockerfile has a heredoc; the premise check cannot read it"
+# Dockerfile premise: a strict allowlist, not a parser. The instruction
+# lines must equal the expected lines of this project. Only the two image
+# tags may change. Any other change fails, and the allowlist below must be
+# updated in the same change as the Dockerfile, with a new triage.
+dockerfile_fail() {
+  echo "vuln: $1. Update the Dockerfile allowlist of the vuln task (mise.toml) and docs/security/image-advisories.md together with the Dockerfile."
+  status=1
+}
+if LC_ALL=C grep -q "$(printf '[^\t -~]')" Dockerfile; then
+  dockerfile_fail "the Dockerfile has a byte outside printable ASCII, tab, and newline"
+fi
+if grep -qiE '^#[[:space:]]*[a-z]+[[:space:]]*=' Dockerfile; then
+  dockerfile_fail "the Dockerfile has a parser directive (# name=value)"
+fi
+instructions="$(grep -vE '^(#.*)?$' Dockerfile || true)"
+upstream_tag="$(printf '%s\n' "$instructions" | sed -n '1s/^FROM tesla\/fleet-telemetry:\([A-Za-z0-9._-]*\) AS upstream$/\1/p')"
+base_tag="$(printf '%s\n' "$instructions" | sed -n '2s/^FROM debian:\([A-Za-z0-9._-]*\)$/\1/p')"
+expected="$(printf '%s\n' \
+  "FROM tesla/fleet-telemetry:$upstream_tag AS upstream" \
+  "FROM debian:$base_tag" \
+  'RUN apt-get update \' \
+  '    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \' \
+  '    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \' \
+  '    && rm -rf /var/lib/apt/lists/*' \
+  'COPY --from=upstream /fleet-telemetry /fleet-telemetry' \
+  'COPY config/server_config.json /etc/fleet-telemetry/config.json' \
+  'COPY entrypoint.sh /entrypoint.sh' \
+  'RUN chmod +x /entrypoint.sh' \
+  'EXPOSE 4443' \
+  'ENTRYPOINT ["/entrypoint.sh"]')"
+if [ -z "$upstream_tag" ] || [ -z "$base_tag" ] || [ "$instructions" != "$expected" ]; then
+  dockerfile_fail "the instruction lines of the Dockerfile differ from the allowlist"
+fi
+images=""
+if [ -n "$upstream_tag" ] && [ -n "$base_tag" ]; then
+  images="tesla/fleet-telemetry:$upstream_tag debian:$base_tag"
+fi
+# The server reads the config that the Dockerfile copies (allowlist above).
+if [ "$(grep -c -- '-config' entrypoint.sh || true)" -ne 1 ] ||
+  ! grep -qx 'exec /fleet-telemetry -config /etc/fleet-telemetry/config.json' entrypoint.sh; then
+  echo "vuln: entrypoint.sh must start the server with -config /etc/fleet-telemetry/config.json and no other -config"
   status=1
 fi
-if printf '%s\n' "$dockerfile" | grep -iE '^[[:space:]]*from[[:space:]]|from=' | grep -q '\$'; then
-  echo "vuln: a FROM line or a from= source of the Dockerfile uses a variable"
-  status=1
-fi
-other_sources="$(printf '%s\n' "$dockerfile" | grep -iE 'from=' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' || true)"
-if [ "$other_sources" != "COPY --from=upstream /fleet-telemetry /fleet-telemetry" ]; then
-  echo "vuln: the only Dockerfile line with from= must copy /fleet-telemetry from the upstream image"
-  status=1
-fi
-# Each FROM instruction names one image to scan.
-images="$(printf '%s\n' "$dockerfile" | awk '
-  toupper($1) == "FROM" { for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; break } }
-')"
-from_lines="$(grep -ciE '^[[:space:]]*from([[:space:]]|$)' Dockerfile || true)"
-# The final stage must start from a base image: not from the upstream image
-# and not from another stage. The check compares names without letter case.
-final_base="$(printf '%s\n' "$dockerfile" | awk '
-  toupper($1) == "FROM" {
-    base = ""
-    for (i = 2; i <= NF; i++) if ($i !~ /^--/) { base = tolower($i); break }
-    for (i = 2; i < NF; i++) if (toupper($i) == "AS") stages[tolower($(i + 1))] = 1
-    last = base
-  }
-  END { if (last in stages) print "stage:" last; else print last }
-')"
-case "$final_base" in
-  ""|stage:*|*fleet-telemetry*)
-    echo "vuln: the final Dockerfile stage must start from a base image, not from the upstream image or another stage"
-    status=1
-    ;;
-esac
 # fleet-telemetry decodes its config with Go encoding/json: keys match
 # without letter case, a repeated key decodes again into the same field (a
 # repeated object merges into the first one), and only the first JSON value
@@ -192,8 +191,8 @@ for image in $images; do
   fi
   rm -f "$work/image.tar"
 done
-if [ "$scanned" -ne "$from_lines" ]; then
-  echo "vuln: scanned $scanned images, but the Dockerfile has $from_lines FROM lines"
+if [ "$scanned" -ne 2 ]; then
+  echo "vuln: scanned $scanned images, but the Dockerfile allowlist has 2 FROM lines"
   status=1
 fi
 exit "$status"
