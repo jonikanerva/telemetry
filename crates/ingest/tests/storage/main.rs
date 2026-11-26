@@ -9,6 +9,9 @@
 #![cfg(test)]
 
 mod events;
+#[path = "../harness/mod.rs"]
+mod harness;
+mod pipeline;
 mod roles;
 mod schema;
 mod size;
