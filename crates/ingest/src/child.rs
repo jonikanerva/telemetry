@@ -479,6 +479,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_dropped_supervisor_kills_its_child() {
+        let (capture, _guard) = capture::install(ALLOWED_FIELDS);
+        let supervised = start(command("run"));
+        supervised
+            .wait_until(|s| s.readiness.state().is_open())
+            .await;
+        let pid = with_message(&events(&capture), "child_started")[0]["pid"]
+            .as_u64()
+            .unwrap();
+        // An abort drops the child handle without the stop of step 4, for
+        // example when the shutdown aborts the task at its bound.
+        supervised.task.abort();
+        supervised.task.await.ok();
+        tokio::time::timeout(WAIT, async {
+            while process_exists(pid) {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the child still runs after the drop of its handle");
+    }
+
+    #[tokio::test]
     async fn the_child_output_reaches_the_log_without_the_vin() {
         let (capture, _guard) = capture::install(ALLOWED_FIELDS);
         let supervised = start(command("run"));

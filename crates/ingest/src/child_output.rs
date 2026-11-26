@@ -199,6 +199,54 @@ mod tests {
         assert_eq!(text(&format!("{FAKE_VIN}{FAKE_VIN}")), "[vin]");
     }
 
+    /// The VIN alphabet of ADR 0001, written out: digits and the capital
+    /// letters without I, O, and Q.
+    const VIN_ALPHABET: &str = "0123456789ABCDEFGHJKLMNPRSTUVWXYZ";
+
+    #[test]
+    fn every_character_of_the_vin_alphabet_is_part_of_a_token() {
+        assert_eq!(VIN_ALPHABET.len(), 33);
+        for character in VIN_ALPHABET.chars() {
+            // A run of the character alone, and the character inside an
+            // invented token.
+            let run: String = std::iter::repeat_n(character, VIN_LEN).collect();
+            assert_eq!(text(&run), "[vin]", "{character}");
+            let mut token = FAKE_VIN.to_owned();
+            token.replace_range(8..9, &character.to_string());
+            assert_eq!(text(&format!("vin {token}.")), "vin [vin].", "{character}");
+        }
+    }
+
+    #[test]
+    fn i_o_q_and_lowercase_letters_end_a_token() {
+        let outside = ('a'..='z').chain(['I', 'O', 'Q']);
+        for character in outside {
+            let run: String = std::iter::repeat_n(character, VIN_LEN).collect();
+            assert_eq!(text(&run), run, "{character}");
+            // The character splits the token into two runs of 8.
+            let mut token = FAKE_VIN.to_owned();
+            token.replace_range(8..9, &character.to_string());
+            assert_eq!(text(&token), token, "{character}");
+        }
+        // Every other ASCII character also ends a run.
+        for byte in 0_u8..128 {
+            let character = char::from(byte);
+            assert_eq!(
+                is_vin_char(byte),
+                VIN_ALPHABET.contains(character),
+                "{byte}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_line_bound_is_8_kib() {
+        assert_eq!(MAX_LINE, 8192);
+        let lines = assemble(&[&[b'a'; 8193], b"\n"]);
+        assert_eq!(lines[0].text().len(), 8192);
+        assert!(lines[0].truncated());
+    }
+
     #[test]
     fn replaces_a_vin_inside_a_longer_run_of_vin_characters() {
         // A VIN after a digit or a capital letter is one run of 18.

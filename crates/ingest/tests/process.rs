@@ -55,15 +55,34 @@ struct Process {
 impl Process {
     /// Starts the binary with a cleared environment and the given variables.
     fn spawn<V: AsRef<str>>(args: &[&str], vars: &[(&str, V)]) -> Self {
+        Self::spawn_with_input(args, vars, None)
+    }
+
+    /// Starts the binary as [`Process::spawn`] does. With `input`, its
+    /// standard input is a pipe that holds these bytes and then ends.
+    fn spawn_with_input<V: AsRef<str>>(
+        args: &[&str],
+        vars: &[(&str, V)],
+        input: Option<&[u8]>,
+    ) -> Self {
         let mut child = Command::new(BINARY)
             .args(args)
             .env_clear()
             .envs(vars.iter().map(|(name, value)| (name, value.as_ref())))
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        if let Some(input) = input {
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(input).unwrap();
+            // The drop closes the pipe: the reader then sees the end.
+        }
         // A thread reads standard output, so that each wait for a line can
         // have a time limit.
         let stdout = child.stdout.take().unwrap();
@@ -333,7 +352,8 @@ fn the_child_output_reaches_the_log_without_the_vin_and_the_environment() {
     // ingest clears the environment of the child, so this value must not
     // reach it.
     vars.push(("INGEST_TEST_MARKER", "hunter2".to_owned()));
-    let mut process = Process::spawn(&["run"], &vars);
+    // The standard input of ingest holds data. The child must not see it.
+    let mut process = Process::spawn_with_input(&["run"], &vars, Some(b"stdin of ingest\n"));
     process.read_until(|event| event["message"] == "child_output" && event["stream"] == "stderr");
     process.signal("TERM");
     assert_eq!(process.wait().code(), Some(0));
@@ -360,6 +380,7 @@ fn the_child_output_reaches_the_log_without_the_vin_and_the_environment() {
         [
             ("stderr", "error for vin [vin]"),
             ("stdout", "env=absent"),
+            ("stdout", "stdin=empty"),
             ("stdout", "connection from [vin] accepted"),
         ]
     );
