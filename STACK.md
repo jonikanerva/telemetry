@@ -309,11 +309,13 @@ entry cannot replace it.
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `setup`  | Install the pinned tools of `mise.toml` (not the global mise tools) and the Rust toolchain, fetch the locked crates. No test service is needed yet. |
 | `format` | `cargo fmt --all`                                                                                                                    |
-| `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings` for the host, then the same command with `--target x86_64-unknown-linux-gnu` (the production target; type-check only, no Linux linker) |
+| `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings` for the host. In CI, the host is linux/amd64.                      |
 | `build`  | `cargo build --workspace --release --locked`                                                                                         |
-| `test`   | `cargo nextest run --workspace --locked` and `cargo test --doc --workspace --locked`                                                 |
-| `verify` | Format check without edits, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the JSON syntax of `config/`, the shell syntax of `entrypoint.sh`, no tracked `.env*`, `secrets/`, or `.bin/` path, `build`, and `test`. Stops at the first failure. |
-| `deps`   | The dependency freshness check below: the crates, the mise tools, the Rust toolchain, and the `FROM` images of the `Dockerfile` (newest `tesla/fleet-telemetry` release tag, current Debian stable release). |
+| `test`   | `cargo nextest run --workspace --locked` (all tests) and `cargo test --doc --workspace --locked` (task `doctest`)                     |
+| `test-without-database` | For CI only. `cargo nextest run --workspace --locked` without the tests that need a database, and `doctest`. No database test exists yet, so the nextest command has no filter yet; the change that adds the database tests adds the filter. Without the filter, the database tests fail in CI, so a missing filter is not silent. |
+| `verify` | The static checks (task `checks`): format check without edits, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the JSON syntax of `config/`, the shell syntax of `entrypoint.sh`, no tracked `.env*`, `secrets/`, or `.bin/` path. Then `build` and `test`. Stops at the first failure. |
+| `ci`     | The task of the GitHub Actions workflow (below): `checks`, `build`, and `test-without-database`. Stops at the first failure. `ci` does not replace `verify`. |
+| `deps`   | The dependency freshness check below: the crates, the mise tools, the Rust toolchain, the `FROM` images of the `Dockerfile` (newest `tesla/fleet-telemetry` release tag, current Debian stable release), and the CI pins of `.github/workflows/ci.yml` (actions, mise version, runner label). |
 | `vuln`   | `cargo deny --locked check advisories`, `osv-scanner scan source -r .`, and `osv-scanner scan image --archive` for each `FROM` image of the `Dockerfile`. crane downloads each image for `linux/amd64` as a Docker archive, with `DOCKER_CONFIG` set to a temporary directory that holds an empty `config.json`, so the pulls are anonymous and no local credential file is read. No container runtime is needed. Each image scan reads the reviewed ignore file `docs/security/osv-scanner-<repository, / as ->.toml` (`--config`); an image without a file fails. First checks the premises of the ignore files. Dockerfile: a strict allowlist; after removal of empty lines and `#` lines, the lines must equal the expected lines of this project, and only the two image tags may change (printable ASCII only, no parser directive); the expected lines copy only `/fleet-telemetry` from the upstream image and the config only from `config/server_config.json`. `entrypoint.sh`: the server starts with `-config /etc/fleet-telemetry/config.json`, and no other `-config` exists. `config/server_config.json`: exactly one JSON value, the same leaf paths in the `jq --stream` token stream and in the parsed value (no repeated key, also no repeated object), lowercase keys in the root, `monitoring`, and `tls` objects, dispatchers `logger` or `zmq` only, no extra client CA, no status port or profiler, metrics on loopback. Runs every scan; fails when a premise breaks, a scan fails, a scan finds a vulnerability that no entry covers, or the task did not scan the two images of the allowlist. A Dockerfile change needs an allowlist change in the same PR. |
 
 Pinned tools: cargo-nextest 0.9.152, cargo-deny 0.22.1, cargo-shear 1.14.1,
@@ -349,6 +351,27 @@ Scope and gaps of `vuln`:
   `cargo deny --locked check`, which covers the advisories of the Rust
   dependencies. Reassess when a scheduled CI run can execute `vuln`, or
   when the gating advisory rate falls below one each month over 60 days.
+- The CI workflow (below) runs `vuln` in a separate job for each pull
+  request and each push to `main`; no scheduled run exists yet. The job
+  does not change the points of DOCTRINE.md P7 above: the lead still runs
+  `mise run vuln` at these points. The result of the job:
+  - A green `vuln` job is a merge condition of a PR that changes an input
+    of the job: `Cargo.lock`, each `Cargo.toml`, `deny.toml`, the `vuln`
+    task or the scanner pins in `[tools]` of `mise.toml` (cargo-deny,
+    osv-scanner, crane, jq), the `vuln` job of `.github/workflows/ci.yml`,
+    any lockfile that `osv-scanner scan source -r .` reads, any
+    `osv-scanner.toml` (in the root or next to a lockfile), the
+    `Dockerfile`, `entrypoint.sh`, `config/`, or the ignore files in
+    `docs/security/`.
+  - For any other PR, a red `vuln` job of any cause (a new advisory, an
+    expired ignore entry, a broken premise, or a failed image download)
+    starts a triage in a `chore/deps-<topic>` PR. It does not block that
+    other PR. Before that other PR merges with a red `vuln` job, the lead
+    compares the IDs of the new findings with the CISA KEV catalog. The
+    comparison is manual, because `vuln` does not read the catalog (above).
+  - When a finding is a known exploited vulnerability (for example in the
+    CISA KEV catalog) or a malicious package version, DOCTRINE.md P7
+    applies: its fix is due before other work.
 
 Scope and gaps of `verify`:
 
@@ -357,10 +380,55 @@ Scope and gaps of `verify`:
   `secrets/`. Commit the change before the final `verify`.
 - `cargo deny` reads the RustSec advisory database from the network.
 - `verify` does not build or test the ingest image. §13 records this gap.
-- `lint` type-checks the code for `x86_64-unknown-linux-gnu`. This is compile-time evidence only: the tests run on the development machine (macOS), so the runtime behaviour on Linux (socket options, signals and reaping as PID 1, the child process) stays a deployment check (§13). `mise run setup` adds the target with `rustup target add`, because mise sets `RUSTUP_TOOLCHAIN` and rustup then ignores the `targets` of `rust-toolchain.toml`.
+- `verify` runs on the development machine (macOS arm64). The Linux evidence comes from the CI workflow below, not from `verify`.
 - No web code and no database code exist yet. Prettier, Oxlint, `tsc`,
   Vitest, Playwright, `pnpm audit`, and the SQLx metadata check join
   `verify` with the first change that needs them.
+
+**CI (GitHub Actions).** `.github/workflows/ci.yml` has two jobs on the
+GitHub-hosted runner `ubuntu-26.04` (x86_64, linux/amd64, the production
+platform of §1). The job `ci` runs `mise run setup` and `mise run ci`. The
+job `vuln` runs `mise run setup` and `mise run vuln` (see the scope of
+`vuln` above). The workflow runs for each pull request and for each push
+to `main`.
+
+- Each PR has one concurrency group: a new push to the PR cancels the old
+  run of that PR. Each push to `main` has a group of its own (`github.sha`
+  of the tip commit), so a later push cancels neither its running nor its
+  pending run. There is one run for each push to `main`, for the tip
+  commit of that push. With merge commits only, that is one run for each
+  merge.
+- The runner installs the tools of `mise.toml` and the Rust toolchain of
+  `rust-toolchain.toml` through mise, so CI and the development machine
+  use the same versions. The mise version is pinned in the workflow.
+  §15 records the CI pins, and `mise run deps` compares them with their
+  newest releases.
+- The run compiles, links, and runs the tests on Linux. It is the Linux
+  evidence of §13. A `pull_request` run tests the merge of the PR head with
+  the base branch, not the head alone.
+- The token of the workflow can only read the repository contents. The
+  workflow uses no repository secret, no database, and no
+  `pull_request_target` trigger. A pull request from a fork therefore runs
+  without a secret and without write access. The checkout stores no
+  credential. Each third-party action is pinned to a full commit SHA.
+- The checkout reads the full history (`fetch-depth: 0`), because Gitleaks
+  scans all commits.
+- The tests that need a database run only locally, in `verify`. They need
+  the URL of the test database, and CI would need it as a repository
+  secret. A repository secret is an owner setting (issue #20, "Out of
+  scope").
+- Local verification stays mandatory (DOCTRINE.md P6): `mise run verify`
+  runs before merge on the version to be merged, also when CI is green.
+  A green `ci` job of the PR is also required before merge, because it is
+  the Linux evidence. It does not replace `verify`. The green run must be
+  for the current head of the PR. A `pull_request` run tests the merge
+  with the base at the time of the run, and it does not start again when
+  `main` moves. When the base changes after the run, update the PR branch,
+  so that a new run tests the merge with the current base.
+- The workflow does not change the repository settings. Branch protection
+  is an owner decision, and this workflow does not add it. A red run
+  therefore does not block a merge technically; the acceptance conditions
+  of CLAUDE.md block it.
 
 - **format:** rustfmt and Prettier in write mode.
 - **lint:** `cargo clippy --workspace --all-targets --locked -- -D warnings`, type-aware Oxlint, and TypeScript 7 `tsc --noEmit` for web, client, and test code. Declare supported feature combinations; do not blindly enable incompatible features.
@@ -381,6 +449,8 @@ scanner is a gap, not a pass. Validate test connection configuration and
 isolation before creating, migrating, or dropping any database.
 
 **Dependency freshness check:** `cargo update --dry-run --verbose`, `pnpm outdated --recursive`, and `mise outdated --bump`. `cargo update` stays within SemVer-compatible versions, so also compare each direct crate requirement with its latest crates.io release. In this project, `cargo update --dry-run --verbose` (Cargo 1.100) also lists each locked crate that is behind its latest crates.io release across major versions, as `Unchanged <crate> <version> (available: <latest>)`. Checked on 26 November 2026 with a probe crate that requires `thiserror = "1"`: the output was `Unchanged thiserror v1.0.69 (available: v2.0.21)`. Compare `rust-toolchain.toml` with the latest stable Rust release. Compare each infrastructure version in §15, for example the database server, the container base image, and the source builder, with its latest stable release.
+
+In this project, `mise run deps` also reads the CI pins of `.github/workflows/ci.yml` (§15) and prints each pin with the newest release tag: each action (and it fails when the pinned SHA is not the commit of the tag in the comment), the mise version, and the runner label with the newest Ubuntu runner image that has a tag in `actions/runner-images`. It reads the tags with `git ls-remote` and fails when it cannot read a tag list. Before it reads the tags, it checks the workflow against a strict allowlist, like the Dockerfile check of `vuln`. (1) `.github/` holds only `workflows/` and `pull_request_template.md`, and `.github/workflows/` holds only `ci.yml`; any other entry fails with its name, for example a second workflow file (`.yml` or `.yaml`) or a composite action in `.github/actions/`, and a PR that adds such an entry extends the check in the same PR. (2) In `ci.yml`, each line with a `uses`, `version`, or `runs-on` key (also quoted, also without `- `) must be `- uses: <owner>/<repo>@<40 lowercase hex> # vX.Y.Z` (a full release tag), `version: X.Y.Z` directly under the `with:` of each mise action step, or `runs-on: ubuntu-NN.04`; each line with a `container`, `services`, or `image` key fails, because no container image is allowed yet; each job has one `runs-on`; YAML anchors and aliases are not allowed. Any other line fails the task with its line number, and the check changes together with the workflow. Limits: the check searches lines and does not parse YAML, so a key that a line search cannot see (a key written with an escape sequence, an explicit `? key`, or an anchor after a quoted `#`) is not checked; it does not read what a pinned action runs inside (other actions or downloads), the inputs of a pinned action other than the mise `version`, or the commands of `run:` steps, which can download and run code; the tools that the mise tasks run are pinned in `mise.toml` and compared by `mise outdated`. A newer runner image can be a beta: before a change of the runner label, check in the README of `actions/runner-images` that the image is generally available.
 
 **Vulnerability check:** `cargo deny check advisories`, `pnpm audit`, and `osv-scanner scan source -r .` for the lockfiles. `osv-scanner scan image <image>` for each container image. Compare the Rust toolchain and each infrastructure version in §15 with its vendor security advisories. Record each surface without scanner coverage.
 
@@ -685,7 +755,7 @@ remain in GitHub.
 | §3, §14: vulnerability check of the built ingest image layer, the Rust toolchain, and the mise tools | The earlier exception for all freshness and vulnerability checks ends with this first application PR. `mise run vuln` now scans the crates in `Cargo.lock` and both `FROM` images of the `Dockerfile` as archives (crane and `osv-scanner scan image --archive`, no container runtime). Three surfaces stay without a scanner. (1) The image that Railway builds: it stays in the Railway registry, and no local container runtime can build it. The packages that `apt-get` adds or upgrades during the build (`ca-certificates`, `libstdc++6`, and the `apt-get upgrade` results) are therefore not scanned. (2) The Rust toolchain and the mise tools: no advisory database that osv-scanner or cargo-deny reads has a record for the Rust toolchain, and no scanner reads the installed tool binaries. (3) The C code that is linked statically into `/fleet-telemetry`: libzmq 4.3.4 (upstream Dockerfile) with its own copies of tweetnacl and SHA-1, and the librdkafka 2.3.0 bundle of `confluent-kafka-go/v2` v2.3.0 with OpenSSL 3.0.11, libcurl 7.86.0, zlib 1.2.13, zstd 1.5.2, and lz4 1.9.3. libsodium is not linked: the upstream Dockerfile builds libsodium 1.0.19, but the libzmq build uses its tweetnacl copy (no `--with-libsodium`). Cyrus SASL is not linked. At each start, in every configuration, the ELF `_init` runs the OpenSSL CPU feature detection `OPENSSL_cpuid_setup` (reads the environment variable `OPENSSL_ia32cap` and the `CPUID` instruction), and the Go package `zmq4` creates a libzmq context (allocation, process ID, one `eventfd`; no random source, no socket, no I/O thread); neither takes network input. All other code of the bundle components runs only behind the `kafka` dispatcher, which the `vuln` premise check rejects (`docs/security/image-advisories.md`, "Static C libraries"). Consequence: a known vulnerability in these surfaces is found only by the manual comparison. | In each PR that runs the vulnerability check, record: the Rust toolchain against the GitHub security advisories of `rust-lang/rust`; each mise tool against OSV (crates.io or Go package) and the GitHub security advisories of its repository; the `apt-get` packages against OSV for `Debian:13`; each static C component of `/fleet-telemetry` against OSV by release commit, or the reason why a component is not compared one by one (`docs/security/image-advisories.md`, "Static C libraries"). Compare the OpenSSL and libcurl records one by one before a change enables the `kafka` dispatcher. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9); surface (3): qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17). | Reassess when the repository gets a container build check, when the built image can be downloaded, or when a scanner covers the toolchain, the tools, or the static C libraries. |
 | §3: reviewed ignore files of the image scan | `osv-scanner scan image` reports advisories that do not affect this deployment, or that have no fix. The ignore files `docs/security/osv-scanner-tesla-fleet-telemetry.toml` (33 Go groups and the Debian 12 packages of the upstream image) and `docs/security/osv-scanner-debian.toml` (69 Debian 13 groups) hide them, so that `vuln` fails only on new or undecided findings. Consequence: an ignored advisory that later gets a Debian fix or a KEV listing is not shown until its entry expires. | Each entry names its decision in `docs/security/image-advisories.md` and has an expiry date. `vuln` checks the premises of the entries before the scan (the Dockerfile against a strict allowlist; the `-config` path of `entrypoint.sh`; config key case, exactly one JSON value, no repeated key or object, dispatchers, client CAs, listeners) and fails when it did not scan the two images of the allowlist. A build that runs the `apt-get` step installs the Debian fixes of the build date. A cached layer of that step skips the upgrade, and the Railway cache behaviour is not verified; the post-release check of §15 reads the installed package versions from the build log and detects a skipped step. The KEV comparison stays manual. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17). | Go entries expire on 2027-02-24, Debian 13 entries on 2027-01-25. Reassess earlier with a new upstream release, a base image change, a broken premise, or a KEV listing. |
 | §8: readable development formatter | The process has only the JSON formatter. One formatter gives one redaction path: the field allowlist exists once, and a second formatter cannot leak a field that the JSON formatter redacts. Nothing needs readable logs yet. Consequence: developers read the logs with `jq`. | The JSON formatter and its redaction tests in `crates/ingest/src/logging.rs`. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9). | Reassess when a developer workflow needs readable logs, and with the first web PR. |
-| §1, §14: runtime tests on linux/amd64 before merge | The development machine is macOS arm64, and no Linux test environment is set up. The ingest process has platform-dependent code: TCP keep-alive options, PID 1 signal handling and child reaping, and the child process. Consequence: a Linux-only runtime fault (for example a socket option that Linux rejects) shows only on Linux. Scope: until the first deployment that starts `ingest`. Until then the image does not contain the binary, the gate stays closed, and `/health` answers 503. | Before merge: `mise run lint` type-checks every target of the workspace, tests included, for `x86_64-unknown-linux-gnu` with `-D warnings` (compile-time evidence only). Required evidence of the deployment PR, before the first deployment that starts `ingest` (also in ADR 0001, "To verify at first deployment"): (1) `cargo nextest run --workspace --locked` passes one time on linux/amd64, in a build stage of the image or a Linux VM; if this is not possible, the PR records why, and checks 2 to 6 are the only evidence. (2) `ingest` is PID 1. On a redeploy, the log of the old deployment shows `shutdown_started` with reason `SIGTERM`, `gate_stopped`, `child_killed` with `exit_signal` 9, the `stopped` event, and `shutdown_complete` within `drainingSeconds`, and no `task_stop_timeout`. (3) After at least three child exits and restarts, the process table of the container has no zombie (`ps` state `Z`). (4) After a forced end of PID 1 (a watchdog exit or SIGKILL of `ingest`), the container ends, Railway restarts it, a new `started` event follows, and no `fleet-telemetry` process survives without `ingest`. (5) Every `gate_connection_closed` event of a normal connection has `socket_options` `set`, `keepalive` `15/15/9`, and `nodelay` `true` (none has `failed`), and the idle dead-peer case closes in about 150 s; if the Railway proxy terminates TCP, `ss -tio` in the container shows the keep-alive timers, or check 1 covers them. (6) `fleet-telemetry` starts with an empty environment, and `/proc/<child pid>/fd` has no listener of `ingest`. | Lead: Claude Code. Approving independent reviewer: qa-enforcer, [PR #18](https://github.com/jonikanerva/telemetry/pull/18). | Ends when the deployment PR records checks 1 to 6. Reassess when the repository gets a Linux test environment or a container build check. |
+| §1, §14: runtime tests on linux/amd64 before merge | The development machine is macOS arm64. The CI workflow (§3) runs the tests that need no database on linux/amd64, but not in the container: `ingest` is not PID 1 there, no Railway proxy is in front of the gate, and the tests that need a database do not run there. The ingest process has platform-dependent code: TCP keep-alive options, PID 1 signal handling and child reaping, and the child process. Consequence: a Linux-only runtime fault that shows only in the container, as PID 1, behind the Railway proxy, or in a database test shows only after deployment. Scope: until the first deployment that starts `ingest`. Until then the image does not contain the binary, the gate stays closed, and `/health` answers 503. | Before merge: a green run of `mise run ci` on linux/amd64 for the PR (§3): Clippy with `-D warnings`, the locked release build, and the nextest suite and the doctests without the tests that need a database. Check 1 below is now produced by CI for each PR, for the tests that need no database; it replaces the earlier Clippy step for `x86_64-unknown-linux-gnu` in `mise run lint`. The tests that need a database run only locally, on macOS (§3). Required evidence of the deployment PR, before the first deployment that starts `ingest` (also in ADR 0001, "To verify at first deployment"): (1) `cargo nextest run --workspace --locked` passes on linux/amd64: CI produces this for the tests that need no database, and the deployment PR links the green CI run of its head. (2) `ingest` is PID 1. On a redeploy, the log of the old deployment shows `shutdown_started` with reason `SIGTERM`, `gate_stopped`, `child_killed` with `exit_signal` 9, the `stopped` event, and `shutdown_complete` within `drainingSeconds`, and no `task_stop_timeout`. (3) After at least three child exits and restarts, the process table of the container has no zombie (`ps` state `Z`). (4) After a forced end of PID 1 (a watchdog exit or SIGKILL of `ingest`), the container ends, Railway restarts it, a new `started` event follows, and no `fleet-telemetry` process survives without `ingest`. (5) Every `gate_connection_closed` event of a normal connection has `socket_options` `set`, `keepalive` `15/15/9`, and `nodelay` `true` (none has `failed`), and the idle dead-peer case closes in about 150 s; if the Railway proxy terminates TCP, `ss -tio` in the container shows the keep-alive timers, or check 1 covers them. (6) `fleet-telemetry` starts with an empty environment, and `/proc/<child pid>/fd` has no listener of `ingest`. | Lead: Claude Code. Approving independent reviewer: qa-enforcer, [PR #18](https://github.com/jonikanerva/telemetry/pull/18); CI as the source of check 1: qa-enforcer, [PR #21](https://github.com/jonikanerva/telemetry/pull/21). | Ends when the deployment PR records checks 1 to 6. Reassess when the repository gets a container build check, or when CI can run the tests that need a database. |
 | §14: build and test of the ingest image before merge | No local container runtime is available to the lead. Railway builds the image after merge. | Post-release check: the service starts, the TLS certificate verifies, and the vehicle reconnects. | Lead: Claude Code. Approval: owner, with the adoption PR. | Reassess when the repository gets a container build check. |
 | §15: one image for server and SPA | The ingest service is a second image, because it is Tesla's upstream server. | The application still ships as one image. | Lead: Claude Code. Approval: owner, with the adoption PR. | Permanent while the upstream server is used. |
 
@@ -698,6 +768,16 @@ required CI checks on adoption. Run required tests and the full `$VERIFY_CMD`
 locally on the version to be merged against the current integration base.
 Missing or failed mandatory local evidence blocks merge. Existing required
 CI must also pass; CI itself is optional under P6. Never bypass existing gates.
+
+In this project, the local `mise run verify` stays mandatory before merge.
+The GitHub Actions workflow of §3 adds the Linux evidence: a green `ci` job
+(`mise run ci` on linux/amd64) for the current head of the PR is required
+before merge (§13, §3). The CI
+run does not replace the local run, and the local run does not replace the
+CI run. The tests that need a database run only in the local `verify`,
+because CI has no database secret (§3). The CI result is an acceptance
+condition of this contract, not a branch protection rule; branch
+protection is an owner decision.
 
 Assign each check to before merge or after release. Missing pre-merge evidence
 blocks merge; missing post-release evidence prevents claiming a successful
@@ -725,6 +805,7 @@ explanation. Apply P6 evidence reuse without waiving P9's independent run.
 | P3, P7: security              | Named scanner results and auth/privacy checks                                                                                           | Resolve session tuple if accounts are used; scanners do not prove authorization                   |
 | P5–P7: browser                | Critical Playwright journeys, degraded/error states, keyboard and axe                                                                   | Record unsupported browsers and manual accessibility gaps                                         |
 | P7: release                   | Before merge: target build and recovery readiness; after release: identity, health, and smoke evidence                                  | Local build is not a verified deployment                                                          |
+| P6, P7: production platform   | Green `ci` job (`mise run ci` on linux/amd64, GitHub Actions, §3) for the PR, together with the local `mise run verify`                  | CI runs no database test and no container (§13); it is not branch protection                     |
 | P8–P9: material changes       | Current docs, significant decisions, independent integrated verification                                                                | Separate reviewer context; exact tested revisions                                                 |
 
 ### Check configuration
@@ -790,7 +871,9 @@ live check with a user's credential unless the owner runs it.
 
 ### Infrastructure and environments
 
-There is one environment: production. Read on 26 November 2026.
+There is one deployment environment: production. The CI workflow of §3 is
+a verification environment; its pins are the four rows that start with
+"CI". Read on 26 November 2026.
 
 | Component                 | Version or value                                         | Notes                                                                                   |
 | ------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
@@ -806,6 +889,10 @@ There is one environment: production. Read on 26 November 2026.
 | PostgreSQL                | 18, Neon Free plan                                       | Project `telemetry`, region `aws-eu-central-1`, database `neondb`, branch `production`. Values from the owner; the storage PR reads `SHOW server_version`. No tables yet. |
 | Neon production compute   | Fixed 0.25 CU (autoscaling minimum and maximum 0.25)     | Lead decision (ADR 0001). Applied on 26 November 2026 through the Neon API on endpoint `ep-young-dawn-bgyaj83l`; the response showed 0.25 and 0.25, and `suspend_timeout_seconds` 0 (plan default, 5 minutes). Check the effective size and the consumption after the first week of ingest. |
 | PostgreSQL test database  | Neon branch `test`, fixed 0.25 CU                        | Created on 26 November 2026 from `production`, before it held vehicle data (§5). Shares the 100 CU-hours of the project; budget at most 5 CU-hours each month (ADR 0001). |
+| CI runner image           | GitHub-hosted `ubuntu-26.04`, x86_64                     | `.github/workflows/ci.yml`. Ubuntu 26.04.1. GitHub updates the image within the label, and two jobs of one run can get different image versions (for example 20261122.9.1, 20261116.202.1, and 20261116.88.1 on 26 November 2026); the log of each job shows its version. `ubuntu-latest` pointed to `ubuntu-26.04` on 26 November 2026. |
+| CI mise                   | 2026.11.14                                               | `version` input of the mise action in `.github/workflows/ci.yml`. Latest release on 26 November 2026; the same version as on the development machine. |
+| CI action: checkout       | `actions/checkout` v7.0.1, commit `3d3c42e5aac5ba805825da76410c181273ba90b1` | Pinned by the full commit SHA. Latest release on 26 November 2026. |
+| CI action: mise           | `jdx/mise-action` v5.3.0, commit `924e7c586e33d7d4bae9c14e26c5d22e2beb6e78` | Pinned by the full commit SHA. Latest release on 26 November 2026. |
 
 Project-specific release rules:
 

@@ -22,9 +22,6 @@ run = [
   # global mise config. Keep this list equal to [tools].
   "mise install cargo-nextest cargo-deny github:Boshen/cargo-shear cargo:sqlx-cli gitleaks osv-scanner jq crane",
   "rustup toolchain install",
-  # mise sets RUSTUP_TOOLCHAIN, and rustup then ignores the `targets` of
-  # rust-toolchain.toml. Add the Linux target of `lint` explicitly.
-  "rustup target add x86_64-unknown-linux-gnu",
   "rustup show active-toolchain",
   "cargo fetch --locked",
   "echo 'setup: no test services are needed. The tests use no network and no database.'",
@@ -35,29 +32,42 @@ description = "Format the Rust code"
 run = "cargo fmt --all"
 
 [tasks.lint]
-description = "Run Clippy with warnings as errors, for the host and for the Linux production target"
-run = [
-  "cargo clippy --workspace --all-targets --locked -- -D warnings",
-  # Compile-time evidence for linux/amd64 only: Clippy type-checks the code
-  # for the target and links nothing, so no Linux linker is needed. Build
-  # scripts and proc macros run on the host. It does not run the tests on
-  # Linux (STACK.md §13).
-  "cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gnu -- -D warnings",
-]
+description = "Run Clippy with warnings as errors for the host"
+# The host is the platform that runs the command. The `ci` task runs on
+# linux/amd64, the production platform (STACK.md §3).
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 
 [tasks.build]
 description = "Build the release binary with the locked dependencies"
 run = "cargo build --workspace --release --locked"
 
 [tasks.test]
-description = "Run the tests and the doctests"
+description = "Run all tests and the doctests"
 run = [
   "cargo nextest run --workspace --locked",
-  "cargo test --doc --workspace --locked",
+  { task = "doctest" },
 ]
 
-[tasks.verify]
-description = "Run every required local check; stops at the first failure"
+[tasks.test-without-database]
+description = "Run the tests that need no database, and the doctests (for CI)"
+# CI has no database (STACK.md §3). Only the `ci` task uses this task;
+# `verify` uses `test`, which runs all tests. No database test exists yet,
+# so this task runs all tests. The change that adds the database tests
+# adds the filter that excludes them to the nextest command below. Without
+# that filter, the database tests fail in CI, and the run is red.
+run = [
+  "cargo nextest run --workspace --locked",
+  { task = "doctest" },
+]
+
+[tasks.doctest]
+description = "Run the doctests"
+hide = true
+run = "cargo test --doc --workspace --locked"
+
+[tasks.checks]
+description = "Run the static checks that verify and ci share"
+hide = true
 run = [
   "cargo fmt --all --check",
   { task = "lint" },
@@ -67,12 +77,28 @@ run = [
   "jq empty config/server_config.json config/telemetry_config.json",
   "sh -n entrypoint.sh",
   "! git ls-files | grep -E '^(\\.env|secrets/|\\.bin/)'",
+]
+
+[tasks.verify]
+description = "Run every required local check; stops at the first failure"
+run = [
+  { task = "checks" },
   { task = "build" },
   { task = "test" },
 ]
 
+[tasks.ci]
+description = "Run the checks of the GitHub Actions workflow; stops at the first failure"
+# The same checks as `verify`, but the tests that need a database do not
+# run (STACK.md §3). `ci` does not replace the local `verify`.
+run = [
+  { task = "checks" },
+  { task = "build" },
+  { task = "test-without-database" },
+]
+
 [tasks.deps]
-description = "Dependency freshness check (STACK.md §3); reads crates.io and the Rust release channel"
+description = "Dependency freshness check (STACK.md §3); reads crates.io, the Rust release channel, the image tags, and the tags of the CI pins"
 run = [
   # `--verbose` lists each locked crate that is behind its latest crates.io
   # release, also across major versions: "Unchanged <crate> (available: <latest>)".
@@ -88,6 +114,104 @@ run = [
   # An unreadable tag list fails the task: a missing check is not a pass.
   "work=\"$(mktemp -d)\"; printf '{}' > \"$work/config.json\"; tag=\"$(DOCKER_CONFIG=\"$work\" crane ls tesla/fleet-telemetry | grep -E '^v[0-9]+[.][0-9]+[.][0-9]+$' | sort -V | tail -1)\"; rm -rf \"$work\"; test -n \"$tag\" || { echo 'deps: cannot read the tesla/fleet-telemetry tags'; exit 1; }; echo \"latest tesla/fleet-telemetry tag: $tag\"",
   "curl -fsS https://deb.debian.org/debian/dists/stable/Release | grep -E '^(Codename|Version):'",
+  # Pins of the CI workflow (STACK.md §15): each action, the mise version,
+  # and the runner label, with the newest release tags. git ls-remote reads
+  # the public tags; no token is needed. The step fails when it cannot read a tag
+  # list, or when an action SHA is not the commit of its tag comment.
+  # The workflow check is a strict allowlist, not a YAML parser (like the
+  # Dockerfile check of `vuln`):
+  # - `.github/` holds only `workflows/` and `pull_request_template.md`,
+  #   and `.github/workflows/` holds only `ci.yml`. A new workflow file or
+  #   a new directory (for example a composite action in
+  #   `.github/actions/`) fails until this check covers it in the same PR.
+  # - In `ci.yml`, each line with a `uses`, `version`, or `runs-on` key
+  #   must have the one allowed form. A line with a `container`,
+  #   `services`, or `image` key always fails (no container image is
+  #   allowed yet). Each mise action step must have a `version` input,
+  #   each job must have one `runs-on`, and YAML anchors and aliases are
+  #   not allowed.
+  # Anything else fails, and the check must change together with the
+  # workflow. Limits: STACK.md §3, "Dependency freshness check".
+  '''
+  workflow=.github/workflows/ci.yml
+  export GIT_TERMINAL_PROMPT=0
+  status=0
+  fix="Update the CI pin step of the deps task (mise.toml) together with the workflow."
+  tags() { git ls-remote --tags "https://github.com/$1"; }
+  newest() { sed -n 's#^[0-9a-f]*[[:space:]]refs/tags/\(v[0-9]*[.][0-9]*[.][0-9]*\)$#\1#p' | sort -V | tail -1; }
+  [ -f "$workflow" ] || { echo "deps: $workflow is missing"; exit 1; }
+  # Only the known entries in .github/ and .github/workflows/.
+  extra="$(find .github -mindepth 1 -maxdepth 1 ! -name workflows ! -name pull_request_template.md; find .github/workflows -mindepth 1 ! -path "$workflow")"
+  if [ -n "$extra" ]; then
+    printf '%s\n' "$extra" | while IFS= read -r entry; do
+      echo "deps: unexpected entry $entry"
+    done
+    echo "deps: .github/ may hold only workflows/ci.yml and pull_request_template.md. GitHub runs every workflow file in .github/workflows/, and the CI pin check reads only $workflow. Extend the CI pin step of the deps task (mise.toml) in the same PR as a new workflow file, action, or other entry."
+    status=1
+  fi
+  uses_form=' +- uses: [a-z0-9-]+/[a-z0-9._-]+@[0-9a-f]{40} # v[0-9]+[.][0-9]+[.][0-9]+'
+  version_form=' +version: [0-9]+[.][0-9]+[.][0-9]+'
+  runs_form=' +runs-on: ubuntu-[0-9]+[.]04'
+  # Every line with one of the keys (also quoted, also without "- ") and
+  # every anchor or alias must be an allowed line. The keys container,
+  # services, and image have no allowed form.
+  bad="$(grep -nE '(uses|version|runs-on|container|services|image).?[[:space:]]*:|^[^#]*[&*][A-Za-z0-9_-]' "$workflow" |
+    grep -vE "^[0-9]+:($uses_form|$version_form|$runs_form)$" | sed 's/^\([0-9]*\):/\1: /' || true)"
+  if [ -n "$bad" ]; then
+    printf '%s\n' "$bad" | while IFS= read -r line; do
+      echo "deps: $workflow line $line"
+    done
+    echo "deps: the lines above are outside the allowlist. Allowed: '- uses: <owner>/<repo>@<40 lowercase hex> # vX.Y.Z' (a full release tag), 'version: X.Y.Z' (the mise action input), and 'runs-on: ubuntu-NN.04'. No container, services, or image key is allowed. $fix"
+    status=1
+  fi
+  # Each mise action step: the next two lines are "with:" and "version:".
+  if ! awk '
+    want && NR == want + 1 && $0 !~ /^ +with:$/ { bad = 1 }
+    want && NR == want + 2 { if ($0 !~ /^ +version: /) bad = 1; want = 0 }
+    /^ +- uses: jdx\/mise-action@/ { want = NR; steps++ }
+    /^ +version: / { versions++ }
+    END { exit (bad || want || steps == 0 || versions != steps) }' "$workflow"; then
+    echo "deps: each jdx/mise-action step of $workflow needs 'with:' and 'version: X.Y.Z' on the next two lines, and no other 'version:' line may exist. $fix"
+    status=1
+  fi
+  # Each job has exactly one runs-on line.
+  jobs="$(awk '/^jobs:$/ { j = 1; next } j && /^[^ #]/ { j = 0 } j && /^  [A-Za-z0-9_-]+:$/ { n++ } END { print n + 0 }' "$workflow")"
+  runs="$(grep -cE "^$runs_form$" "$workflow" || true)"
+  if [ "$jobs" -eq 0 ] || [ "$runs" -ne "$jobs" ]; then
+    echo "deps: $workflow has $jobs jobs and $runs allowed runs-on lines; each job needs one. $fix"
+    status=1
+  fi
+  pins="$(sed -n 's/^ *- uses: \([^ ]*@[0-9a-f]\{40\}\) # \(v[0-9.]*\)$/\1#\2/p' "$workflow" | sort -u)"
+  [ -n "$pins" ] || { echo "deps: no pinned action in $workflow"; status=1; }
+  for pin in $pins; do
+    ref="${pin%%#*}"; tag="${pin#*#}"
+    repo="${ref%@*}"; sha="${ref#*@}"
+    list="$(tags "$repo")" || list=""
+    latest="$(printf '%s\n' "$list" | newest)"
+    # An annotated tag has a ^{} line with the commit; a lightweight tag has none.
+    tag_sha="$(printf '%s\n' "$list" | awk -v t="refs/tags/$tag" '$2 == t "^{}" { c = $1 } $2 == t && c == "" { l = $1 } END { print (c != "" ? c : l) }')"
+    if [ -z "$latest" ] || [ -z "$tag_sha" ]; then
+      echo "deps: cannot read the tags of $repo"; status=1; continue
+    fi
+    echo "pinned action: $repo $tag ($sha); latest tag: $latest"
+    [ "$tag_sha" = "$sha" ] || { echo "deps: $repo pins $sha, but $tag is $tag_sha"; status=1; }
+  done
+  mise_pin="$(sed -n 's/^ *version: \([0-9.]*\)$/\1/p' "$workflow" | sort -u)"
+  mise_latest="$(tags jdx/mise | newest)"
+  if [ -z "$mise_latest" ] || [ "$(printf '%s\n' "$mise_pin" | grep -c .)" -ne 1 ]; then
+    echo "deps: cannot read the mise pin of $workflow or the mise tags"; status=1
+  else
+    echo "pinned CI mise: $mise_pin; latest tag: ${mise_latest#v}"
+  fi
+  runners="$(sed -n 's/^ *runs-on: //p' "$workflow" | sort -u | paste -sd ' ' -)"
+  ubuntu="$(tags actions/runner-images | sed -n 's#.*refs/tags/ubuntu\([0-9][0-9]\)/.*#\1#p' | sort -n | tail -1)"
+  if [ -z "$ubuntu" ]; then
+    echo "deps: cannot read the runner image tags"; status=1
+  else
+    echo "pinned CI runner: $runners; newest Ubuntu runner image with a tag: $ubuntu.04 (check its status in the runner-images README)"
+  fi
+  exit "$status"
+  ''',
 ]
 
 [tasks.vuln]
