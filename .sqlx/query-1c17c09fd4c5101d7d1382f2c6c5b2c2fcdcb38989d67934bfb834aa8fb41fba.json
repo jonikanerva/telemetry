@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO unprocessed_record (received_at, topic, payload, reason, sqlstate)\n           SELECT * FROM UNNEST(\n               $1::timestamptz[], $2::bytea[], $3::bytea[], $4::text[], $5::text[]\n           )\n           ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TimestamptzArray",
+        "ByteaArray",
+        "ByteaArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1c17c09fd4c5101d7d1382f2c6c5b2c2fcdcb38989d67934bfb834aa8fb41fba"
+}

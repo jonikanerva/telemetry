@@ -9,7 +9,9 @@ idiomatic_version_file_enable_tools = ["rust"]
 cargo-nextest = "0.9.152"
 cargo-deny = "0.22.1"
 "github:Boshen/cargo-shear" = "1.14.1"
-"cargo:sqlx-cli" = { version = "0.9.1", default-features = false, features = ["postgres", "rustls"], bin = "sqlx" }
+# sqlx-cli installs two programs: `sqlx` and `cargo-sqlx`. `cargo sqlx
+# prepare` (scripts/sqlx-metadata.sh) needs the second one.
+"cargo:sqlx-cli" = { version = "0.9.1", default-features = false, features = ["postgres", "rustls"] }
 gitleaks = "8.30.1"
 osv-scanner = "2.7.1"
 jq = "1.8.2"
@@ -21,10 +23,14 @@ run = [
   # Name the tools: a plain `mise install` also installs the tools of the
   # global mise config. Keep this list equal to [tools].
   "mise install cargo-nextest cargo-deny github:Boshen/cargo-shear cargo:sqlx-cli gitleaks osv-scanner jq crane",
+  # An install of sqlx-cli 0.9.1 from an older pin (`bin = "sqlx"`) has no
+  # `cargo-sqlx`, and `mise install` keeps it because the version matches.
+  # Reinstall only in that case, so that `cargo sqlx prepare` works.
+  "mise which cargo-sqlx >/dev/null 2>&1 || mise install --force cargo:sqlx-cli@0.9.1",
   "rustup toolchain install",
   "rustup show active-toolchain",
   "cargo fetch --locked",
-  "echo 'setup: no test services are needed. The tests use no network and no database.'",
+  "echo 'setup: the database tests need TEST_DATABASE_URL, the URL of the Neon branch test (README.md, Verification).'",
 ]
 
 [tasks.format]
@@ -42,8 +48,10 @@ description = "Build the release binary with the locked dependencies"
 run = "cargo build --workspace --release --locked"
 
 [tasks.test]
-description = "Run all tests and the doctests"
+description = "Run all tests and the doctests; the database tests need TEST_DATABASE_URL"
 run = [
+  # A missing URL is a failure, not a skipped check (STACK.md §3).
+  "test -n \"${TEST_DATABASE_URL:-}\" || { echo 'test: TEST_DATABASE_URL is not set. Export the URL of the Neon branch test (README.md, Verification).' >&2; exit 1; }",
   "cargo nextest run --workspace --locked",
   { task = "doctest" },
 ]
@@ -51,12 +59,10 @@ run = [
 [tasks.test-without-database]
 description = "Run the tests that need no database, and the doctests (for CI)"
 # CI has no database (STACK.md §3). Only the `ci` task uses this task;
-# `verify` uses `test`, which runs all tests. No database test exists yet,
-# so this task runs all tests. The change that adds the database tests
-# adds the filter that excludes them to the nextest command below. Without
-# that filter, the database tests fail in CI, and the run is red.
+# `verify` uses `test`, which runs all tests. The filter excludes the
+# database tests: the test binary `storage` (`crates/ingest/tests/storage/`).
 run = [
-  "cargo nextest run --workspace --locked",
+  "cargo nextest run --workspace --locked -E 'not binary_id(ingest::storage)'",
   { task = "doctest" },
 ]
 
@@ -76,13 +82,24 @@ run = [
   "gitleaks git --redact --no-banner .",
   "jq empty config/server_config.json config/telemetry_config.json",
   "sh -n entrypoint.sh",
+  "sh -n scripts/sqlx-metadata.sh",
   "! git ls-files | grep -E '^(\\.env|secrets/|\\.bin/)'",
 ]
+
+[tasks.sqlx-check]
+description = "Check the committed SQLx query metadata against a migrated, isolated test database"
+run = "scripts/sqlx-metadata.sh check"
+
+[tasks.sqlx-prepare]
+description = "Write the SQLx query metadata in .sqlx/ after a query or migration change"
+run = "scripts/sqlx-metadata.sh prepare"
 
 [tasks.verify]
 description = "Run every required local check; stops at the first failure"
 run = [
+  "test -n \"${TEST_DATABASE_URL:-}\" || { echo 'verify: TEST_DATABASE_URL is not set. Export the URL of the Neon branch test (README.md, Verification).' >&2; exit 1; }",
   { task = "checks" },
+  { task = "sqlx-check" },
   { task = "build" },
   { task = "test" },
 ]

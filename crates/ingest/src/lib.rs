@@ -3,9 +3,10 @@
 //! `docs/adr/0001-ingestion-architecture.md` describes the complete process.
 //! This crate has command parsing, start-up configuration, structured logs,
 //! the health endpoint, the TCP gate, the supervision of `fleet-telemetry`,
-//! the watchdog, and the shutdown sequence. Later changes add the ZMQ
-//! reader, the queue, and the database writer as new modules. They connect
-//! through three interfaces: the readiness input of the gate
+//! the watchdog, the storage ([`storage`]: the raw schema, the migrations,
+//! and the database writer), and the shutdown sequence. Later changes add
+//! the ZMQ reader and the queue as new modules. They connect through four
+//! interfaces: the storage ([`storage`]), the readiness input of the gate
 //! ([`readiness::Readiness`]), the sink of the `ingest_event` records
 //! ([`events::EventSink`]), and the heartbeat registration
 //! ([`watchdog::Watchdog::register`]).
@@ -26,4 +27,5 @@ pub mod lifecycle;
 pub mod logging;
 pub mod readiness;
 pub mod record;
+pub mod storage;
 pub mod watchdog;

@@ -1,0 +1,8 @@
+# The SQLx query macros read the committed metadata in `.sqlx/` and never
+# connect to a database at build time. Without this setting they would
+# connect to DATABASE_URL, also a DATABASE_URL from a `.env` file of the
+# workspace. `scripts/sqlx-metadata.sh` sets SQLX_OFFLINE=false for its own
+# check against an isolated test database. A variable in the environment
+# replaces this value.
+[env]
+SQLX_OFFLINE = "true"

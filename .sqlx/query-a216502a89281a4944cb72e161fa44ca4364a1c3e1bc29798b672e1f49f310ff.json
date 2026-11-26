@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO ingest_event (\n               run_id, occurred_at, kind, reason, dropped_count, first_received_at, last_received_at\n           )\n           SELECT $1::uuid, occurred_at, kind, reason, dropped_count, first_received_at, last_received_at\n           FROM UNNEST(\n               $2::timestamptz[], $3::text[], $4::text[], $5::bigint[], $6::timestamptz[],\n               $7::timestamptz[]\n           ) AS e (occurred_at, kind, reason, dropped_count, first_received_at, last_received_at)\n           ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TimestamptzArray",
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "TimestamptzArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a216502a89281a4944cb72e161fa44ca4364a1c3e1bc29798b672e1f49f310ff"
+}

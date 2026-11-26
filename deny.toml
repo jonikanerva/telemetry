@@ -17,13 +17,45 @@ ignore = []
 allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0"]
 confidence-threshold = 0.8
 
-# foldhash 0.1 has the Zlib licence. prost-build needs it through petgraph
-# and hashbrown (feature `default-hasher`), and no feature turns it off. It
-# runs in the build script only and is not part of the ingest binary. The
-# exception covers this one crate, not the licence for every crate.
+# foldhash has the Zlib licence, a permissive licence. Two versions are in
+# the tree, and no feature turns either off:
+# - 0.1: prost-build needs it through petgraph and hashbrown 0.15 (feature
+#   `default-hasher`). It runs in the build script only.
+# - 0.2: sqlx-core needs it through hashlink and hashbrown 0.16 (the cache
+#   of prepared statements). It is part of the ingest binary.
+# The exception covers this one crate, not the licence for every crate.
 [[licenses.exceptions]]
 crate = "foldhash"
 allow = ["Zlib"]
+
+# The TLS stack of the database connection (STACK.md §5 and §7): rustls
+# with the aws-lc-rs provider and the Mozilla root certificates. sqlx
+# feature `tls-rustls-aws-lc-rs` brings these crates; no feature removes
+# them. ISC is a permissive licence of the MIT kind. aws-lc-sys has
+# several terms; ISC is the one term that the allow list above does not
+# already satisfy. Each exception covers one crate.
+[[licenses.exceptions]]
+crate = "aws-lc-rs"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "aws-lc-sys"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "rustls-webpki"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "untrusted"
+allow = ["ISC"]
+
+# webpki-roots holds the Mozilla root certificates as data under the
+# Community Data License Agreement, Permissive 2.0. The licence permits
+# use and redistribution of the data without conditions on the program.
+[[licenses.exceptions]]
+crate = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
 
 [licenses.private]
 # The first-party crates are not published and have no licence.
