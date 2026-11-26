@@ -367,7 +367,11 @@ async fn a_full_queue_and_a_shortfall_are_stored_as_gaps() {
         tokio::task::block_in_place(|| {
             run.ingest.wait_for_health(200);
             // A drop on the ZMQ path: the counter grows without messages.
+            // A record after the drop stands for the queued older records
+            // that arrive after a drop at the high water mark, so the stall
+            // rule sees a live socket (ADR 0001, "SUB socket").
             assert_eq!(run.ingest.control("lose V 3"), "ok 0");
+            assert_eq!(run.ingest.control("publish V 0 1"), "ok 1");
             let shortfall = run.ingest.read_event("zmq_shortfall");
             assert_eq!(shortfall["count"], 3);
             run.proxy.cut();

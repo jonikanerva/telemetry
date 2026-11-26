@@ -1,33 +1,48 @@
-//! The ZMQ reader (ADR 0001, "Transport" and "Delivery path", step 1).
+//! The ZMQ reader (ADR 0001, "Transport", "Delivery path", step 1, and
+//! "SUB socket").
 //!
-//! - **Socket.** One SUB socket of the `zeromq` crate (pure Rust) connects
-//!   to `tcp://127.0.0.1:<INGEST_ZMQ_PORT>`, where `fleet-telemetry` binds
-//!   its PUB socket, and subscribes to the topic prefix `tesla_telemetry_`.
-//!   The monitor and the subscription exist before the connect, so the
-//!   first `Connected` event reaches the reader and the subscription goes
-//!   to each new peer.
-//! - **Connect and reconnect.** The first connect retries by itself while
-//!   the port refuses the connection; each attempt has a bound of
-//!   [`Limits::connect_attempt`] (5 s), and a new attempt follows at once,
-//!   so the reader beats its heartbeat while it waits. After the first
-//!   connect, the crate reconnects by itself when the peer goes away: after
-//!   100 ms, doubling to at most 30 s, and it sends the subscription again
-//!   (`zeromq` 0.7.0, `src/reconnect.rs`). A child that restarts after a
-//!   long backoff can therefore wait up to 30 s for the reconnect; the gate
-//!   stays closed meanwhile, and the vehicle buffers.
-//! - **Gate condition 2.** The SUB socket is settled 250 ms after its
-//!   `Connected` event ([`Limits::settle`]), so that the PUB side has
-//!   applied the subscription. The condition is cleared when the socket
-//!   reports `Disconnected`, and when the child stops running (gate
-//!   condition 1 changes to false). The second rule does not wait for the
-//!   socket to see the end of the old peer, so a restarted child cannot
-//!   open the gate before the new subscription has settled. The reader
-//!   reads the count of child stops of the gate state, so a stop and a
-//!   start that the watch channel merges into one value still count as a
-//!   stop. It applies the stops before each `Connected` event, so the
-//!   `Connected` event of a new child always sets a settle time: no order
-//!   of the two inputs loses the settle time of a new child (ADR 0001, "No
-//!   permanent close").
+//! - **Socket.** A SUB socket of the `zeromq` crate (pure Rust) connects to
+//!   `tcp://127.0.0.1:<INGEST_ZMQ_PORT>`, where `fleet-telemetry` binds its
+//!   PUB socket, and subscribes to the topic prefix `tesla_telemetry_`.
+//! - **The reader owns the life of the socket.** It does not depend on the
+//!   reconnect of the crate: `zeromq` 0.7.0 can send `Connected` for a peer
+//!   that it never registered, and then never reconnects (review round 2
+//!   of PR #22, finding B2; ADR 0001, "SUB socket"). The reader replaces
+//!   the whole socket ([`Rebuild`]) when the child stops, when the socket
+//!   reports `Disconnected`, when the subscription cannot be sent, and when
+//!   the stall rule of the shortfall check finds no received record while
+//!   the child dispatches ([`super::shortfall::Liveness`]). The crate has
+//!   no option to turn off its own reconnect; a dropped socket stops it.
+//! - **Connect, then subscribe.** Each socket connects without a
+//!   subscription and subscribes after the connect. With no subscription,
+//!   the crate registers each connected peer, so a peer that ends always
+//!   ends in a `Disconnected` event. The subscription then goes to the
+//!   registered peer, and the result of that send is the positive evidence
+//!   of the connect. Each connect attempt has a bound of
+//!   [`Limits::connect_attempt`] (5 s); after a failed attempt the reader
+//!   waits 100 ms and makes a new socket.
+//! - **Gate condition 2.** A socket is settled 250 ms after its connect and
+//!   subscription ([`Limits::settle`]), so that the PUB side has applied
+//!   the subscription. The settle time starts from the results of the
+//!   reader's own calls, not from a `Connected` event, so a lost event
+//!   cannot hold the condition false. The condition is false while the
+//!   reader replaces a socket, with the reason `subscriber_stalled` after a
+//!   stall. Invariant: while the child runs and the socket is not settled,
+//!   the reader is in a bounded connect attempt, a bounded pause, a
+//!   bounded drain, or the settle time (ADR 0001, "No permanent close").
+//! - **Rebuild order.** The reader first clears gate condition 2, so the
+//!   gate closes and no new record is dispatched. Then it reads the old
+//!   socket to its end: the `Disconnected` event of its peer, after which
+//!   no message of that peer can come. The drain ends earlier after
+//!   [`Limits::rebuild_quiet`] (200 ms) without a message, and at the
+//!   latest after [`Limits::rebuild_drain`] (1 s). Then the reader drops
+//!   the socket and makes a new one. So a rebuild loses no record that
+//!   the old socket received.
+//! - **Generation.** The first socket after a child stop starts a new
+//!   generation of the received counts, because the counter of a new child
+//!   starts at 0. The stop count of the gate state shows each stop, also
+//!   when the watch channel merges a stop and the next start into one
+//!   value.
 //! - **Messages.** `fleet-telemetry` sends two frames: the topic and the
 //!   payload (ADR 0001, fact 4). The first frame is the topic. The payload
 //!   is the second frame; a message with one frame has an empty payload,
@@ -40,25 +55,29 @@
 //!   records a `records_dropped` event with the count and the receive
 //!   times at the first drop, then at most once each 60 s, and the rest at
 //!   its stop ([`crate::events::CountThrottle`]).
-//! - **Heartbeat.** The reader beats at least once each second, also when
-//!   no message arrives (watchdog task `reader`, 30 s).
+//! - **Heartbeat.** The reader beats at least once each second in every
+//!   wait, also when no message arrives (watchdog task `reader`, 30 s).
 //! - **Drain.** At the shutdown (ADR 0001, step 2) the reader reads until
 //!   no message arrives for [`Limits::drain_quiet`] (1 s), at most for the
 //!   bound of the request (3 s). Then it records the rest of the drop
 //!   count, retires its heartbeat, and closes the socket.
 //!
 //! Logs: `subscriber_connected`, `subscriber_settled`,
-//! `subscriber_disconnected`, `subscriber_connect_failed` with a static
-//! code, and `subscriber_drained` with the count of drained messages. The
-//! reader never logs a frame.
+//! `subscriber_disconnected`, `subscriber_rebuilt` with the reason,
+//! `subscriber_connect_failed` and `subscriber_subscribe_failed` with a
+//! static code, and `subscriber_drained` with the count of drained
+//! messages. The reader never logs a frame. The crate writes its own
+//! errors to the `log` crate, which this process does not read; the reader
+//! forwards no text of the crate, because that text can hold data.
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use jiff::Timestamp;
 use tokio::sync::{oneshot, watch};
-use tokio::time::{Instant, MissedTickBehavior, sleep, sleep_until};
+use tokio::time::{Instant, Interval, MissedTickBehavior, sleep, sleep_until};
 use tracing::{info, warn};
 use zeromq::prelude::{Socket, SocketRecv};
 use zeromq::{SocketEvent, SocketOptions, SubSocket, ZmqError, ZmqMessage};
@@ -73,60 +92,24 @@ use crate::readiness::GateState;
 use crate::record::TOPIC_PREFIX;
 use crate::watchdog::{BEAT_INTERVAL, Heartbeat};
 
-/// Gate condition 2 as a state machine of the `Connected` and
-/// `Disconnected` events, the child stops, and the time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The wait after a failed connect attempt.
+const CONNECT_PAUSE: Duration = Duration::from_millis(100);
+
+/// The settle time of gate condition 2 after the connect of one socket.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Settle {
     connected_at: Option<Instant>,
     settled: bool,
-    /// The next connect is the first one to a new child process.
-    new_child: bool,
-    /// The count of child stops that the reader has applied
-    /// ([`GateState::child_stops`]).
-    child_stops: u64,
 }
 
 impl Settle {
-    /// No connection yet. `child_stops` is the count of child stops now.
-    #[must_use]
-    pub const fn new(child_stops: u64) -> Self {
-        Self {
-            connected_at: None,
-            settled: false,
-            new_child: true,
-            child_stops,
-        }
-    }
-
-    /// The socket connected at `now`. Returns true when this is the first
-    /// connect to a new child: the received counts of the shortfall check
-    /// start again.
-    pub const fn connected(&mut self, now: Instant) -> bool {
+    /// The socket is connected and subscribed at `now`.
+    pub const fn connected(&mut self, now: Instant) {
         self.connected_at = Some(now);
         self.settled = false;
-        let new_child = self.new_child;
-        self.new_child = false;
-        new_child
     }
 
-    /// The gate state now counts `child_stops` child stops. Returns true
-    /// when the count changed: the child stopped at least once, so the
-    /// socket is not settled any more, and the next connect is to a new
-    /// child. The socket can report `Disconnected` later than the
-    /// supervisor reports the exit. The reader compares a count, not the
-    /// running flag, because the watch channel can merge a stop and the
-    /// next start into one value (review round 1 of PR #22, note N3).
-    pub const fn child(&mut self, child_stops: u64) -> bool {
-        let stopped = child_stops != self.child_stops;
-        self.child_stops = child_stops;
-        if stopped {
-            self.lost();
-            self.new_child = true;
-        }
-        stopped
-    }
-
-    /// The socket lost its peer, or the child stopped.
+    /// The socket is being replaced.
     pub const fn lost(&mut self) {
         self.connected_at = None;
         self.settled = false;
@@ -155,6 +138,82 @@ impl Settle {
     #[must_use]
     pub const fn is_settled(&self) -> bool {
         self.settled
+    }
+}
+
+/// Why the reader replaces its socket (module documentation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rebuild {
+    /// The gate state counts a new child stop.
+    ChildStopped,
+    /// The socket reported `Disconnected`, or its monitor ended.
+    PeerLost,
+    /// The send of the subscription after the connect failed.
+    SubscribeFailed,
+    /// The stall rule found no received record while the child dispatched.
+    Stalled,
+}
+
+impl Rebuild {
+    /// The static text of the log field `reason`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ChildStopped => "child_stopped",
+            Self::PeerLost => "peer_lost",
+            Self::SubscribeFailed => "subscribe_failed",
+            Self::Stalled => "stalled",
+        }
+    }
+
+    /// True when the old socket can hold messages that the reader has not
+    /// read. After `Disconnected`, no message of the peer can come.
+    const fn drains(self) -> bool {
+        !matches!(self, Self::PeerLost | Self::SubscribeFailed)
+    }
+
+    /// True when the next socket waits for the backoff. A peer that ends
+    /// again and again must not make a busy loop.
+    const fn backs_off(self) -> bool {
+        matches!(self, Self::PeerLost | Self::SubscribeFailed)
+    }
+}
+
+/// The wait before a new socket after a lost peer: none, then the first
+/// wait, doubling to the longest one. A received message or a child stop
+/// resets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Backoff {
+    next: Duration,
+    first: Duration,
+    max: Duration,
+}
+
+impl Backoff {
+    /// A backoff without a wait yet.
+    #[must_use]
+    pub const fn new(first: Duration, max: Duration) -> Self {
+        Self {
+            next: Duration::ZERO,
+            first,
+            max,
+        }
+    }
+
+    /// The wait now; the next one is longer.
+    pub fn take(&mut self) -> Duration {
+        let wait = self.next;
+        self.next = if wait.is_zero() {
+            self.first
+        } else {
+            wait.saturating_mul(2).min(self.max)
+        };
+        wait
+    }
+
+    /// The next wait is none again.
+    pub const fn reset(&mut self) {
+        self.next = Duration::ZERO;
     }
 }
 
@@ -227,13 +286,68 @@ pub struct Reader {
     pub received: Arc<Received>,
     /// The sink of the `records_dropped` events.
     pub sink: Arc<dyn EventSink>,
-    /// The gate state, for gate condition 1.
+    /// The gate state, for the child stops.
     pub gate: watch::Receiver<GateState>,
+    /// The number of the socket that the stall rule found stalled
+    /// ([`super::shortfall::Shortfall::stalled`]).
+    pub stalled: watch::Receiver<Option<u64>>,
 }
 
+/// The monitor of one socket.
+type Monitor = Pin<Box<dyn Stream<Item = SocketEvent> + Send>>;
+
+/// One connected and subscribed socket.
+struct Live {
+    socket: SubSocket,
+    monitor: Monitor,
+    /// Its number ([`Received::connected`]).
+    id: u64,
+    /// The count of child stops at its connect.
+    stops: u64,
+}
+
+/// The state of the reader across its sockets.
 struct Loop {
     settle: Settle,
     drops: CountThrottle,
+    /// The count of child stops of the current generation.
+    generation_stops: Option<u64>,
+    backoff: Backoff,
+    /// False after the sender of the gate state is gone.
+    gate_open: bool,
+    /// False after the sender of the stall requests is gone.
+    stalled_open: bool,
+}
+
+/// The end of the time with one socket.
+enum Served {
+    Rebuild(Rebuild),
+    /// The shutdown asks for the drain: the bound, or `None` for a dropped
+    /// sender.
+    Shutdown(Option<Duration>),
+}
+
+/// The waits of the reader: the beat and the shutdown request.
+struct Waits<'a> {
+    heartbeat: &'a Heartbeat,
+    tick: &'a mut Interval,
+    drain: &'a mut oneshot::Receiver<Duration>,
+}
+
+impl Waits<'_> {
+    /// Waits `wait` and beats. Returns false when the shutdown asks for
+    /// the end: no socket exists, so nothing is left to drain.
+    async fn pause(&mut self, wait: Duration) -> bool {
+        let pause = sleep(wait);
+        tokio::pin!(pause);
+        loop {
+            tokio::select! {
+                () = &mut pause => return true,
+                _ = self.tick.tick() => self.heartbeat.beat(),
+                _ = &mut *self.drain => return false,
+            }
+        }
+    }
 }
 
 impl Reader {
@@ -241,100 +355,40 @@ impl Reader {
     /// drains the socket and ends. A dropped sender ends the reader without
     /// a drain.
     pub async fn run(mut self, heartbeat: Heartbeat, mut drain: oneshot::Receiver<Duration>) {
-        let mut options = SocketOptions::default();
-        options.connect_timeout(self.limits.connect_attempt);
-        let mut socket = SubSocket::with_options(options);
-        let mut monitor = socket.monitor();
         let mut tick = tokio::time::interval(BEAT_INTERVAL);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut waits = Waits {
+            heartbeat: &heartbeat,
+            tick: &mut tick,
+            drain: &mut drain,
+        };
         let mut state = Loop {
-            settle: Settle::new(self.gate.borrow_and_update().child_stops()),
+            settle: Settle::default(),
             drops: CountThrottle::new(self.limits.drop_event_interval),
+            generation_stops: None,
+            backoff: Backoff::new(
+                self.limits.rebuild_backoff_first,
+                self.limits.rebuild_backoff_max,
+            ),
+            gate_open: true,
+            stalled_open: true,
         };
-        // No peer exists yet: the crate keeps the subscription and sends it
-        // to each peer at the connect.
-        if let Err(error) = socket.subscribe(TOPIC_PREFIX).await {
-            warn!(code = error_code(&error), "subscriber_subscribe_failed");
-        }
-
-        // The first connect.
         loop {
-            let attempt = socket.connect(&self.endpoint);
-            tokio::pin!(attempt);
-            let result = loop {
-                tokio::select! {
-                    result = &mut attempt => break Some(result),
-                    _ = tick.tick() => heartbeat.beat(),
-                    bound = &mut drain => {
-                        // No message can have arrived: nothing to drain.
-                        drop(bound);
-                        break None;
-                    }
-                }
+            let Some(mut live) = self.connect(&mut waits, &mut state).await else {
+                break;
             };
-            match result {
-                None => {
-                    heartbeat.retire();
-                    return;
+            match self.serve(&mut live, &mut waits, &mut state).await {
+                Served::Shutdown(Some(bound)) => {
+                    self.drain(&mut live, bound, &mut waits, &mut state).await;
+                    break;
                 }
-                Some(Ok(())) => break,
-                Some(Err(error)) => {
-                    warn!(code = error_code(&error), "subscriber_connect_failed");
-                    // A short pause before the next attempt, so that a fast
-                    // failure is not a busy loop.
-                    let pause = sleep(Duration::from_millis(100));
-                    tokio::pin!(pause);
-                    loop {
-                        tokio::select! {
-                            () = &mut pause => break,
-                            _ = tick.tick() => heartbeat.beat(),
-                        }
+                Served::Shutdown(None) => break,
+                Served::Rebuild(reason) => {
+                    if !self.replace(live, reason, &mut waits, &mut state).await {
+                        break;
                     }
                 }
             }
-        }
-
-        let bound = loop {
-            heartbeat.beat();
-            let settle_due = state.settle.due(self.limits.settle);
-            tokio::select! {
-                message = socket.recv() => self.message(message, &mut state),
-                event = monitor.next() => self.event(event.as_ref(), &mut state),
-                () = sleep_until(settle_due.unwrap_or_else(Instant::now)), if settle_due.is_some() => {
-                    if state.settle.poll(Instant::now(), self.limits.settle) {
-                        info!("subscriber_settled");
-                        self.conditions.set_settled(true);
-                    }
-                }
-                changed = self.gate.changed() => {
-                    if changed.is_ok() {
-                        self.gate_changed(&mut state);
-                    }
-                }
-                _ = tick.tick() => {
-                    if let Some(window) = state.drops.due(Instant::now()) {
-                        self.record_drops(window);
-                    }
-                }
-                bound = &mut drain => break bound.ok(),
-            }
-        };
-
-        if let Some(bound) = bound {
-            let mut end = Drain::new(Instant::now(), self.limits.drain_quiet, bound);
-            let mut drained = 0_u64;
-            loop {
-                tokio::select! {
-                    message = socket.recv() => {
-                        end.message(Instant::now());
-                        drained += 1;
-                        self.message(message, &mut state);
-                    }
-                    () = sleep_until(end.end()) => break,
-                    _ = tick.tick() => heartbeat.beat(),
-                }
-            }
-            info!(count = drained, "subscriber_drained");
         }
         if let Some(window) = state.drops.take() {
             self.record_drops(window);
@@ -342,11 +396,226 @@ impl Reader {
         heartbeat.retire();
     }
 
+    /// Makes sockets until one is connected and subscribed. Returns `None`
+    /// when the shutdown asks for the end.
+    async fn connect(&mut self, waits: &mut Waits<'_>, state: &mut Loop) -> Option<Live> {
+        loop {
+            let stops = self.gate.borrow_and_update().child_stops();
+            let mut options = SocketOptions::default();
+            options.connect_timeout(self.limits.connect_attempt);
+            let mut socket = SubSocket::with_options(options);
+            let monitor: Monitor = Box::pin(socket.monitor());
+            let connected = {
+                let attempt = socket.connect(&self.endpoint);
+                tokio::pin!(attempt);
+                loop {
+                    tokio::select! {
+                        result = &mut attempt => break result,
+                        _ = waits.tick.tick() => waits.heartbeat.beat(),
+                        _ = &mut *waits.drain => return None,
+                    }
+                }
+            };
+            if let Err(error) = connected {
+                warn!(code = error_code(&error), "subscriber_connect_failed");
+                if !waits.pause(CONNECT_PAUSE).await {
+                    return None;
+                }
+                continue;
+            }
+            if self.gate.borrow_and_update().child_stops() != stops {
+                // The peer can be the child that stopped.
+                info!(
+                    reason = Rebuild::ChildStopped.as_str(),
+                    "subscriber_rebuilt"
+                );
+                continue;
+            }
+            let subscribed = {
+                let subscribe = tokio::time::timeout(
+                    self.limits.connect_attempt,
+                    socket.subscribe(TOPIC_PREFIX),
+                );
+                tokio::pin!(subscribe);
+                loop {
+                    tokio::select! {
+                        result = &mut subscribe => break result,
+                        _ = waits.tick.tick() => waits.heartbeat.beat(),
+                        _ = &mut *waits.drain => return None,
+                    }
+                }
+            };
+            let failed = match subscribed {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error_code(&error)),
+                Err(_) => Some("timeout"),
+            };
+            if let Some(code) = failed {
+                warn!(code, "subscriber_subscribe_failed");
+                info!(
+                    reason = Rebuild::SubscribeFailed.as_str(),
+                    "subscriber_rebuilt"
+                );
+                if !waits.pause(state.backoff.take()).await {
+                    return None;
+                }
+                continue;
+            }
+            let new_child = state.generation_stops != Some(stops);
+            if new_child {
+                state.backoff.reset();
+            }
+            state.generation_stops = Some(stops);
+            let id = self.received.connected(new_child);
+            state.settle.connected(Instant::now());
+            info!("subscriber_connected");
+            return Some(Live {
+                socket,
+                monitor,
+                id,
+                stops,
+            });
+        }
+    }
+
+    /// Reads one socket until it must be replaced or the shutdown asks for
+    /// the drain.
+    async fn serve(&mut self, live: &mut Live, waits: &mut Waits<'_>, state: &mut Loop) -> Served {
+        loop {
+            waits.heartbeat.beat();
+            let settle_due = state.settle.due(self.limits.settle);
+            tokio::select! {
+                message = live.socket.recv() => {
+                    if message.is_ok() {
+                        state.backoff.reset();
+                    }
+                    self.message(message, state);
+                }
+                event = live.monitor.next() => match event {
+                    Some(SocketEvent::Disconnected(..)) => {
+                        info!("subscriber_disconnected");
+                        return Served::Rebuild(Rebuild::PeerLost);
+                    }
+                    Some(_) => {}
+                    None => {
+                        warn!("subscriber_monitor_closed");
+                        return Served::Rebuild(Rebuild::PeerLost);
+                    }
+                },
+                () = sleep_until(settle_due.unwrap_or_else(Instant::now)), if settle_due.is_some() => {
+                    if state.settle.poll(Instant::now(), self.limits.settle) {
+                        info!("subscriber_settled");
+                        self.conditions.set_settled(true);
+                    }
+                }
+                changed = self.gate.changed(), if state.gate_open => {
+                    if changed.is_err() {
+                        state.gate_open = false;
+                    } else if self.gate.borrow_and_update().child_stops() != live.stops {
+                        return Served::Rebuild(Rebuild::ChildStopped);
+                    }
+                }
+                changed = self.stalled.changed(), if state.stalled_open => {
+                    if changed.is_err() {
+                        state.stalled_open = false;
+                    } else if *self.stalled.borrow_and_update() == Some(live.id) {
+                        return Served::Rebuild(Rebuild::Stalled);
+                    }
+                }
+                _ = waits.tick.tick() => {
+                    if let Some(window) = state.drops.due(Instant::now()) {
+                        self.record_drops(window);
+                    }
+                }
+                bound = &mut *waits.drain => return Served::Shutdown(bound.ok()),
+            }
+        }
+    }
+
+    /// Replaces a socket in the order of the module documentation. Returns
+    /// false when the shutdown asked for the end during the replacement.
+    async fn replace(
+        &mut self,
+        mut live: Live,
+        reason: Rebuild,
+        waits: &mut Waits<'_>,
+        state: &mut Loop,
+    ) -> bool {
+        info!(reason = reason.as_str(), "subscriber_rebuilt");
+        state.settle.lost();
+        if reason == Rebuild::Stalled {
+            self.conditions.set_stalled();
+        } else {
+            self.conditions.set_settled(false);
+        }
+        if reason == Rebuild::ChildStopped {
+            state.backoff.reset();
+        }
+        if reason.drains() {
+            let mut end = Drain::new(
+                Instant::now(),
+                self.limits.rebuild_quiet,
+                self.limits.rebuild_drain,
+            );
+            loop {
+                tokio::select! {
+                    message = live.socket.recv() => {
+                        end.message(Instant::now());
+                        self.message(message, state);
+                    }
+                    event = live.monitor.next() => {
+                        if matches!(event, Some(SocketEvent::Disconnected(..)) | None) {
+                            break;
+                        }
+                    }
+                    () = sleep_until(end.end()) => break,
+                    _ = waits.tick.tick() => waits.heartbeat.beat(),
+                    bound = &mut *waits.drain => {
+                        if let Ok(bound) = bound {
+                            self.drain(&mut live, bound, waits, state).await;
+                        }
+                        return false;
+                    }
+                }
+            }
+        }
+        drop(live);
+        if reason.backs_off() {
+            return waits.pause(state.backoff.take()).await;
+        }
+        true
+    }
+
+    /// The drain of the shutdown (module documentation).
+    async fn drain(
+        &self,
+        live: &mut Live,
+        bound: Duration,
+        waits: &mut Waits<'_>,
+        state: &mut Loop,
+    ) {
+        let mut end = Drain::new(Instant::now(), self.limits.drain_quiet, bound);
+        let mut drained = 0_u64;
+        loop {
+            tokio::select! {
+                message = live.socket.recv() => {
+                    end.message(Instant::now());
+                    drained += 1;
+                    self.message(message, state);
+                }
+                () = sleep_until(end.end()) => break,
+                _ = waits.tick.tick() => waits.heartbeat.beat(),
+            }
+        }
+        info!(count = drained, "subscriber_drained");
+    }
+
     fn message(&self, message: Result<ZmqMessage, ZmqError>, state: &mut Loop) {
         let message = match message {
             Ok(message) => message,
             Err(error) => {
-                // A broken peer. The crate removes the peer and reconnects.
+                // A broken peer: the crate removes it, and the socket
+                // reports `Disconnected`.
                 warn!(code = error_code(&error), "subscriber_receive_failed");
                 return;
             }
@@ -362,45 +631,6 @@ impl Reader {
         }
     }
 
-    fn event(&mut self, event: Option<&SocketEvent>, state: &mut Loop) {
-        match event {
-            Some(SocketEvent::Connected(..)) => {
-                info!("subscriber_connected");
-                // Apply every child stop before the connect. A new child
-                // starts after the stop of the old one, so its `Connected`
-                // event comes after that stop in the gate state. Without
-                // this step, a stop that the reader applies after the
-                // `Connected` event of the new child would clear the settle
-                // time, and no later event would set it again: the gate
-                // would stay closed.
-                self.gate_changed(state);
-                if state.settle.connected(Instant::now()) {
-                    // The first connect to a new child: its counter of
-                    // dispatched records starts at 0.
-                    self.received.new_generation();
-                }
-            }
-            Some(SocketEvent::Disconnected(..)) => {
-                info!("subscriber_disconnected");
-                state.settle.lost();
-                self.conditions.set_settled(false);
-            }
-            Some(_) => {}
-            None => {
-                // The crate dropped the monitor. This does not occur while
-                // the socket lives; the reader then waits for its stop.
-                warn!("subscriber_monitor_closed");
-            }
-        }
-    }
-
-    fn gate_changed(&mut self, state: &mut Loop) {
-        let stops = self.gate.borrow_and_update().child_stops();
-        if state.settle.child(stops) {
-            self.conditions.set_settled(false);
-        }
-    }
-
     fn record_drops(&self, window: crate::events::CountWindow) {
         warn!(count = window.count, "records_dropped");
         self.sink
@@ -412,241 +642,4 @@ impl Reader {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::events::recording::RecordingSink;
-    use crate::pipeline::conditions::Database;
-    use crate::readiness::{Pipeline, Readiness};
-
-    #[tokio::test(start_paused = true)]
-    async fn the_socket_settles_250_ms_after_the_connect() {
-        let settle = Limits::PRODUCTION.settle;
-        let start = Instant::now();
-        let mut state = Settle::new(0);
-        assert_eq!(state.due(settle), None);
-        assert!(!state.poll(start, settle));
-        // The first connect is to a new child.
-        assert!(state.connected(start));
-        assert_eq!(state.due(settle), Some(start + Duration::from_millis(250)));
-        assert!(!state.poll(start + Duration::from_millis(249), settle));
-        assert!(state.poll(start + Duration::from_millis(250), settle));
-        assert!(state.is_settled());
-        assert_eq!(state.due(settle), None);
-        // Only the change counts.
-        assert!(!state.poll(start + Duration::from_secs(1), settle));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_lost_peer_needs_a_new_connect_and_a_new_settle_time() {
-        let settle = Limits::PRODUCTION.settle;
-        let start = Instant::now();
-        let mut state = Settle::new(0);
-        state.connected(start);
-        assert!(state.poll(start + settle, settle));
-        state.lost();
-        assert!(!state.is_settled());
-        assert_eq!(state.due(settle), None);
-        assert!(!state.poll(start + Duration::from_secs(10), settle));
-        // A reconnect to the same child keeps the received counts.
-        let again = start + Duration::from_secs(11);
-        assert!(!state.connected(again));
-        assert!(!state.poll(again + Duration::from_millis(100), settle));
-        assert!(state.poll(again + settle, settle));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_child_stop_clears_the_settled_socket_before_its_disconnect() {
-        let settle = Limits::PRODUCTION.settle;
-        let start = Instant::now();
-        let mut state = Settle::new(0);
-        assert!(!state.child(0), "the same count is no stop");
-        state.connected(start);
-        assert!(state.poll(start + settle, settle));
-        // The supervisor reports the exit; the socket has not seen the end
-        // of its peer yet.
-        assert!(state.child(1));
-        assert!(!state.is_settled());
-        assert_eq!(state.due(settle), None);
-        assert!(!state.child(1), "only the change counts");
-        // The restarted child: the next connect starts a new generation and
-        // a new settle time.
-        let again = start + Duration::from_secs(2);
-        assert!(state.connected(again));
-        assert!(!state.poll(again + Duration::from_millis(249), settle));
-        assert!(state.poll(again + settle, settle));
-        // Two stops between two reads count as one change too.
-        assert!(state.child(3));
-        assert!(!state.is_settled());
-    }
-
-    /// A reader with its inputs, without a socket. The tests call its event
-    /// handlers in a chosen order.
-    struct Wiring {
-        reader: Reader,
-        state: Loop,
-        readiness: Arc<Readiness>,
-        conditions: Arc<Conditions>,
-        received: Arc<Received>,
-    }
-
-    fn wiring(endpoint: String) -> Wiring {
-        let sink = Arc::new(RecordingSink::default());
-        let readiness = Arc::new(Readiness::new(sink.clone()));
-        readiness.set_child_running(true);
-        let conditions = Arc::new(Conditions::new(Arc::clone(&readiness), sink.clone()));
-        conditions.set_database(Database::Passed);
-        let queue = Arc::new(Queue::new(
-            &Limits::PRODUCTION,
-            Arc::clone(&conditions),
-            Arc::new(tokio::sync::Notify::new()),
-        ));
-        let received = Arc::new(Received::default());
-        let mut gate = readiness.subscribe();
-        let state = Loop {
-            settle: Settle::new(gate.borrow_and_update().child_stops()),
-            drops: CountThrottle::new(Limits::PRODUCTION.drop_event_interval),
-        };
-        let reader = Reader {
-            endpoint,
-            limits: Limits::PRODUCTION,
-            queue,
-            conditions: Arc::clone(&conditions),
-            received: Arc::clone(&received),
-            sink,
-            gate,
-        };
-        Wiring {
-            reader,
-            state,
-            readiness,
-            conditions,
-            received,
-        }
-    }
-
-    fn connected() -> SocketEvent {
-        SocketEvent::Connected(
-            "tcp://127.0.0.1:1".parse().unwrap(),
-            zeromq::util::PeerIdentity::new(),
-        )
-    }
-
-    fn disconnected() -> SocketEvent {
-        SocketEvent::Disconnected(zeromq::util::PeerIdentity::new())
-    }
-
-    const NOT_SETTLED: Pipeline = Pipeline::NotReady("subscriber_not_settled");
-
-    #[tokio::test(start_paused = true)]
-    async fn a_connect_of_a_new_child_applies_the_stop_first() {
-        // The order of the inputs: the stop of the child is still in the
-        // watch channel when the reader handles the `Connected` event of the
-        // new child. The watch channel also merged the stop and the start.
-        let settle = Limits::PRODUCTION.settle;
-        let mut w = wiring(String::new());
-        w.reader.event(Some(&connected()), &mut w.state);
-        assert_eq!(w.received.snapshot().generation, 1);
-        assert!(w.state.settle.poll(Instant::now() + settle, settle));
-        w.conditions.set_settled(true);
-        assert_eq!(w.conditions.pipeline(), Pipeline::Ready);
-
-        w.readiness.set_child_running(false);
-        w.readiness.set_child_running(true);
-        w.reader.event(Some(&disconnected()), &mut w.state);
-        w.reader.event(Some(&connected()), &mut w.state);
-        // The run loop handles the change of the watch channel after that.
-        w.reader.gate_changed(&mut w.state);
-
-        assert_eq!(w.conditions.pipeline(), NOT_SETTLED);
-        assert!(
-            w.state.settle.due(settle).is_some(),
-            "the connect of the new child must keep its settle time"
-        );
-        assert_eq!(
-            w.received.snapshot().generation,
-            2,
-            "the new child starts a new generation of the counts"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_child_stop_clears_the_settled_subscription_without_a_disconnect() {
-        // The run loop with a real socket. The PUB socket of the test stays
-        // open, so the SUB socket sees no `Disconnected` event: only the
-        // child stop can clear gate condition 2 (review round 1 of PR #22,
-        // mutation M7). The stop and the start come before the reader runs,
-        // so the watch channel merges them (note N3).
-        let mut publisher = zeromq::PubSocket::new();
-        let endpoint = publisher.bind("tcp://127.0.0.1:0").await.unwrap();
-        let w = wiring(endpoint.to_string());
-        let (readiness, conditions) = (Arc::clone(&w.readiness), Arc::clone(&w.conditions));
-        let (drain, drain_requests) = oneshot::channel();
-        let heartbeat = crate::watchdog::Watchdog::new().register(crate::watchdog::READER);
-        let task = tokio::spawn(w.reader.run(heartbeat, drain_requests));
-
-        let wait_for = async |wanted: Pipeline| {
-            let start = Instant::now();
-            while conditions.pipeline() != wanted {
-                assert!(
-                    start.elapsed() < Duration::from_secs(5),
-                    "{wanted:?}: {:?}",
-                    conditions.pipeline()
-                );
-                sleep(Duration::from_millis(10)).await;
-            }
-        };
-        wait_for(Pipeline::Ready).await;
-        readiness.set_child_running(false);
-        readiness.set_child_running(true);
-        wait_for(NOT_SETTLED).await;
-        // No new `Connected` event comes from the same peer, so the
-        // condition stays false.
-        sleep(Duration::from_secs(1)).await;
-        assert_eq!(conditions.pipeline(), NOT_SETTLED);
-
-        drain.send(Duration::from_millis(100)).unwrap();
-        task.await.unwrap();
-        drop(publisher);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_drain_ends_after_1_s_without_a_message_or_at_its_bound() {
-        let start = Instant::now();
-        let quiet = Duration::from_secs(1);
-        let bound = Duration::from_secs(3);
-        let mut drain = Drain::new(start, quiet, bound);
-        assert_eq!(drain.end(), start + quiet);
-        drain.message(start + Duration::from_millis(700));
-        assert_eq!(drain.end(), start + Duration::from_millis(1700));
-        // A steady stream ends at the bound.
-        for millis in (800..3000).step_by(100) {
-            drain.message(start + Duration::from_millis(millis));
-        }
-        assert_eq!(drain.end(), start + bound);
-    }
-
-    /// A message with these frames.
-    fn message(parts: &[&[u8]]) -> ZmqMessage {
-        let mut message = ZmqMessage::from(parts[0].to_vec());
-        for part in &parts[1..] {
-            message.push_back(ZmqMessage::from(part.to_vec()).into_vec().remove(0));
-        }
-        message
-    }
-
-    #[test]
-    fn a_message_keeps_every_byte_of_its_frames() {
-        assert_eq!(
-            frames(message(&[b"tesla_telemetry_V", b"payload"])),
-            (b"tesla_telemetry_V".to_vec(), b"payload".to_vec())
-        );
-        assert_eq!(
-            frames(message(&[b"topic"])),
-            (b"topic".to_vec(), Vec::new())
-        );
-        assert_eq!(
-            frames(message(&[b"t", b"ab", b"cd"])),
-            (b"t".to_vec(), b"abcd".to_vec())
-        );
-    }
-}
+mod tests;

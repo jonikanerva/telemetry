@@ -5,7 +5,7 @@
 //!
 //! | Condition | Reporter | Values |
 //! | --------- | -------- | ------ |
-//! | 2: the SUB socket is connected and settled | [`super::reader`] | settled, or not settled |
+//! | 2: the SUB socket is connected and settled | [`super::reader`] | settled, not settled, or stalled |
 //! | 3: the start-up check passed, or degraded mode | [`super::writer`] | [`Database`] |
 //! | 4: the queue did not close the gate | [`super::queue`] | below the high mark, or closed |
 //!
@@ -18,6 +18,7 @@
 //!
 //! The combined value names the first condition that is not met, in the
 //! order of ADR 0001, as the reason of the closed gate: `subscriber_not_settled`,
+//! `subscriber_stalled`,
 //! `database_check_pending`, `database_refused`, or `queue_high_mark`.
 //! Degraded mode with every other condition met gives
 //! [`Pipeline::Degraded`]: the gate opens, and `/health` fails.
@@ -46,17 +47,27 @@ pub enum Database {
     Refused,
 }
 
+/// Gate condition 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Subscriber {
+    Settled,
+    NotSettled,
+    Stalled,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct State {
-    settled: bool,
+    subscriber: Subscriber,
     database: Database,
     queue_closed: bool,
 }
 
 impl State {
     const fn pipeline(self) -> Pipeline {
-        if !self.settled {
-            return Pipeline::NotReady("subscriber_not_settled");
+        match self.subscriber {
+            Subscriber::Settled => {}
+            Subscriber::NotSettled => return Pipeline::NotReady("subscriber_not_settled"),
+            Subscriber::Stalled => return Pipeline::NotReady("subscriber_stalled"),
         }
         let degraded = match self.database {
             Database::Pending => return Pipeline::NotReady("database_check_pending"),
@@ -87,7 +98,7 @@ impl Conditions {
     #[must_use]
     pub fn new(readiness: Arc<Readiness>, sink: Arc<dyn EventSink>) -> Self {
         let state = State {
-            settled: false,
+            subscriber: Subscriber::NotSettled,
             database: Database::Pending,
             queue_closed: false,
         };
@@ -101,7 +112,20 @@ impl Conditions {
 
     /// Gate condition 2.
     pub fn set_settled(&self, settled: bool) {
-        self.update(|state| state.settled = settled);
+        let subscriber = if settled {
+            Subscriber::Settled
+        } else {
+            Subscriber::NotSettled
+        };
+        self.update(|state| state.subscriber = subscriber);
+    }
+
+    /// Gate condition 2 is false because the stall rule found that the
+    /// child dispatched records and the reader received none (ADR 0001,
+    /// "SUB socket"). The reason of the closed gate is
+    /// `subscriber_stalled`, so the `gate_closed` event shows the stall.
+    pub fn set_stalled(&self) {
+        self.update(|state| state.subscriber = Subscriber::Stalled);
     }
 
     /// Gate condition 3. A change to [`Database::Degraded`] records the
@@ -210,6 +234,31 @@ mod tests {
         assert_eq!(readiness.state().closed_reason(), Some("database_refused"));
         conditions.set_database(Database::Passed);
         assert!(readiness.state().is_healthy());
+    }
+
+    #[test]
+    fn a_stalled_subscription_closes_the_gate_with_its_own_reason() {
+        let (conditions, readiness, sink) = conditions();
+        conditions.set_settled(true);
+        conditions.set_database(Database::Passed);
+        conditions.set_stalled();
+        assert_eq!(
+            readiness.state().closed_reason(),
+            Some("subscriber_stalled")
+        );
+        // A new socket that waits for its settle time keeps the gate closed.
+        conditions.set_settled(false);
+        conditions.set_settled(true);
+        assert!(readiness.state().is_healthy());
+        let events = sink.events();
+        let reasons: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event.kind {
+                EventKind::GateClosed { reason } => Some(reason),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasons, ["subscriber_stalled"]);
     }
 
     #[test]

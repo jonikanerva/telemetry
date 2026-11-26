@@ -60,7 +60,7 @@ use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tokio::signal::unix::{Signal, SignalKind, signal};
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Notify, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
@@ -300,6 +300,7 @@ pub async fn run(config: RunConfig) -> Result<(), RunError> {
         child_stop,
     ));
     let (start_drain, drain) = oneshot::channel();
+    let (stalled, stall_requests) = watch::channel(None);
     let reader = Reader {
         endpoint: format!("tcp://127.0.0.1:{}", config.zmq_port),
         limits,
@@ -308,6 +309,7 @@ pub async fn run(config: RunConfig) -> Result<(), RunError> {
         received: Arc::clone(&received),
         sink: Arc::clone(&sink),
         gate: readiness.subscribe(),
+        stalled: stall_requests,
     };
     let reader_task = tokio::spawn(reader.run(watchdog.register(watchdog::READER), drain));
     let (request_flush, flush_requests) = oneshot::channel();
@@ -330,6 +332,7 @@ pub async fn run(config: RunConfig) -> Result<(), RunError> {
         deadline: budget.shortfall_read.saturating_sub(STEP_MARGIN),
         received,
         sink: Arc::clone(&sink),
+        stalled,
     };
     let shortfall_task = tokio::spawn(shortfall.run(final_read));
     let (stop_health, health_stop) = oneshot::channel::<()>();

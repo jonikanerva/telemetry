@@ -66,8 +66,10 @@ vehicle ──TCP──▶ gate (ingest, port 4443) ──▶ fleet-telemetry (1
   a failed write with a growing delay and never gives up while the process
   runs.
 - The **shortfall check** compares the `dispatch_total` counter of
-  `fleet-telemetry` with the received messages and records a gap of the
-  ZMQ path.
+  `fleet-telemetry` with the received messages every 15 s and records a
+  gap of the ZMQ path. When the child dispatches records and the reader
+  receives none, the reader replaces its ZMQ socket (ADR 0001, "SUB
+  socket").
 - On SIGTERM the process closes the gate, drains the ZMQ socket, stops the
   child, and writes the queue and the `stopped` event within 26 s.
 - `/health` on `PORT` answers 200 only when the gate is open and the

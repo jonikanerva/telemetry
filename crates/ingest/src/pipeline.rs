@@ -30,10 +30,11 @@
 //! | Queue | 64 MiB of payload bytes and decoded rows | ADR 0001, "Delivery path", step 2 |
 //! | Gate marks | closes at 75 %, opens below 25 % after a successful write, or when the queue is empty | ADR 0001, gate condition 4 |
 //! | Flush | oldest item 900 s old, 5,000 signal rows, the high mark, or the shutdown | ADR 0001, step 4 |
-//! | Settle | 250 ms after the `Connected` event of the SUB socket | ADR 0001, gate condition 2 |
+//! | Settle | 250 ms after the connect and the subscription of a SUB socket | ADR 0001, gate condition 2 |
+//! | Socket rebuild | drain the old socket to its end, at most 1 s (quiet 200 ms); after a lost peer, wait 0, then 100 ms doubling to 5 s | ADR 0001, "SUB socket" |
 //! | Degraded mode | 120 s of no answer | ADR 0001, gate condition 3 |
 //! | Retry | 1 s, doubling to 5 minutes, with jitter; 60 minutes after three equal answered failures | ADR 0001, step 5 |
-//! | Shortfall check | each 60 s, one HTTP read of at most 1 MiB within 0.75 s (the shutdown step bound of 1 s minus the step margin of 250 ms) | ADR 0001, "ZMQ shortfall check" |
+//! | Shortfall check and stall rule | each 15 s, one HTTP read of at most 1 MiB within 0.75 s (the shutdown step bound of 1 s minus the step margin of 250 ms) | ADR 0001, "ZMQ shortfall check" and "SUB socket" |
 //! | Events | 10,000 events wait at most | this change |
 
 pub mod cadence;
@@ -55,8 +56,8 @@ pub struct Limits {
     pub queue_bytes: usize,
     /// The number of waiting signal rows that starts a flush.
     pub flush_rows: usize,
-    /// The time after the `Connected` event of the SUB socket before the
-    /// gate can open.
+    /// The time after the connect and the subscription of a SUB socket
+    /// before the gate can open.
     pub settle: Duration,
     /// The time of no answer before degraded mode.
     pub degraded_after: Duration,
@@ -79,6 +80,15 @@ pub struct Limits {
     /// The time for one connect attempt of the SUB socket. A new attempt
     /// follows at once.
     pub connect_attempt: Duration,
+    /// The longest drain of an old SUB socket before the reader replaces
+    /// it.
+    pub rebuild_drain: Duration,
+    /// The quiet time that ends the drain of an old SUB socket early.
+    pub rebuild_quiet: Duration,
+    /// The first wait before a new SUB socket after a lost peer.
+    pub rebuild_backoff_first: Duration,
+    /// The longest wait before a new SUB socket after a lost peer.
+    pub rebuild_backoff_max: Duration,
     /// The most events that wait for the writer.
     pub max_events: usize,
     /// The shortest time between two `records_dropped` events of the
@@ -97,10 +107,14 @@ impl Limits {
         retry_max: Duration::from_mins(5),
         answered_repeats: 3,
         answered_delay: Duration::from_mins(60),
-        shortfall_period: Duration::from_secs(60),
+        shortfall_period: Duration::from_secs(15),
         metrics_body_bytes: 1024 * 1024,
         drain_quiet: Duration::from_secs(1),
         connect_attempt: Duration::from_secs(5),
+        rebuild_drain: Duration::from_secs(1),
+        rebuild_quiet: Duration::from_millis(200),
+        rebuild_backoff_first: Duration::from_millis(100),
+        rebuild_backoff_max: Duration::from_secs(5),
         max_events: 10_000,
         drop_event_interval: Duration::from_secs(60),
     };
@@ -121,10 +135,14 @@ mod tests {
         assert_eq!(limits.retry_max, Duration::from_secs(300));
         assert_eq!(limits.answered_repeats, 3);
         assert_eq!(limits.answered_delay, Duration::from_secs(3_600));
-        assert_eq!(limits.shortfall_period, Duration::from_secs(60));
+        assert_eq!(limits.shortfall_period, Duration::from_secs(15));
         assert_eq!(limits.drain_quiet, Duration::from_secs(1));
         // A connect attempt beats its watchdog: it is far below the 30 s of
         // the reader.
         assert!(limits.connect_attempt < crate::watchdog::READER.limit);
+        // The stall rule decides within two periods; that bound of lost
+        // records stays far below the vehicle buffer of 2,500 s (ADR 0001,
+        // "SUB socket").
+        assert!(limits.shortfall_period * 2 <= Duration::from_secs(30));
     }
 }

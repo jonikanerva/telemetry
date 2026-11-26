@@ -102,7 +102,10 @@ The service `telemetry` runs one image with two processes.
 - The gate is open only when all of these are true:
   1. the child runs;
   2. the SUB socket is connected and 250 ms have passed since its
-     `Connected` event, so that the PUB side has applied the subscription;
+     `Connected` event, so that the PUB side has applied the subscription
+     (since review round 2 of PR #22: since the connect and the
+     subscription that the reader made itself; "SUB socket" in "Decisions
+     of the pipeline change");
   3. the start-up check passed, or the database has given **no answer**
      for 120 s. The check is one database round trip, and every migration
      that the binary embeds is applied (ADR 0002).
@@ -279,7 +282,8 @@ see these drops directly. It detects them:
   `127.0.0.1:9090/metrics`
   ([`server/streaming/socket.go#L288-L291`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/socket.go#L288-L291),
   [`server/monitoring/metrics_server.go#L31-L44`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/monitoring/metrics_server.go#L31-L44)).
-- Every 60 s, `ingest` reads the counter for `V`, `alerts`, and `errors`,
+- Every 15 s (60 s before review round 2 of PR #22; see "SUB socket"
+  below), `ingest` reads the counter for `V`, `alerts`, and `errors`,
   and compares the growth since the child started with its own count of
   received messages for these topics. The gap of one read is
   `dispatched - received`.
@@ -355,7 +359,7 @@ these changes.
 
 | Purpose            | Crate and line                        | Licence             | Maintenance (crates.io, 26 Nov 2026) | C code or first-party `unsafe` |
 | ------------------ | ------------------------------------- | ------------------- | ------------------------------------ | ------------------------------ |
-| ZMQ SUB            | `zeromq` 0.7, features `tokio-runtime`, `tcp-transport` | MIT  | 0.7.0, 27 Oct 2026             | Pure Rust. No `unsafe` in its `src/`. Reconnects by itself. |
+| ZMQ SUB            | `zeromq` 0.7, features `tokio-runtime`, `tcp-transport` | MIT  | 0.7.0, 27 Oct 2026             | Pure Rust. No `unsafe` in its `src/`. Its reconnect can stop for good; the reader does not use it ("SUB socket" in "Decisions of the pipeline change"). |
 | Gate keep-alive    | `socket2` 0.6, feature `all` (direct dependency) | MIT OR Apache-2.0 | 0.6.5, 24 Nov 2026     | Safe API for gate rule 3. `TcpKeepalive::with_retries` exists only with feature `all`; `zeromq` pulls `socket2` without features. The crate uses `unsafe` inside; first-party code needs none. |
 | Protobuf runtime   | `prost` 0.14, `prost-types` 0.14      | Apache-2.0          | 0.14.6, 12 Nov 2026                  | None.                          |
 | Protobuf codegen   | `prost-build` 0.14 with `protox` 0.10 (build only) | Apache-2.0; MIT OR Apache-2.0 | 0.14.6; 0.10.0, 7 Oct 2026 | Pure Rust. No `protoc` binary. |
@@ -498,6 +502,7 @@ visible:
 | Restart during a database outage, including a Neon suspension after 100 CU-hours, which lasts until the next billing period [N1] | The queue that existed before the restart is lost (crash line). After the restart the gate stays closed for 120 s (vehicle buffer only), then opens in degraded mode. Then as in the outage line. | As in the crash and outage lines. A Neon suspension also shows as failed writes in the log. |
 | Shutdown flush fails within 20 s, for example a deploy during a database outage | The queue at shutdown. | The log has the count. A `stopped` event cannot be written. |
 | The child dies by itself | Messages in its libzmq send queue: milliseconds of data. | `child_exited` event. The count is unknown. |
+| The SUB socket stops receiving while the gate is open (for example the `zeromq` defect of "SUB socket", or a lost `Disconnected` event) | The records that the child dispatched and acked for at most two metrics periods (30 s), plus about 2 s for the read and the new socket; one more period after a failed read. The vehicle does not resend acked records. | `zmq_shortfall` events with the count, the `gate_closed` event with the reason `subscriber_stalled`, and the log line `subscriber_rebuilt`. |
 | A connection closes with messages that were sent but not acked (gate closing, deploy, rate limit) | Those messages, if the vehicle does not resend them (fact 1, not verified). | None in `ingest`. Stored `is_resend` values show whether resends happen. |
 | Accepted risk: a peer that stalls inside the TLS handshake | A live peer holds one connection until it closes it. A peer that goes away holds it until the dead-peer bound closes it (gate rule 3): about 150 s after its last answer when no data is unacknowledged (keep-alive), about 925 to 1,045 s when data is unacknowledged (retransmission timeout, `tcp_retries2` 15). Both are below the vehicle buffer of at least 2,500 s. This is the same class of exposure that upstream has today. If the Railway proxy terminates TCP, the close of a gone peer depends on the proxy (deployment check). | None for a single peer. |
 | Accepted risk: a flood that fills the 1024-connection bound | No new connection while the flood holds the bound: while the flooding peers keep their connections alive, plus the dead-peer bound after they go away (about 150 s idle, about 925 to 1,045 s with unacknowledged data). The vehicle cannot connect and relies on its own buffer (at least 2,500 s). Then as in the next line. | `gate_full` events, and gaps between `connectivity_event` rows. |
@@ -550,18 +555,89 @@ sections above leave open. Each point has a test.
   The decode then stores such a message as unprocessed. Upstream sends two
   frames (fact 4).
 - **SUB socket.** `zeromq` 0.7.0 with the features `tcp-transport` and
-  `tokio-runtime`. Each first connect attempt has a bound of 5 s, and the
-  next attempt follows at once, so the reader beats its heartbeat. After
-  the first connect, the crate reconnects by itself (100 ms, doubling to
-  30 s) and sends the subscription again. Gate condition 2 is cleared on
-  the `Disconnected` event of the socket and also when the child stops
-  running, so that a restarted child cannot open the gate before the new
-  subscription has settled. The gate state counts the child stops, and
-  the reader compares the count, because the watch channel can merge a
-  stop and the next start into one value. The reader applies the stops
-  before each `Connected` event. So the counts of the shortfall check
-  start again for each new child, and a `Connected` event of a new child
-  always starts a settle time.
+  `tokio-runtime`. Review round 2 of PR #22 (finding B2) found a defect of
+  the crate: its reconnect can stop for good. The reader therefore owns
+  the life of its socket and does not use the reconnect of the crate.
+  - **The defect.** `SubSocketBackend::peer_connected`
+    (`src/sub_backend.rs`, lines 282 to 290) sends the remembered
+    subscriptions to a new peer. When that send fails (the peer ended
+    after its ZMTP READY), it logs and returns without registering the
+    peer. `try_reconnect` still returns `Ok` (`src/reconnect.rs`, line
+    242), and the reconnect task sends `Connected` and waits for a
+    disconnect notification (lines 166 to 175). Only `peer_disconnected`
+    sends that notification, and it never runs for a peer that is not
+    registered. The first connect (`connect_with_reconnect`,
+    `src/sub_backend.rs`, lines 330 to 377) has the same shape. The
+    reviewer reproduced both results through the reader: the gate stayed
+    closed for good, or it stayed open with no subscriber, so every
+    forwarded record was lost.
+  - **Defence 1: one socket for each child, and connect before
+    subscribe.** The reader makes a new socket at each child stop, when
+    the socket reports `Disconnected`, and when the subscription cannot
+    be sent. A socket connects without a subscription and subscribes
+    after the connect. With no subscription, `peer_connected` always
+    registers the peer, so a peer that ends always ends in `Disconnected`.
+    The send of the subscription then goes to the registered peer, and
+    its result is first-party evidence of the connect. The settle time
+    starts from the results of these calls, not from a `Connected` event.
+    The crate has no option to turn off its reconnect; dropping a socket
+    stops its reconnect task.
+  - **Defence 2: the stall rule.** A rule that needs no event of the
+    crate, so that an unknown stall of the same class cannot last. Three
+    metrics reads `a`, `b`, `k` of one socket, one period apart: when the
+    child dispatched records between `a` and `b`, and the reader received
+    no record between `a` and `k`, the socket is stalled. A live
+    subscription receives every record that the child dispatched at
+    least one period before: a drop at the libzmq high water mark drops
+    the newest records, and the queued older ones still arrive. An idle
+    child dispatches nothing, so the rule cannot act while no vehicle is
+    connected. The reader then clears gate condition 2 with the reason
+    `subscriber_stalled` and replaces the socket. The rule names the
+    socket that it judged, so a request cannot replace a newer socket.
+    After the `n`-th stall request in a row without a received record,
+    the next request waits `2^n` reads (at most 64 reads, 16 minutes).
+  - **Period.** The shortfall check and the stall rule share one metrics
+    read each 15 s (it was 60 s before review round 2). One read is a
+    small HTTP request on the loopback interface.
+  - **Detection bound.** Records can be lost for at most two periods
+    (30 s) after the first record that the stalled socket did not
+    receive, plus the read deadline of 0.75 s and the replacement (at
+    most 1 s of drain and one connect). After a failed metrics read, add
+    one period. In that window `fleet-telemetry` acks each record after
+    it hands the record to the PUB socket, and PUB drops it without a
+    subscriber (fact 2, the `zmq` row of fact 3). So the vehicle does not
+    resend these records: they are lost, and the `zmq_shortfall` events
+    show the count. When the gate closes, the vehicle keeps its new data
+    in its own buffer (at least 2,500 s), as for every closed gate.
+  - **Replacement order.** The reader first clears gate condition 2, so
+    the gate closes and no new record is dispatched. Then it reads the old
+    socket to its end: the `Disconnected` event of the peer, after which
+    no message of that peer can come, or 200 ms without a message, at
+    most 1 s. Then it drops the socket. So a replacement loses no record
+    that the old socket received. After a lost peer, the next socket
+    waits 0, then 100 ms doubling to 5 s; a received record or a child
+    stop resets the wait.
+  - **Generation.** The first socket after a child stop starts a new
+    generation of the received counts. The gate state counts the child
+    stops, and the reader compares the count, because the watch channel
+    can merge a stop and the next start into one value. A child stop
+    during a connect attempt replaces the new socket, because its peer
+    can be the old child.
+  - **Visibility (review note N7).** The crate writes its own errors to
+    the `log` crate, and the process has no bridge to it. The process
+    does not add one: the text of the crate can hold data, and the log
+    allows only first-party fields. The failure is visible through
+    first-party records instead: the `gate_closed` event with the reason
+    `subscriber_stalled`, the `zmq_shortfall` events, and the log line
+    `subscriber_rebuilt` with a static reason (`child_stopped`,
+    `peer_lost`, `subscribe_failed`, or `stalled`).
+  - **Keep `zeromq` 0.7.0.** Reasons: it is pure Rust, with no C build
+    and no `unsafe` in its `src/`; the libzmq binding was rejected above
+    ("Crates"); the two defences make the reader independent of the
+    reconnect logic of the crate. Reassess when upstream fixes the lost
+    disconnect notification, or when a second defect of this class shows
+    up. An upstream report is a possible follow-up for the lead; this
+    change opens none.
 - **No answer for the cadence and gate condition 3.** SQLSTATE class `08`
   and `57P` (for example `57P01`, the server ended the session at a Neon
   compute restart) count as no answer. They are transient and need no
@@ -604,27 +680,41 @@ sections above leave open. Each point has a test.
   - Condition 3 (the writer): while the check has not passed (`Pending`,
     `Refused`, or `Degraded`), the next check always has a time on the
     cadence. A passed check stays passed for the process.
-  - Condition 2 (the reader): each child stop clears the condition, and
-    the `Connected` event of the next child always starts a settle time
-    ("SUB socket" above). Premises in `zeromq` 0.7.0, read in its source:
-    the reconnect loop has no attempt limit (`src/reconnect.rs`, line
-    134); the crate sends `Disconnected` of the old peer to the monitor
-    before it wakes the reconnect task (`src/backend.rs`, lines 321 to
-    338), and the reconnect task sends `Connected` after its backoff
-    (`src/reconnect.rs`, lines 144 and 168). One channel carries both
-    events, so the reader never sees the `Disconnected` event of the old
-    peer after the `Connected` event of the new one. The channel holds
-    1,024 events (`src/sub.rs`, line 106), and the crate drops an event
-    when it is full. The reader reads the channel at each turn of its
-    loop, and the watchdog ends a reader that stops for 30 s, so the
-    channel does not fill while the reader runs.
+  - Condition 2 (the reader): while the child runs and the socket is not
+    settled, the reader is in a bounded connect attempt (5 s), a bounded
+    pause (at most 5 s), a bounded drain (at most 1 s), or the settle
+    time (250 ms) ("SUB socket" above). No step waits for an event of
+    the crate to start a settle time. A dropped `Disconnected` event or
+    another silent stall of a settled socket ends through the stall rule
+    as soon as the child dispatches records. Premises in `zeromq` 0.7.0,
+    read in its source: `peer_disconnected` sends `Disconnected` to the
+    monitor before it notifies the reconnect task
+    (`src/sub_backend.rs`, lines 306 to 322); the monitor holds 1,024
+    events (`src/sub.rs`, line 106) and drops an event when it is full,
+    and the reader reads it at each turn of its loop. The reconnect of
+    the crate is not a premise any more: it can stop for good (the
+    defect above). Review round 1 cited `src/backend.rs` here, which is
+    the backend of other socket types.
   - Condition 1 (the supervisor): the supervisor restarts the child
     without end (PR #18).
   - The shutdown closes the gate for the rest of the process on purpose.
     No path cancels a shutdown.
   The tests: one for each path that empties the queue after a failure,
   one for a full queue in degraded mode, one for a refused check that
-  passes later, and two for the order of a child stop and a connect.
+  passes later, the reproduction of finding B2 (a child that ends after
+  the handshake, at a restart and as the first child), a child stop
+  without a `Disconnected` event, a stall request, and a replacement
+  that keeps every received record.
+- **Known limit: a database that refuses every record (review note
+  N6).** When every record fails with class `Data` (for example after a
+  broken later migration), the gate cycles: the queue fills and closes
+  the gate, the writer drops each record as refused, and the empty queue
+  opens the gate again. No record is stored. The signal is a
+  `records_dropped` event with the reason `database_refused` for each
+  dropped record. The check of the migrations at the start and the
+  pre-deploy command make this case unlikely; a bounded fix would need a
+  rule that tells a defect from a schema fault, which this change does
+  not add.
 - **Refused record.** When the database refuses even the
   `unprocessed_record` row of a record (the defect case of the storage
   contract), the writer removes the record, logs the SQLSTATE, and records
@@ -659,7 +749,7 @@ sections above leave open. Each point has a test.
   read is the sum over `V`, `alerts`, and `errors` of `dispatched -
   received`, each at least 0. The reader counts a message by its raw
   topic before the queue can drop it, so a drop is not also a shortfall.
-  The counts start again at the first `Connected` event after a child
+  The counts start again with the first connected socket after a child
   stop. The window of a `zmq_shortfall` event starts at the last read
   without a new gap. A read has a body of at most 1 MiB and a deadline of
   0.75 s for the connect, the request, and the body. The response also

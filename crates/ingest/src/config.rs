@@ -187,7 +187,7 @@ impl RunConfig {
 /// | `INGEST_TEST_QUEUE_BYTES` | queue bound (64 MiB) | 1,024 to 67,108,864 |
 /// | `INGEST_TEST_DEGRADED_AFTER_MS` | no-answer time before degraded mode (120 s) | 1 to 120,000 |
 /// | `INGEST_TEST_RETRY_MAX_MS` | longest retry delay (5 minutes) | 1 to 300,000 |
-/// | `INGEST_TEST_SHORTFALL_PERIOD_MS` | period of the shortfall check (60 s) | 1 to 60,000 |
+/// | `INGEST_TEST_SHORTFALL_PERIOD_MS` | period of the shortfall check (15 s) | 1 to 15,000 |
 /// | `INGEST_TEST_FLUSH_DEADLINE_MS` | bound of the shutdown flush (20 s) | 1 to 20,000 |
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TestOverrides {

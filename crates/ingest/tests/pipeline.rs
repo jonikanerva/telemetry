@@ -164,9 +164,12 @@ fn the_shutdown_drains_the_messages_that_arrive_after_the_gate_closed() {
 fn a_shortfall_is_reported_once_after_two_reads() {
     let mut ingest = start(&[("INGEST_TEST_SHORTFALL_PERIOD_MS", "200")]);
     ingest.read_until(|event| event["message"] == "subscriber_settled", "settled");
-    assert_eq!(ingest.control("publish V 0 5"), "ok 5");
-    // The counter grows by 3 without messages: a drop on the ZMQ path.
+    // The counter grows by 3 without messages: a drop on the ZMQ path. A
+    // drop at the high water mark loses the newest records, and the queued
+    // older ones still arrive; the records after the drop stand for them,
+    // so the stall rule sees a live socket (ADR 0001, "SUB socket").
     assert_eq!(ingest.control("lose V 3"), "ok 0");
+    assert_eq!(ingest.control("publish V 0 5"), "ok 5");
     let shortfall = ingest.read_event("zmq_shortfall");
     assert_eq!(count(&shortfall, "count"), 3);
     // Ten more periods report nothing new.
@@ -179,10 +182,46 @@ fn a_shortfall_is_reported_once_after_two_reads() {
         .filter(|event| event["kind"] == "zmq_shortfall")
         .collect();
     assert_eq!(reported.len(), 1, "{:?}", ingest.messages());
+    // A partial loss on a live socket is no stall.
+    assert_eq!(ingest.with_message("subscriber_rebuilt").len(), 0);
     // The final read sees the same gap and has nothing new to report.
     assert_eq!(
         count(ingest.with_message("shortfall_final_read")[0], "count"),
         3
+    );
+    ingest.assert_log_holds_none_of(VEHICLE_SENTINELS);
+}
+
+#[test]
+fn a_socket_that_receives_nothing_while_the_child_dispatches_is_replaced() {
+    // Defence 2 of review round 2 (ADR 0001, "SUB socket"): the counter
+    // grows, and no record arrives in the next periods.
+    let mut ingest = start(&[("INGEST_TEST_SHORTFALL_PERIOD_MS", "200")]);
+    ingest.read_event("degraded_mode");
+    ingest.read_event("gate_opened");
+    assert_eq!(ingest.control("lose V 3"), "ok 0");
+    ingest.read_until(
+        |event| event["message"] == "subscriber_rebuilt" && event["reason"] == "stalled",
+        "the stalled socket is replaced",
+    );
+    let closed = ingest.read_until(
+        |event| event["message"] == "ingest_event" && event["kind"] == "gate_closed",
+        "the gate closed",
+    );
+    assert_eq!(closed["reason"], "subscriber_stalled");
+    let before = ingest.events.len();
+    ingest.read_after(
+        before,
+        |event| event["message"] == "ingest_event" && event["kind"] == "gate_opened",
+        "the gate opened with the new socket",
+    );
+    // The new socket receives.
+    assert_eq!(ingest.control("publish V 0 2"), "ok 2");
+    ingest.signal("TERM");
+    assert_eq!(ingest.wait().code(), Some(FLUSH_INCOMPLETE));
+    assert_eq!(
+        count(ingest.with_message("flush_incomplete")[0], "records"),
+        2
     );
     ingest.assert_log_holds_none_of(VEHICLE_SENTINELS);
 }
