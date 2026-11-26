@@ -36,8 +36,11 @@
 //!   option keeps the connection open: the history comes first, and the
 //!   dead-peer bound of that connection then depends on the operating
 //!   system defaults. The field `socket_options` of the connection event
-//!   shows `failed` for such a connection, or `peer_gone` when the peer had
-//!   ended the connection before the options were set (no fault).
+//!   shows `set` when the gate set both options, `failed` for such a
+//!   connection, or `peer_gone` when the peer had ended the connection
+//!   before the options were set (no fault). The fields `keepalive` (for
+//!   example `15/15/9`) and `nodelay` show the values that the admitted
+//!   socket has, read back from the operating system.
 //! - **`fleet-telemetry` closes.** When `fleet-telemetry` ends its side, the
 //!   gate forwards the remaining bytes and the end of the stream to the
 //!   client. Then it waits at most [`GateLimits::upstream_close_linger`]
@@ -279,12 +282,46 @@ impl SocketOptions {
         }
     }
 
-    /// The value of the log field `socket_options`; none when set.
-    const fn label(self) -> Option<&'static str> {
+    /// The value of the log field `socket_options`. `set` is logged too, as
+    /// positive evidence that the gate set the options (deployment check 5).
+    const fn label(self) -> &'static str {
         match self {
-            Self::Set => None,
-            Self::PeerGone => Some("peer_gone"),
-            Self::Failed(_) => Some("failed"),
+            Self::Set => "set",
+            Self::PeerGone => "peer_gone",
+            Self::Failed(_) => "failed",
+        }
+    }
+}
+
+/// The options that an admitted socket has, read back from the operating
+/// system for the log of the connection. They are the evidence of rule 3
+/// on the running system (deployment check 5 of ADR 0001).
+struct ObservedOptions {
+    /// `idle/interval/probes` in seconds and probes, `off`, or `unknown`
+    /// when the read fails. Numbers only.
+    keepalive: String,
+    /// `TCP_NODELAY`, when the read succeeds.
+    nodelay: Option<bool>,
+}
+
+impl ObservedOptions {
+    fn of(stream: &TcpStream) -> Self {
+        let socket = SockRef::from(stream);
+        let keepalive = match (
+            socket.keepalive(),
+            socket.tcp_keepalive_time(),
+            socket.tcp_keepalive_interval(),
+            socket.tcp_keepalive_retries(),
+        ) {
+            (Ok(true), Ok(idle), Ok(interval), Ok(probes)) => {
+                format!("{}/{}/{probes}", idle.as_secs(), interval.as_secs())
+            }
+            (Ok(false), ..) => "off".to_owned(),
+            _ => "unknown".to_owned(),
+        };
+        Self {
+            keepalive,
+            nodelay: stream.nodelay().ok(),
         }
     }
 }
@@ -321,6 +358,9 @@ async fn serve_connection(
     // Only an admitted connection gets the options, so refused connections
     // and a closed gate cost no system call and no log line.
     let options = SocketOptions::of(&client);
+    // Read back from the operating system, not taken from `options`: the
+    // log shows the values that the socket really has.
+    let observed = ObservedOptions::of(&client);
     let report = forward(
         client,
         connect_upstream(upstream),
@@ -338,6 +378,8 @@ async fn serve_connection(
         first_byte_ms = report.first_byte.map(millis),
         peer_class = peer_class(peer.ip()),
         socket_options = options.label(),
+        keepalive = observed.keepalive.as_str(),
+        nodelay = observed.nodelay,
         socket_options_error = match options {
             SocketOptions::Failed(kind) => Some(tracing::field::debug(kind)),
             SocketOptions::Set | SocketOptions::PeerGone => None,

@@ -47,6 +47,8 @@ use tracing_subscriber::registry::LookupSpan;
 ///   ([`crate::gate`]).
 /// - `socket_options` and `socket_options_error`: a static outcome of the
 ///   socket options of a gate connection, and the `io::ErrorKind` name.
+/// - `keepalive` and `nodelay`: the keep-alive values (numbers only) and the
+///   `TCP_NODELAY` flag that an admitted gate socket has.
 /// - `child_line`: a line of the child after the VIN redaction. Only the
 ///   text of [`crate::child_output::RedactedLine`] goes into this field.
 /// - `stream` and `truncated`: the output stream of that line, and whether
@@ -63,8 +65,10 @@ pub const ALLOWED_FIELDS: &[&str] = &[
     "exit_code",
     "exit_signal",
     "first_byte_ms",
+    "keepalive",
     "kind",
     "message",
+    "nodelay",
     "peer_class",
     "pid",
     "port",

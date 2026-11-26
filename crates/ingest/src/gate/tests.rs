@@ -730,6 +730,11 @@ async fn the_stop_closes_every_forwarded_connection_within_the_close_deadline() 
         assert_eq!(event["reason"], "gate_closed");
         assert_eq!(event["peer_class"], "loopback");
         assert!(event["first_byte_ms"].as_u64().is_some(), "{event}");
+        // The gate set the options of rule 3 on the socket that it admitted.
+        assert_eq!(event["socket_options"], "set", "{event}");
+        // Read back from the admitted socket.
+        assert_eq!(event["keepalive"], "15/15/9", "{event}");
+        assert_eq!(event["nodelay"], true, "{event}");
     }
     assert_eq!(with_message("gate_stopped").len(), 1);
     assert_eq!(with_message("gate_connections_aborted").len(), 0);

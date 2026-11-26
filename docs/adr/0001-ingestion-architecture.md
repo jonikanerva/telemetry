@@ -713,10 +713,12 @@ the PR changes the design and updates this ADR.
   4. After a forced end of PID 1 (a watchdog exit or SIGKILL of `ingest`),
      the container ends, Railway restarts it, a new `started` event
      follows, and no `fleet-telemetry` process survives without `ingest`.
-  5. No `gate_connection_closed` event of a normal connection has
-     `socket_options` `failed`, and the idle dead-peer case above closes in
-     about 150 s. If the Railway proxy terminates TCP, `ss -tio` in the
-     container shows the keep-alive timers, or check 1 covers them.
+  5. Every `gate_connection_closed` event of a normal connection has
+     `socket_options` `set`, `keepalive` `15/15/9` (read back from the
+     socket), and `nodelay` `true` (none has `failed`), and the idle
+     dead-peer case above closes in about 150 s. If the Railway proxy
+     terminates TCP, `ss -tio` in the container shows the keep-alive
+     timers, or check 1 covers them.
   6. `fleet-telemetry` starts with an empty environment, and
      `/proc/<child pid>/fd` has no listener of `ingest`.
 - The false-positive rate of `unknown_fields` on real vehicle payloads.
