@@ -1,4 +1,7 @@
 [toolchain]
 channel = "1.100.0"
 components = ["rustfmt", "clippy"]
+# The production target (STACK.md §1). `mise run lint` checks the code for
+# it, so platform-dependent socket and process code compiles for Linux.
+targets = ["x86_64-unknown-linux-gnu"]
 profile = "minimal"

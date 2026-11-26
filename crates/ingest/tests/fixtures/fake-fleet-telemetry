@@ -1,0 +1,50 @@
+#!/bin/sh
+# A fake fleet-telemetry for the tests. It opens no port.
+#
+# Arguments: -config <path>. The last part of the path selects the mode:
+#   run   Print lines with an invented VIN-shaped token on standard output
+#         and standard error, then run until the parent process ends.
+#   exit  Print one line, then exit with code 3.
+#
+# The token 0FAKEVXN000000001 is invented. It is not a real VIN.
+#
+# ingest starts the child with a cleared environment. The line "env=..."
+# shows the value of INGEST_TEST_MARKER, which the process tests set for
+# ingest only. The script sets its own PATH after that line.
+set -eu
+
+if [ "$#" -ne 2 ] || [ "$1" != "-config" ]; then
+  echo "usage: fake-fleet-telemetry -config <path>" >&2
+  exit 64
+fi
+
+echo "env=${INGEST_TEST_MARKER:-absent}"
+PATH=/bin:/usr/bin
+export PATH
+
+case "${2##*/}" in
+  run)
+    # ingest gives the child /dev/null as standard input. A child that
+    # inherits the standard input of ingest reads the data of the test.
+    if read -r line; then
+      echo "stdin=data"
+    else
+      echo "stdin=empty"
+    fi
+    echo "connection from 0FAKEVXN000000001 accepted"
+    echo "error for vin 0FAKEVXN000000001" >&2
+    # kill -0 fails when the parent process is gone. On macOS no kernel
+    # rule ends the child with its parent, so the script checks itself.
+    while kill -0 "$PPID" 2>/dev/null; do
+      sleep 0.1
+    done
+    ;;
+  exit)
+    echo "exiting"
+    exit 3
+    ;;
+  *)
+    echo "unknown mode" >&2
+    exit 64
+    ;;
+esac

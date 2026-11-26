@@ -37,7 +37,49 @@ use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
 use tracing_subscriber::registry::LookupSpan;
 
 /// Field names whose values the logs may contain.
-pub const ALLOWED_FIELDS: &[&str] = &["connections", "error", "message", "port", "signal"];
+///
+/// - `kind` and `reason`: the `ingest_event` kind and its reason. Both hold
+///   static words and numbers only ([`crate::events`]).
+/// - `count`: the count of an `ingest_event`.
+/// - `task`: the static name of a task that the watchdog watches.
+/// - `duration_ms` and `first_byte_ms`: durations of a gate connection.
+/// - `peer_class`: a static class of a peer address, never the address
+///   ([`crate::gate`]).
+/// - `socket_options` and `socket_options_error`: a static outcome of the
+///   socket options of a gate connection, and the `io::ErrorKind` name.
+/// - `keepalive` and `nodelay`: the keep-alive values (numbers only) and the
+///   `TCP_NODELAY` flag that an admitted gate socket has.
+/// - `child_line`: a line of the child after the VIN redaction. Only the
+///   text of [`crate::child_output::RedactedLine`] goes into this field.
+/// - `stream` and `truncated`: the output stream of that line, and whether
+///   the line was cut at 8 KiB.
+/// - `pid`, `exit_code`, `exit_signal`, and `delay_ms`: numbers of the
+///   child supervision.
+pub const ALLOWED_FIELDS: &[&str] = &[
+    "child_line",
+    "connections",
+    "count",
+    "delay_ms",
+    "duration_ms",
+    "error",
+    "exit_code",
+    "exit_signal",
+    "first_byte_ms",
+    "keepalive",
+    "kind",
+    "message",
+    "nodelay",
+    "peer_class",
+    "pid",
+    "port",
+    "reason",
+    "signal",
+    "socket_options",
+    "socket_options_error",
+    "stream",
+    "task",
+    "truncated",
+];
 
 /// Keys that the formatter writes itself. An event field cannot replace them.
 pub const RESERVED_KEYS: &[&str] = &["level", "target", "timestamp"];
