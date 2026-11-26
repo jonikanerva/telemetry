@@ -42,12 +42,18 @@ use tracing_subscriber::registry::LookupSpan;
 ///   static words and numbers only ([`crate::events`]).
 /// - `count`: the count of an `ingest_event`.
 /// - `task`: the static name of a task that the watchdog watches.
+/// - `duration_ms` and `first_byte_ms`: durations of a gate connection.
+/// - `peer_class`: a static class of a peer address, never the address
+///   ([`crate::gate`]).
 pub const ALLOWED_FIELDS: &[&str] = &[
     "connections",
     "count",
+    "duration_ms",
     "error",
+    "first_byte_ms",
     "kind",
     "message",
+    "peer_class",
     "port",
     "reason",
     "signal",
