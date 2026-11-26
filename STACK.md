@@ -485,12 +485,29 @@ is the only reader of the environment and the command line.
 | tracing-subscriber | 0.3.23  | `fmt`, `std`                                                 | Subscriber, level filter, and writer for the JSON formatter              | MIT               |
 | serde_json         | 1.0.154 | `std`                                                        | Correct JSON encoding of each log line                                   | MIT OR Apache-2.0 |
 | thiserror          | 2.0.21  | `std`                                                        | Error types whose text holds static words only                           | MIT OR Apache-2.0 |
+| jiff               | 1.0.3   | `std`                                                        | `Timestamp` of the record times (§10)                                    | Unlicense OR MIT  |
+| prost              | 0.14.6  | `derive`, `std`                                              | Protobuf decode of the `fleet-telemetry` payloads (ADR 0001)             | Apache-2.0        |
+| prost-types, also build | 0.14.6 | `std`                                                   | `google.protobuf.Timestamp` of the generated types; `build.rs` reads the schema descriptors with it | Apache-2.0 |
+| uuid               | 1.29.3  | `std`                                                        | Typed connection ID of a `connectivity` record (ADR 0002)                | Apache-2.0 OR MIT |
+| prost-build, build | 0.14.6  | none                                                         | Generates the Rust types of `crates/ingest/proto/` in `build.rs`         | Apache-2.0        |
+| protox, build and dev | 0.10.0 | none                                                       | Parses the `.proto` files in Rust, so no `protoc` binary is needed; the tests read the schema with it | MIT OR Apache-2.0 |
+| proptest, dev      | 1.12.0  | `std`                                                        | Property tests of the decode with arbitrary bytes                        | MIT OR Apache-2.0 |
 
 hyper and hyper-util replace the axum features `http1` and `tokio`, which
 pulled in the same two crates. `Cargo.lock` has 56 packages, as before
-the change. The other baseline lines, `jiff` included, are not
-dependencies yet. The first change that uses one pins its exact version
-here.
+the change. The other baseline lines that the table above does not list
+are not dependencies yet. The first change that uses one pins its exact
+version here.
+
+Protobuf decode (issue #10): `Cargo.lock` now has 118 packages. Most of
+the new ones are build-only or dev-only: `prost-build` and `protox` run
+only in `build.rs` and in the tests; they are not part of the binary. No
+crate of the tree builds C code, and no `protoc` binary is needed
+(`cargo tree -i cc` finds no package). `deny.toml` has one licence
+exception: `foldhash` (Zlib), which `prost-build` needs through
+`petgraph`. Two duplicate versions are new, at the warning level of
+`cargo deny`: `hashbrown` 0.15 (`petgraph`) next to 0.17, and `syn` 2
+(`prost-derive`) next to 3.
 
 Retained older transitive version: matchit 0.8.4 (0.8.6 exists), because
 axum 0.8.9 requires `=0.8.4`. Reassess with the next axum release. No TLS
