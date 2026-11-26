@@ -85,9 +85,7 @@ const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(500);
 ///
 /// `GET /health` answers 200 only when the gate is open and the start-up
 /// check passed, not in degraded mode (ADR 0001). Otherwise it answers 503.
-/// [`GateState::is_healthy`] gives the answer. In this phase the gate stays
-/// closed, so the answer is 503 (provisional rule of
-/// [`crate::readiness`]).
+/// [`GateState::is_healthy`] gives the answer.
 pub fn router(gate: watch::Receiver<GateState>) -> Router {
     Router::new().route("/health", get(health)).with_state(gate)
 }

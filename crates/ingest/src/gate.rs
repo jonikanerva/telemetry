@@ -115,7 +115,7 @@ use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tokio::time::{Instant, MissedTickBehavior, sleep, sleep_until, timeout, timeout_at};
 use tracing::{info, warn};
 
-use crate::events::{CountWindow, EventKind, EventSink, IngestEvent};
+use crate::events::{CountThrottle, EventKind, EventSink, IngestEvent};
 use crate::readiness::GateState;
 use crate::watchdog::{self, Heartbeat};
 
@@ -174,7 +174,7 @@ pub async fn run(
 ) {
     let permits = Arc::new(Semaphore::new(limits.max_connections));
     let mut connections = JoinSet::new();
-    let mut refusals = Refusals::new(limits.gate_full_interval);
+    let mut refusals = CountThrottle::new(limits.gate_full_interval);
     let mut tick = tokio::time::interval(limits.beat_interval);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -212,7 +212,7 @@ pub async fn run(
                         ));
                     } else {
                         drop(stream);
-                        if let Some(window) = refusals.refuse(Instant::now(), Timestamp::now()) {
+                        if let Some(window) = refusals.count(Instant::now(), Timestamp::now()) {
                             sink.record(IngestEvent::now(EventKind::GateFull(window)));
                         }
                     }
@@ -647,51 +647,6 @@ impl<S: AsyncRead + Unpin> AsyncRead for FirstByte<S> {
             seen.send(Instant::now()).ok();
         }
         polled
-    }
-}
-
-/// The count of refused connections and the rate limit of `gate_full`.
-#[derive(Debug)]
-struct Refusals {
-    interval: Duration,
-    last_record: Option<Instant>,
-    pending: Option<CountWindow>,
-}
-
-impl Refusals {
-    const fn new(interval: Duration) -> Self {
-        Self {
-            interval,
-            last_record: None,
-            pending: None,
-        }
-    }
-
-    /// Counts one refusal and returns the window to record, if one is due.
-    fn refuse(&mut self, now: Instant, at: Timestamp) -> Option<CountWindow> {
-        match &mut self.pending {
-            Some(window) => window.add(at),
-            None => self.pending = Some(CountWindow::one(at)),
-        }
-        self.due(now)
-    }
-
-    /// Returns the counted window when the interval since the last record
-    /// has passed.
-    fn due(&mut self, now: Instant) -> Option<CountWindow> {
-        self.pending?;
-        if let Some(last) = self.last_record
-            && now.saturating_duration_since(last) < self.interval
-        {
-            return None;
-        }
-        self.last_record = Some(now);
-        self.pending.take()
-    }
-
-    /// Returns the counted window without the rate limit, at the stop.
-    const fn take(&mut self) -> Option<CountWindow> {
-        self.pending.take()
     }
 }
 

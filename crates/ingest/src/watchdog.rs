@@ -54,13 +54,13 @@ pub const GATE_ACCEPTOR: Task = Task {
     limit: Duration::from_secs(30),
 };
 
-/// The ZMQ reader of the pipeline change.
+/// The ZMQ reader ([`crate::pipeline::reader`]).
 pub const READER: Task = Task {
     name: "reader",
     limit: Duration::from_secs(30),
 };
 
-/// The database writer of the pipeline change. Every database call has a
+/// The database writer ([`crate::pipeline::writer`]). Every database call has a
 /// deadline (connect 15 s, statement 30 s), so a live writer beats within
 /// 120 s (ADR 0001).
 pub const WRITER: Task = Task {
