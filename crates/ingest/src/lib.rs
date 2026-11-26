@@ -10,6 +10,8 @@
 //! the command line. The modules receive these values as parameters, so that
 //! tests can control them.
 
+pub mod child;
+pub mod child_output;
 pub mod cli;
 pub mod config;
 pub mod decode;

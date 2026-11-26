@@ -45,19 +45,32 @@ use tracing_subscriber::registry::LookupSpan;
 /// - `duration_ms` and `first_byte_ms`: durations of a gate connection.
 /// - `peer_class`: a static class of a peer address, never the address
 ///   ([`crate::gate`]).
+/// - `child_line`: a line of the child after the VIN redaction. Only the
+///   text of [`crate::child_output::RedactedLine`] goes into this field.
+/// - `stream` and `truncated`: the output stream of that line, and whether
+///   the line was cut at 8 KiB.
+/// - `pid`, `exit_code`, `exit_signal`, and `delay_ms`: numbers of the
+///   child supervision.
 pub const ALLOWED_FIELDS: &[&str] = &[
+    "child_line",
     "connections",
     "count",
+    "delay_ms",
     "duration_ms",
     "error",
+    "exit_code",
+    "exit_signal",
     "first_byte_ms",
     "kind",
     "message",
     "peer_class",
+    "pid",
     "port",
     "reason",
     "signal",
+    "stream",
     "task",
+    "truncated",
 ];
 
 /// Keys that the formatter writes itself. An event field cannot replace them.
