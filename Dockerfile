@@ -3,7 +3,11 @@
 FROM tesla/fleet-telemetry:v0.10.1 AS upstream
 
 FROM debian:trixie-slim
+# The upgrade installs the Debian security fixes that are newer than the base
+# image (docs/security/image-advisories.md#debian-13-base). The result depends
+# on the build date.
 RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
