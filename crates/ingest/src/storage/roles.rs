@@ -15,10 +15,12 @@
 //! because the compute hands the password to the Neon control plane. The
 //! password is a bound `set_config()` value and the script builds the
 //! statement inside a `DO` block, so the client SQL text holds no password.
-//! The statement that the block runs holds it: a server log line or an
-//! error context of that statement can show it, on the Neon side. After a
-//! suspected leak, run the procedure again with new passwords and update
-//! the Railway variables (`README.md`, "Database roles").
+//! The server can still show it in two places: the statement that the
+//! block runs holds it (a server log line or an error context of that
+//! statement), and a server that logs statements with their parameters
+//! can log the bound `set_config()` values. After a suspected leak, run the
+//! procedure again with new passwords and update the Railway variables
+//! (`README.md`, "Database roles").
 
 use sqlx::{Connection, PgConnection};
 

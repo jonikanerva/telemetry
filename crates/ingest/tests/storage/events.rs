@@ -58,17 +58,17 @@ async fn events_of_every_kind_are_stored_once() {
         // the future is `Send`.
         let first = {
             let (pool, events) = (pool.clone(), events.clone());
-            tokio::spawn(async move { write_events(&pool, run, &events).await })
+            tokio::spawn(async move { write_events(&pool, run, &events, &mut || {}).await })
                 .await
                 .unwrap()
                 .unwrap()
         };
         assert_eq!(first, EventOutcome { inserted: 9, duplicates: 0, rejected: 0 });
         // A retry of the same events.
-        let retry = write_events(&pool, run, &events).await.unwrap();
+        let retry = write_events(&pool, run, &events, &mut || {}).await.unwrap();
         assert_eq!(retry, EventOutcome { inserted: 0, duplicates: 9, rejected: 0 });
         // Another run is another key.
-        let other = write_events(&pool, Uuid::from_u128(43), &events[..1]).await.unwrap();
+        let other = write_events(&pool, Uuid::from_u128(43), &events[..1], &mut || {}).await.unwrap();
         assert_eq!(other.inserted, 1);
         pool.close().await;
 
@@ -116,7 +116,8 @@ async fn an_event_that_the_table_rejects_does_not_stop_the_others() {
             rejected.clone(),
             event(EventKind::GateFull(window(2)), 3),
         ];
-        let outcome = write_events(&pool, Uuid::from_u128(1), &events)
+        let mut beats = 0;
+        let outcome = write_events(&pool, Uuid::from_u128(1), &events, &mut || beats += 1)
             .await
             .unwrap();
         assert_eq!(
@@ -127,12 +128,16 @@ async fn an_event_that_the_table_rejects_does_not_stop_the_others() {
                 rejected: 1
             }
         );
-        let single = write_events(&pool, Uuid::from_u128(1), &[rejected])
+        // One insert of all events, then one insert for each event.
+        assert_eq!(beats, 1 + events.len());
+        let single = write_events(&pool, Uuid::from_u128(1), &[rejected], &mut || {})
             .await
             .unwrap();
         assert_eq!(single.rejected, 1);
         assert_eq!(
-            write_events(&pool, Uuid::from_u128(1), &[]).await.unwrap(),
+            write_events(&pool, Uuid::from_u128(1), &[], &mut || {})
+                .await
+                .unwrap(),
             EventOutcome::default()
         );
         pool.close().await;

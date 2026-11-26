@@ -2,12 +2,12 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
+use std::time::Duration;
 
 use jiff_sqlx::ToSqlx;
-use sqlx::pool::PoolConnection;
-use sqlx::{Connection, PgPool, Postgres, Transaction};
+use sqlx::{Connection, PgConnection, PgPool, Postgres, Transaction};
 
-use super::connect::RUN_CALL_DEADLINE;
+use super::connect::{CallConnection, RUN_CALL_DEADLINE, within};
 use super::error::{ErrorCode, FailureClass, Phase, SqlState, StorageError, classify};
 use super::rows::{
     ConnectivityKey, ConnectivityValue, Plan, QueuedRecord, Reason, SignalKey, SignalValueColumns,
@@ -26,11 +26,34 @@ pub const MAX_SIGNAL_ROWS_PER_TRANSACTION: usize = 5_000;
 /// branch.
 pub const MAX_BYTES_PER_TRANSACTION: usize = 8 * 1024 * 1024;
 
+/// The longest local work between two calls of the progress hook outside
+/// of a call deadline: the bookkeeping between two transactions, which
+/// takes microseconds. The rest of the margin is for the beat of the
+/// pipeline and the check period of the watchdog (1 s).
+const PROGRESS_MARGIN: Duration = Duration::from_secs(10);
+
+// The progress guarantee of `Writer::write` (storage module documentation,
+// "Progress"): two calls of the hook are at most one call deadline and the
+// local work apart, and that must stay below the writer limit of the
+// watchdog. A larger deadline or a smaller watchdog limit stops the build.
+const _: () = assert!(
+    RUN_CALL_DEADLINE.as_secs() + PROGRESS_MARGIN.as_secs()
+        <= crate::watchdog::WRITER.limit.as_secs(),
+    "RUN_CALL_DEADLINE leaves no margin below the writer limit of the watchdog"
+);
+
 /// The counts of one call of [`Writer::write`]. They hold numbers only, so
 /// a log event may show them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WriteOutcome {
-    /// Committed transactions, also those of a split.
+    /// Transaction attempts: the committed ones, the failed ones of a
+    /// split, and the inserts of rejected records. Each attempt called the
+    /// progress hook once. N records that the database rejects need about
+    /// 2N - 1 failed attempts and N to 2N reject attempts (storage module
+    /// documentation, "Cost of rejected records").
+    pub attempts: u64,
+    /// Committed transactions, also those of a split and of rejected
+    /// records. Failed attempts are not counted here.
     pub transactions: u64,
     /// New rows in `vehicle_signal`, `vehicle_alert`, `vehicle_error`, and
     /// `connectivity_event`.
@@ -53,6 +76,7 @@ pub struct WriteOutcome {
 
 impl WriteOutcome {
     fn add(&mut self, other: Self) {
+        self.attempts += other.attempts;
         self.transactions += other.transactions;
         self.rows_inserted += other.rows_inserted;
         self.duplicate_rows += other.duplicate_rows;
@@ -66,10 +90,14 @@ impl WriteOutcome {
 ///
 /// The records `records[..committed]` are stored: their rows, or their
 /// `unprocessed_record` rows. The records `records[committed..]` have no
-/// committed transaction, except that a failure of the commit itself (a
-/// connection that breaks during `COMMIT`) can leave the first of them
-/// committed; a later call stores nothing twice. The text holds the class,
-/// the code, and a number only.
+/// known commit. When the connection breaks during a `COMMIT`, the client
+/// cannot know whether the server committed. The whole transaction can be
+/// committed: the records from `committed` to the end of its part, up to
+/// one full transaction of [`MAX_SIGNAL_ROWS_PER_TRANSACTION`] signal rows
+/// or [`MAX_BYTES_PER_TRANSACTION`] bytes. The caller keeps
+/// `records[committed..]` and writes them again. Every insert is
+/// idempotent, so the second call stores nothing twice. The text holds the
+/// class, the code, and a number only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("{error} after {committed} stored records")]
 pub struct WriteError {
@@ -77,7 +105,8 @@ pub struct WriteError {
     pub error: StorageError,
     /// The number of records at the start of the batch that are stored.
     pub committed: usize,
-    /// The counts of the committed transactions of the call.
+    /// The counts of the call until the failure: every attempt, also the
+    /// failed one, and the counts of the committed transactions.
     pub outcome: WriteOutcome,
 }
 
@@ -90,6 +119,7 @@ pub struct WriteError {
 pub struct Writer {
     pool: PgPool,
     vehicles: HashMap<String, VehicleId>,
+    call_deadline: Duration,
 }
 
 /// The failure of one transaction.
@@ -98,6 +128,16 @@ enum AttemptError {
     Data(SqlState),
     /// Any other failure: the caller retries the batch.
     Other(StorageError),
+}
+
+impl AttemptError {
+    /// True when the server answered (`CallConnection::finish`).
+    const fn answered(&self) -> bool {
+        match self {
+            Self::Data(_) => true,
+            Self::Other(error) => error.answered(),
+        }
+    }
 }
 
 impl From<StorageError> for AttemptError {
@@ -113,6 +153,20 @@ fn statement(error: &sqlx::Error) -> StorageError {
     classify(Phase::Statement, error)
 }
 
+/// The progress hook of one call and its count of transaction attempts.
+struct Progress<'p> {
+    hook: &'p mut (dyn FnMut() + Send),
+    attempts: u64,
+}
+
+impl Progress<'_> {
+    /// Runs before every transaction attempt.
+    fn attempt(&mut self) {
+        self.attempts += 1;
+        (self.hook)();
+    }
+}
+
 impl Writer {
     /// Makes a writer that uses `pool` ([`super::run_pool`]).
     #[must_use]
@@ -120,7 +174,16 @@ impl Writer {
         Self {
             pool,
             vehicles: HashMap::new(),
+            call_deadline: RUN_CALL_DEADLINE,
         }
+    }
+
+    /// The writer with another deadline for each transaction, for the
+    /// tests.
+    #[cfg(test)]
+    pub(crate) fn with_call_deadline(mut self, deadline: Duration) -> Self {
+        self.call_deadline = deadline;
+        self
     }
 
     /// The pool of the writer.
@@ -148,6 +211,13 @@ impl Writer {
     ///   that fails. That record goes to `unprocessed_record` with reason
     ///   `database_rejected` in a transaction of its own. The other records
     ///   commit.
+    /// - `progress` runs before every transaction attempt: each transaction
+    ///   of the batch, each attempt of a split, and each insert of a
+    ///   rejected record. Two runs of `progress` are therefore at most one
+    ///   [`RUN_CALL_DEADLINE`] and some microseconds of local work apart,
+    ///   also when one call of `write` lasts many minutes. The pipeline
+    ///   beats the watchdog there (storage module documentation,
+    ///   "Progress").
     ///
     /// # Errors
     ///
@@ -158,12 +228,19 @@ impl Writer {
     pub async fn write(
         &mut self,
         records: &[QueuedRecord<'_>],
+        progress: &mut (dyn FnMut() + Send),
     ) -> Result<WriteOutcome, WriteError> {
+        let mut progress = Progress {
+            hook: progress,
+            attempts: 0,
+        };
         let mut outcome = WriteOutcome::default();
         for chunk in chunks(records) {
-            if let Err((error, committed)) =
-                self.write_isolating(records, chunk, &mut outcome).await
+            if let Err((error, committed)) = self
+                .write_isolating(records, chunk, &mut outcome, &mut progress)
+                .await
             {
+                outcome.attempts = progress.attempts;
                 return Err(WriteError {
                     error,
                     committed,
@@ -171,6 +248,7 @@ impl Writer {
                 });
             }
         }
+        outcome.attempts = progress.attempts;
         Ok(outcome)
     }
 
@@ -181,6 +259,7 @@ impl Writer {
         records: &[QueuedRecord<'_>],
         range: Range<usize>,
         outcome: &mut WriteOutcome,
+        progress: &mut Progress<'_>,
     ) -> Result<(), (StorageError, usize)> {
         // A stack of parts. The second half goes on first, so the parts
         // run in the order of the batch and the first copy of a key wins.
@@ -188,13 +267,17 @@ impl Writer {
         while let Some(part) = parts.pop() {
             let start = part.start;
             let slice = records.get(part.clone()).unwrap_or_default();
+            if slice.is_empty() {
+                continue;
+            }
+            progress.attempt();
             match self.attempt(slice).await {
                 Ok(done) => outcome.add(done),
                 Err(AttemptError::Other(error)) => return Err((error, start)),
                 Err(AttemptError::Data(state)) => {
                     if let [record] = slice {
                         let rejected = self
-                            .reject(record, state)
+                            .reject(record, state, progress)
                             .await
                             .map_err(|error| (error, start))?;
                         outcome.add(rejected);
@@ -209,15 +292,12 @@ impl Writer {
         Ok(())
     }
 
-    /// Writes `records` in one transaction, with [`RUN_CALL_DEADLINE`].
+    /// Writes `records` in one transaction, with the call deadline.
     async fn attempt(
         &mut self,
         records: &[QueuedRecord<'_>],
     ) -> Result<WriteOutcome, AttemptError> {
-        if records.is_empty() {
-            return Ok(WriteOutcome::default());
-        }
-        tokio::time::timeout(RUN_CALL_DEADLINE, self.attempt_now(records))
+        tokio::time::timeout(self.call_deadline, self.attempt_now(records))
             .await
             .unwrap_or(Err(AttemptError::Other(StorageError::new(
                 FailureClass::NoAnswer,
@@ -229,15 +309,30 @@ impl Writer {
         &mut self,
         records: &[QueuedRecord<'_>],
     ) -> Result<WriteOutcome, AttemptError> {
-        let mut conn = self.acquire().await?;
+        let mut call = CallConnection::acquire(&self.pool).await?;
+        let result = self.attempt_on(call.get()?, records).await;
+        call.finish(
+            result
+                .as_ref()
+                .map_or_else(AttemptError::answered, |_| true),
+        );
+        let (outcome, new_vehicles) = result?;
+        // Keep the IDs only after the commit: a rolled-back insert has no
+        // row.
+        self.vehicles.extend(new_vehicles);
+        Ok(outcome)
+    }
+
+    async fn attempt_on(
+        &self,
+        conn: &mut PgConnection,
+        records: &[QueuedRecord<'_>],
+    ) -> Result<(WriteOutcome, HashMap<String, VehicleId>), AttemptError> {
         let mut tx = conn.begin().await.map_err(|error| statement(&error))?;
         match self.attempt_in(&mut tx, records).await {
-            Ok((outcome, new_vehicles)) => {
+            Ok(done) => {
                 tx.commit().await.map_err(|error| statement(&error))?;
-                // Keep the IDs only after the commit: a rolled-back insert
-                // has no row.
-                self.vehicles.extend(new_vehicles);
-                Ok(outcome)
+                Ok(done)
             }
             Err(error) => {
                 // The rollback ends the failed transaction; when the
@@ -246,13 +341,6 @@ impl Writer {
                 Err(error)
             }
         }
-    }
-
-    async fn acquire(&self) -> Result<PoolConnection<Postgres>, StorageError> {
-        self.pool
-            .acquire()
-            .await
-            .map_err(|error| classify(Phase::Connect, &error))
     }
 
     async fn attempt_in(
@@ -315,6 +403,7 @@ impl Writer {
         &self,
         record: &QueuedRecord<'_>,
         state: SqlState,
+        progress: &mut Progress<'_>,
     ) -> Result<WriteOutcome, StorageError> {
         let rejected = UnprocessedRow {
             record: 0,
@@ -329,10 +418,9 @@ impl Writer {
                 sqlstate: None,
             });
         }
-        let mut transactions = 0;
         let mut inserted = None;
         for rows in [&rows[..], &rows[..1]] {
-            transactions += 1;
+            progress.attempt();
             match self.insert_rejected(record, rows).await? {
                 Ok(count) => {
                     inserted = Some(count);
@@ -348,7 +436,7 @@ impl Writer {
             }
         }
         Ok(WriteOutcome {
-            transactions,
+            transactions: 1,
             rejected_records: 1,
             unprocessed_inserted: inserted.unwrap_or(0),
             ..WriteOutcome::default()
@@ -362,7 +450,7 @@ impl Writer {
         record: &QueuedRecord<'_>,
         rows: &[UnprocessedRow],
     ) -> Result<Result<u64, SqlState>, StorageError> {
-        super::connect::within(RUN_CALL_DEADLINE, self.insert_rejected_now(record, rows)).await
+        within(self.call_deadline, self.insert_rejected_now(record, rows)).await
     }
 
     async fn insert_rejected_now(
@@ -370,19 +458,33 @@ impl Writer {
         record: &QueuedRecord<'_>,
         rows: &[UnprocessedRow],
     ) -> Result<Result<u64, SqlState>, StorageError> {
-        let mut conn = self.acquire().await?;
-        let mut tx = conn.begin().await.map_err(|error| statement(&error))?;
-        match insert_unprocessed(&mut tx, std::slice::from_ref(record), rows).await {
-            Ok(inserted) => {
-                tx.commit().await.map_err(|error| statement(&error))?;
-                Ok(Ok(inserted))
-            }
-            Err(error) => {
-                let _rolled_back = tx.rollback().await;
-                match error {
-                    AttemptError::Data(state) => Ok(Err(state)),
-                    AttemptError::Other(error) => Err(error),
-                }
+        let mut call = CallConnection::acquire(&self.pool).await?;
+        let result = insert_rejected_on(call.get()?, record, rows).await;
+        call.finish(
+            result
+                .as_ref()
+                .map_or_else(|error| error.answered(), |_| true),
+        );
+        result
+    }
+}
+
+async fn insert_rejected_on(
+    conn: &mut PgConnection,
+    record: &QueuedRecord<'_>,
+    rows: &[UnprocessedRow],
+) -> Result<Result<u64, SqlState>, StorageError> {
+    let mut tx = conn.begin().await.map_err(|error| statement(&error))?;
+    match insert_unprocessed(&mut tx, std::slice::from_ref(record), rows).await {
+        Ok(inserted) => {
+            tx.commit().await.map_err(|error| statement(&error))?;
+            Ok(Ok(inserted))
+        }
+        Err(error) => {
+            let _rolled_back = tx.rollback().await;
+            match error {
+                AttemptError::Data(state) => Ok(Err(state)),
+                AttemptError::Other(error) => Err(error),
             }
         }
     }

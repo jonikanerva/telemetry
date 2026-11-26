@@ -188,8 +188,10 @@ code that the tests use:
    The program logs one JSON line: `roles_applied`, or `roles_failed` with
    a static class and code. It never logs the URL or a password. The
    passwords reach the server as plain text, because Neon accepts no
-   other form; a Neon server log can show them (ADR 0002). After a
-   suspected leak, repeat the procedure with new passwords.
+   other form. They are bound values of a `set_config()` statement and
+   then part of an `ALTER ROLE` statement, so a Neon server log can show
+   them (ADR 0002). After a suspected leak, repeat the procedure with new
+   passwords.
 
 3. Set the Railway variables of the service `telemetry`, with the host of
    the owner URL. Use the direct host, not the `-pooler` host: the
@@ -200,13 +202,6 @@ code that the tests use:
    - `MIGRATION_DATABASE_URL=postgresql://telemetry_migrator:<migrator password>@<host>/neondb?sslmode=verify-full`
 
 4. Unset the three variables of step 1 and close the shell.
-
-With `psql` (for example from Homebrew `libpq`), the same script runs as:
-
-```sh
-PGOPTIONS="-c telemetry.ingest_password=$TELEMETRY_INGEST_PASSWORD -c telemetry.migrator_password=$TELEMETRY_MIGRATOR_PASSWORD" \
-  psql "$OWNER_DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f db/roles.sql
-```
 
 ## Contributing
 

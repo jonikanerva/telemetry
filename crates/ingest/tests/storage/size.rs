@@ -53,7 +53,7 @@ async fn measure_the_size_of_a_signal_row() {
                     ))
                 })
                 .collect();
-            writer.write(&queued(&messages)).await.unwrap();
+            writer.write(&queued(&messages), &mut || {}).await.unwrap();
         }
         pool.close().await;
 

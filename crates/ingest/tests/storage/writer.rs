@@ -80,7 +80,7 @@ async fn unprocessed_rows(
 async fn write(db: &crate::support::TestDb, messages: &[Message]) -> WriteOutcome {
     let pool = db.pool();
     let mut writer = Writer::new(pool.clone());
-    let outcome = writer.write(&queued(messages)).await.unwrap();
+    let outcome = writer.write(&queued(messages), &mut || {}).await.unwrap();
     pool.close().await;
     outcome
 }
@@ -255,6 +255,7 @@ async fn a_resent_batch_stores_nothing_twice() {
         assert_eq!(
             first,
             WriteOutcome {
+                attempts: 1,
                 transactions: 1,
                 rows_inserted: 5,
                 unprocessed_inserted: 1,
@@ -266,6 +267,7 @@ async fn a_resent_batch_stores_nothing_twice() {
         assert_eq!(
             second,
             WriteOutcome {
+                attempts: 1,
                 transactions: 1,
                 duplicate_rows: 5,
                 ..WriteOutcome::default()
@@ -804,7 +806,7 @@ async fn competing_writers_store_each_row_once() {
         let spawn = |messages: Vec<Message>, pool: sqlx::PgPool| {
             tokio::spawn(async move {
                 let mut writer = Writer::new(pool);
-                writer.write(&queued(&messages)).await
+                writer.write(&queued(&messages), &mut || {}).await
             })
         };
         let first = spawn(batch, first_pool.clone());
@@ -832,17 +834,17 @@ async fn the_writer_creates_a_vehicle_once_and_keeps_its_id() {
         let mut writer = Writer::new(pool.clone());
         for created in 0..3 {
             let message = Message::new(vehicle_data(created, vec![(8, SignalValue::Int32(1))]));
-            writer.write(&[message.queued()]).await.unwrap();
+            writer.write(&[message.queued()], &mut || {}).await.unwrap();
         }
         // A new writer, as after a restart, finds the stored VIN.
         let mut writer = Writer::new(pool.clone());
         let message = Message::new(vehicle_data(3, vec![(8, SignalValue::Int32(1))]));
-        writer.write(&[message.queued()]).await.unwrap();
+        writer.write(&[message.queued()], &mut || {}).await.unwrap();
         let other = Message::new(with_vin(
             vehicle_data(0, vec![(8, SignalValue::Int32(1))]),
             "TESTVIN0000000002",
         ));
-        writer.write(&[other.queued()]).await.unwrap();
+        writer.write(&[other.queued()], &mut || {}).await.unwrap();
         pool.close().await;
         let mut conn = db.owner().await;
         let ids: Vec<(i16, String)> = sqlx::query_as("SELECT id, vin FROM vehicle ORDER BY id")
@@ -931,7 +933,7 @@ async fn a_failed_write_says_which_records_are_stored() {
         execute(&mut conn, "DROP TABLE vehicle_alert").await;
         let pool = db.pool();
         let mut writer = Writer::new(pool.clone());
-        let error = writer.write(&queued(&batch)).await.unwrap_err();
+        let error = writer.write(&queued(&batch), &mut || {}).await.unwrap_err();
         assert_eq!(error.error.class, FailureClass::Answered);
         assert_eq!(error.error.code.to_string(), "42P01");
         assert_eq!(error.committed, 1);
@@ -967,16 +969,87 @@ async fn a_record_that_even_unprocessed_rejects_stops_the_write_at_that_record()
         let pool = db.pool();
         let mut writer = Writer::new(pool.clone());
         let records = queued(&batch);
-        let error = writer.write(&records).await.unwrap_err();
+        let error = writer.write(&records, &mut || {}).await.unwrap_err();
         assert_eq!(error.error.class, FailureClass::Data);
         assert_eq!(error.error.code.to_string(), "23514");
         assert_eq!(error.committed, 1);
         assert_eq!(count(&mut conn, "vehicle_signal").await, 1);
-        let rest = writer.write(&records[error.committed + 1..]).await.unwrap();
+        let rest = writer
+            .write(&records[error.committed + 1..], &mut || {})
+            .await
+            .unwrap();
         assert_eq!(rest.rows_inserted, 1);
         assert_eq!(count(&mut conn, "vehicle_signal").await, 2);
         pool.close().await;
         conn.close().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_failure_after_a_split_in_one_transaction_says_which_records_are_stored() {
+    with_migrated(|db| async move {
+        // A, P, and X fit in one transaction. P fails with a data error, so
+        // the writer splits the transaction: A commits, P is stored as
+        // rejected, and X fails because the alert table does not exist.
+        let batch = [
+            Message::new(vehicle_data(0, vec![(8, SignalValue::Int32(1))])),
+            Message::new(vehicle_data(
+                1,
+                vec![(9, SignalValue::Text("a\0b".to_owned()))],
+            )),
+            Message::new(alerts(2, vec![alert("TestAlert", vec![1], None, None)])),
+        ];
+        let mut conn = db.owner().await;
+        execute(&mut conn, "DROP TABLE vehicle_alert").await;
+        let pool = db.pool();
+        let mut writer = Writer::new(pool.clone());
+        let records = queued(&batch);
+        let error = writer.write(&records, &mut || {}).await.unwrap_err();
+        assert_eq!(error.error.class, FailureClass::Answered);
+        assert_eq!(error.error.code.to_string(), "42P01");
+        assert_eq!(error.committed, 2);
+        assert_eq!(count(&mut conn, "vehicle_signal").await, 1);
+        assert_eq!(count(&mut conn, "unprocessed_record").await, 1);
+        // A second write of the stored records stores nothing twice.
+        let again = writer
+            .write(&records[..error.committed], &mut || {})
+            .await
+            .unwrap();
+        assert_eq!((again.rows_inserted, again.unprocessed_inserted), (0, 0));
+        assert_eq!(count(&mut conn, "vehicle_signal").await, 1);
+        assert_eq!(count(&mut conn, "unprocessed_record").await, 1);
+        pool.close().await;
+        conn.close().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_progress_hook_runs_before_every_transaction_attempt() {
+    with_migrated(|db| async move {
+        // Four records that the database rejects: the split makes 2N - 1 = 7
+        // failed attempts, and each record needs one reject insert.
+        let batch: Vec<Message> = (0..4)
+            .map(|index| {
+                Message::new(vehicle_data(
+                    index,
+                    vec![(9, SignalValue::Text("a\0b".to_owned()))],
+                ))
+                .with_payload(format!("record {index}").as_bytes())
+            })
+            .collect();
+        let pool = db.pool();
+        let mut writer = Writer::new(pool.clone());
+        let mut beats = 0_u64;
+        let outcome = writer
+            .write(&queued(&batch), &mut || beats += 1)
+            .await
+            .unwrap();
+        assert_eq!(outcome.rejected_records, 4);
+        assert_eq!((outcome.attempts, outcome.transactions), (11, 4));
+        assert_eq!(beats, outcome.attempts);
+        pool.close().await;
     })
     .await;
 }

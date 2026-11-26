@@ -166,13 +166,13 @@ where
     let mut admin = admin().await;
     sweep(&mut admin).await;
     execute(&mut admin, &format!("CREATE SCHEMA {prefix}")).await;
+    admin.close().await.unwrap();
     let db = TestDb {
         options: owner_options(&schema),
         schema,
     };
     let result = CatchUnwind(Box::pin(body(db))).await;
-    cleanup(&mut admin, &prefix).await;
-    admin.close().await.unwrap();
+    cleanup(&prefix).await;
     finish(result);
 }
 
@@ -210,6 +210,7 @@ where
         migrator_password: Some(SecretString::new(migrator_password.clone())),
     };
     let applied = apply_roles(&mut admin, &setup).await;
+    admin.close().await.unwrap();
     let db = TestDb {
         options: owner_options(&schema),
         schema: schema.clone(),
@@ -233,8 +234,7 @@ where
             Err(Box::new(format!("db/roles.sql failed: {error}")) as _)
         }
     };
-    cleanup(&mut admin, &prefix).await;
-    admin.close().await.unwrap();
+    cleanup(&prefix).await;
     finish(result);
 }
 
@@ -263,10 +263,37 @@ impl<F: Future> Future for CatchUnwind<F> {
     }
 }
 
+/// The connect attempts of [`admin`]. The Neon proxy can refuse a connect
+/// under load, for example with `08P01` "Authentication timed out" when
+/// four test runs start at the same time.
+const ADMIN_CONNECT_ATTEMPTS: u32 = 3;
+
 /// A connection of the owner role without a schema, after the guards.
+///
+/// The harness opens one for the setup and a new one for the cleanup, so
+/// no admin connection stays idle while the test body runs. Its statement
+/// timeout is 5 minutes ([`MIGRATE_STATEMENT_TIMEOUT`]): the cleanup waits
+/// for the advisory lock of the role script, which parallel test runs
+/// share.
 async fn admin() -> PgConnection {
-    let options = owner_options(&Schema::new("public").unwrap());
-    let mut conn = PgConnection::connect_with(&options).await.unwrap();
+    let options = connect_options(
+        &test_url(),
+        &Schema::new("public").unwrap(),
+        MIGRATE_STATEMENT_TIMEOUT,
+    )
+    .unwrap();
+    let mut attempt = 1;
+    let mut conn = loop {
+        match PgConnection::connect_with(&options).await {
+            Ok(conn) => break conn,
+            Err(error) if attempt < ADMIN_CONNECT_ATTEMPTS => {
+                eprintln!("admin connect attempt {attempt} failed, retrying: {error}");
+                attempt += 1;
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(error) => panic!("admin connect failed {ADMIN_CONNECT_ATTEMPTS} times: {error}"),
+        }
+    };
     let raw: bool = sqlx::query_scalar("SELECT to_regnamespace('raw') IS NOT NULL")
         .fetch_one(&mut conn)
         .await
@@ -296,10 +323,12 @@ pub async fn execute(conn: &mut PgConnection, sql: &str) {
         .unwrap_or_else(|error| panic!("{sql}: {error}"));
 }
 
-/// Removes the schema and the roles of one test, and fails the test when a
-/// step fails.
-async fn cleanup(conn: &mut PgConnection, prefix: &str) {
-    let failures = drop_prefix(conn, prefix).await;
+/// Removes the schema and the roles of one test with a new admin
+/// connection, and fails the test when a step fails.
+async fn cleanup(prefix: &str) {
+    let mut conn = admin().await;
+    let failures = drop_prefix(&mut conn, prefix).await;
+    conn.close().await.unwrap();
     assert!(
         failures.is_empty(),
         "cleanup of {prefix} failed: {failures:#?}"

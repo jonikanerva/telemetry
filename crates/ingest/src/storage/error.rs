@@ -187,6 +187,13 @@ impl StorageError {
             _ => None,
         }
     }
+
+    /// True when the server answered: every class except
+    /// [`FailureClass::NoAnswer`]. Only then may the connection of the call
+    /// go back to the pool (`CallConnection`).
+    pub(crate) const fn answered(self) -> bool {
+        !matches!(self.class, FailureClass::NoAnswer)
+    }
 }
 
 /// When a failure occurred. The class of a failure depends on it (module

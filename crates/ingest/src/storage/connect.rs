@@ -4,8 +4,9 @@ use std::future::Future;
 use std::str::FromStr;
 use std::time::Duration;
 
+use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
-use sqlx::{Connection, PgConnection, PgPool};
+use sqlx::{Connection, PgConnection, PgPool, Postgres};
 
 use super::error::{ErrorCode, FailureClass, Phase, StorageError, classify};
 use crate::config::SecretString;
@@ -69,10 +70,21 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// The server ends a statement after [`RUN_STATEMENT_TIMEOUT`], but it
 /// cannot end a wait of the client for a connection that went silent: the
 /// operating system closes such a TCP connection only after many minutes.
-/// This deadline closes the connection after 90 s: at most 15 s to connect
-/// and some statements of at most 30 s each. The server rolls back an open
-/// transaction of a closed connection. 90 s stays below the 120 s of the
-/// writer heartbeat of the watchdog (ADR 0001).
+/// After 90 s the call ends with [`FailureClass::NoAnswer`] and
+/// [`ErrorCode::Timeout`], and its pool connection closes its socket at
+/// once and frees its pool slot ([`CallConnection`]). The server rolls back
+/// an open transaction of a closed connection.
+///
+/// 90 s is 15 s to connect and some statements of at most 30 s each. A
+/// transaction with more statements than that can be slow but live: three
+/// statements of 30 s each pass the deadline, and the call ends as
+/// `NoAnswer` although the server still works. The server then rolls the
+/// transaction back, and the caller retries it. The byte bound of a
+/// transaction makes this unlikely (`MAX_BYTES_PER_TRANSACTION`: 8 MB took
+/// about 6 s).
+///
+/// 90 s stays below the 120 s writer limit of the watchdog (ADR 0001); the
+/// writer module asserts the margin at compile time.
 pub const RUN_CALL_DEADLINE: Duration = Duration::from_secs(90);
 
 /// The client-side deadline of `ingest migrate` and of the role script, from
@@ -81,9 +93,17 @@ pub const RUN_CALL_DEADLINE: Duration = Duration::from_secs(90);
 /// [`MIGRATE_STATEMENT_TIMEOUT`].
 pub const MIGRATE_DEADLINE: Duration = Duration::from_mins(15);
 
-/// Runs `call` with a client-side deadline. After the deadline the future
-/// is dropped, which closes its connection, and the result is
-/// [`FailureClass::NoAnswer`] with [`ErrorCode::Timeout`].
+/// Runs `call` with a client-side deadline. After the deadline the result
+/// is [`FailureClass::NoAnswer`] with [`ErrorCode::Timeout`], and the future
+/// is dropped with everything that it owns:
+///
+/// - a [`CallConnection`] closes its socket at once and frees its pool
+///   slot;
+/// - a [`PgConnection`] that the future owns closes its socket when it is
+///   dropped.
+///
+/// A connection that the caller owns and lends to `call` stays open; the
+/// caller closes it ([`super::apply_roles`]).
 pub(crate) async fn within<T>(
     deadline: Duration,
     call: impl Future<Output = Result<T, StorageError>>,
@@ -94,6 +114,73 @@ pub(crate) async fn within<T>(
             FailureClass::NoAnswer,
             ErrorCode::Timeout,
         )))
+}
+
+/// The pool connection of one call of `ingest run`. Every pool path of the
+/// storage takes its connection here, so one place decides when a
+/// connection goes back to the pool.
+///
+/// The connection goes back to the pool only through
+/// [`CallConnection::finish`] after the server answered: success, an
+/// answered error, or a data error. In every other case (a passed
+/// deadline, a broken session, or a caller that drops the future) the
+/// drop detaches the connection from the pool and drops it. That closes
+/// the socket at once, without a wait, and frees the pool slot, so the
+/// next call opens a new connection.
+///
+/// Why: `SQLx` 0.9.1 does not close a pool connection that is dropped. It
+/// returns the connection in a task that sends `Sync` and waits for the
+/// answer without a time limit, and the pool counts the connection as
+/// used until then. With a server that went silent, two such connections
+/// would block the pool of two connections (ADR 0001) for as long as the
+/// peer keeps the TCP connection open.
+///
+/// What stays: a connection that goes back to the pool after an answer is
+/// still checked with that unbounded wait. The server answered a moment
+/// before, so it blocks only when the server goes silent in that moment.
+/// The wait then ends when the operating system gives up the TCP
+/// connection (unacknowledged data), and the other pool connection still
+/// works.
+pub(crate) struct CallConnection {
+    conn: Option<PoolConnection<Postgres>>,
+}
+
+impl CallConnection {
+    /// Takes a connection from the pool. The caller bounds the wait with
+    /// its deadline; the pool also stops after [`CONNECT_TIMEOUT`].
+    pub(crate) async fn acquire(pool: &PgPool) -> Result<Self, StorageError> {
+        let conn = pool
+            .acquire()
+            .await
+            .map_err(|error| classify(Phase::Connect, &error))?;
+        Ok(Self { conn: Some(conn) })
+    }
+
+    /// The connection, for the statements of the call.
+    pub(crate) fn get(&mut self) -> Result<&mut PgConnection, StorageError> {
+        // `None` only after `finish`, which takes `self`.
+        self.conn
+            .as_deref_mut()
+            .ok_or(StorageError::new(FailureClass::Answered, ErrorCode::Other))
+    }
+
+    /// Ends the call: the connection goes back to the pool when the server
+    /// answered the call, and closes otherwise.
+    pub(crate) fn finish(mut self, answered: bool) {
+        if answered {
+            drop(self.conn.take());
+        }
+    }
+}
+
+impl Drop for CallConnection {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            // `detach` frees the pool slot; dropping the connection closes
+            // the socket. No await, so the close needs no deadline.
+            drop(conn.detach());
+        }
+    }
 }
 
 /// Builds the connection settings from a database URL.

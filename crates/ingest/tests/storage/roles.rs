@@ -93,7 +93,7 @@ async fn assert_ingest_writes(roles: &TestRoles) {
         Message::new(unprocessed(UnprocessedReason::UnknownTopic, 0)),
     ];
     let mut writer = Writer::new(pool.clone());
-    let written = writer.write(&queued(&batch)).await.unwrap();
+    let written = writer.write(&queued(&batch), &mut || {}).await.unwrap();
     assert_eq!(written.rows_inserted, 4);
     assert_eq!(
         written.conflicting_records, 1,
@@ -103,7 +103,7 @@ async fn assert_ingest_writes(roles: &TestRoles) {
         occurred_at: at(0, 0),
         kind: EventKind::Started,
     }];
-    let outcome = write_events(&pool, Uuid::from_u128(1), &events)
+    let outcome = write_events(&pool, Uuid::from_u128(1), &events, &mut || {})
         .await
         .unwrap();
     assert_eq!(outcome.inserted, 1);

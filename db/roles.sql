@@ -21,10 +21,12 @@
 -- The passwords are plain text: Neon refuses a SCRAM verifier that a
 -- client computes ("Neon only supports being given plaintext passwords",
 -- SQLSTATE XX000), because the compute hands each password to the Neon
--- control plane. The client SQL text holds no password, but the ALTER ROLE
--- statement that the DO block runs holds it, so a server log line or an
--- error context of that statement can show it on the Neon side. After a
--- suspected leak, run the procedure again with new passwords.
+-- control plane. The client SQL text holds no password, but the server
+-- can still show it in two places: the ALTER ROLE statement that the DO
+-- block runs holds it (a server log line or an error context of that
+-- statement), and the `set_config()` statement of the client binds it (a
+-- server that logs statements with their parameters). After a suspected
+-- leak, run the procedure again with new passwords.
 --
 -- What the script does:
 --

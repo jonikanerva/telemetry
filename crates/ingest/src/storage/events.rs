@@ -10,11 +10,13 @@
 //! constraints of the table hold the same rules as the types, so a
 //! rejected event is a defect.
 
+use std::time::Duration;
+
 use jiff_sqlx::ToSqlx;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::connect::{RUN_CALL_DEADLINE, within};
+use super::connect::{CallConnection, RUN_CALL_DEADLINE, within};
 use super::error::{FailureClass, Phase, StorageError, classify};
 use super::rows::floor_micros;
 use crate::events::IngestEvent;
@@ -42,6 +44,10 @@ pub struct EventOutcome {
 /// of its own, so one wrong event does not stop the others; it counts the
 /// rejected events.
 ///
+/// `progress` runs before each insert, so it runs at least once every
+/// [`RUN_CALL_DEADLINE`] while the call lasts (the storage module
+/// documentation, "Progress"). The pipeline beats the watchdog there.
+///
 /// # Errors
 ///
 /// Returns the first failure that is not a data error. The caller keeps the
@@ -50,8 +56,21 @@ pub async fn write_events(
     pool: &PgPool,
     run_id: Uuid,
     events: &[IngestEvent],
+    progress: &mut (dyn FnMut() + Send),
 ) -> Result<EventOutcome, StorageError> {
-    match insert(pool, run_id, events).await {
+    write_events_within(pool, run_id, events, progress, RUN_CALL_DEADLINE).await
+}
+
+/// [`write_events`] with another deadline for each insert, for the tests.
+pub(crate) async fn write_events_within(
+    pool: &PgPool,
+    run_id: Uuid,
+    events: &[IngestEvent],
+    progress: &mut (dyn FnMut() + Send),
+    deadline: Duration,
+) -> Result<EventOutcome, StorageError> {
+    progress();
+    match insert(pool, run_id, events, deadline).await {
         Ok(inserted) => Ok(EventOutcome {
             inserted,
             duplicates: count(events.len()).saturating_sub(inserted),
@@ -60,7 +79,8 @@ pub async fn write_events(
         Err(error) if error.class == FailureClass::Data && events.len() > 1 => {
             let mut outcome = EventOutcome::default();
             for event in events {
-                match insert(pool, run_id, std::slice::from_ref(event)).await {
+                progress();
+                match insert(pool, run_id, std::slice::from_ref(event), deadline).await {
                     Ok(1) => outcome.inserted += 1,
                     Ok(_) => outcome.duplicates += 1,
                     Err(error) if error.class == FailureClass::Data => outcome.rejected += 1,
@@ -81,8 +101,13 @@ fn count(length: usize) -> u64 {
     u64::try_from(length).unwrap_or(u64::MAX)
 }
 
-async fn insert(pool: &PgPool, run_id: Uuid, events: &[IngestEvent]) -> Result<u64, StorageError> {
-    within(RUN_CALL_DEADLINE, insert_now(pool, run_id, events)).await
+async fn insert(
+    pool: &PgPool,
+    run_id: Uuid,
+    events: &[IngestEvent],
+    deadline: Duration,
+) -> Result<u64, StorageError> {
+    within(deadline, insert_now(pool, run_id, events)).await
 }
 
 async fn insert_now(
@@ -122,10 +147,7 @@ async fn insert_now(
         })
         .collect();
     // One statement is one implicit transaction.
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|error| classify(Phase::Connect, &error))?;
+    let mut call = CallConnection::acquire(pool).await?;
     let result = sqlx::query!(
         r#"INSERT INTO ingest_event (
                run_id, occurred_at, kind, reason, dropped_count, first_received_at, last_received_at
@@ -144,8 +166,13 @@ async fn insert_now(
         &first as _,
         &last as _,
     )
-    .execute(&mut *conn)
+    .execute(call.get()?)
     .await
-    .map_err(|error| classify(Phase::Statement, &error))?;
-    Ok(result.rows_affected())
+    .map_err(|error| classify(Phase::Statement, &error));
+    call.finish(
+        result
+            .as_ref()
+            .map_or_else(|error| error.answered(), |_| true),
+    );
+    Ok(result?.rows_affected())
 }

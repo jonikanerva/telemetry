@@ -2,12 +2,15 @@
 //! `ingest run` (ADR 0002, "Migrations").
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use sqlx::migrate::Migrator;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection, PgPool};
 
-use super::connect::{MIGRATE_DEADLINE, RUN_CALL_DEADLINE, Schema, connect, within};
+use super::connect::{
+    CallConnection, MIGRATE_DEADLINE, RUN_CALL_DEADLINE, Schema, connect, within,
+};
 use super::error::{ErrorCode, FailureClass, Phase, StorageError, classify, classify_migrate};
 
 /// The migrations in `migrations/` at the repository root. The binary
@@ -137,15 +140,25 @@ async fn read_applied(conn: &mut PgConnection) -> Result<HashMap<i64, Vec<u8>>, 
 ///
 /// Returns the [`StorageError`] of the table above.
 pub async fn check_migrations(pool: &PgPool) -> Result<(), StorageError> {
-    within(RUN_CALL_DEADLINE, check(pool)).await
+    check_migrations_within(pool, RUN_CALL_DEADLINE).await
+}
+
+/// [`check_migrations`] with another deadline, for the tests.
+pub(crate) async fn check_migrations_within(
+    pool: &PgPool,
+    deadline: Duration,
+) -> Result<(), StorageError> {
+    within(deadline, check(pool)).await
 }
 
 async fn check(pool: &PgPool) -> Result<(), StorageError> {
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|error| classify(Phase::Connect, &error))?;
-    let applied = match read_applied(&mut conn).await {
+    let mut call = CallConnection::acquire(pool).await?;
+    let read = read_applied(call.get()?).await;
+    call.finish(
+        read.as_ref()
+            .map_or_else(|error| error.answered(), |_| true),
+    );
+    let applied = match read {
         Ok(applied) => applied,
         // 42P01: the table `_sqlx_migrations` does not exist, so no
         // migration is applied.

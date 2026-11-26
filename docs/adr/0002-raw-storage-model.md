@@ -274,9 +274,15 @@ in key order, so two writers with the same keys take their locks in the
 same order. Alert, error, and unprocessed rows keep the order of the batch;
 a deadlock of two writers (SQLSTATE 40P01) is an answered failure, and the
 caller retries. Each transaction has a client deadline of 90 s, also for a
-connection that goes silent. A failed write tells the caller how many
-records at the start of the batch are stored. Queue items leave memory
-only after their rows commit.
+connection that goes silent. After the deadline the writer closes the
+connection at once and frees its pool slot; a connection goes back to the
+pool only after the server answered. A failed write tells the caller how
+many records at the start of the batch are stored; after a break during a
+`COMMIT`, the next transaction can be stored too, and the idempotent
+re-send covers it. The writer calls a progress hook of the caller before
+each transaction attempt, so the caller beats the watchdog at least every
+90 s also during a long split. Queue items leave memory only after their
+rows commit.
 
 ### Expected size
 
@@ -358,8 +364,11 @@ cannot create objects in `raw` or `public`.
   plaintext passwords", SQLSTATE XX000, tested), because the compute hands
   each password to the Neon control plane. A server log line or an error
   context of the `ALTER ROLE` statement can therefore show a password on
-  the Neon side. After a suspected leak, run the script again with new
-  passwords and update the Railway variables.
+  the Neon side. The script gets the passwords as bound values of a
+  `set_config()` statement, so a server that logs statements with their
+  parameters (for example with `log_min_duration_statement`) can also log
+  them (not verified on Neon). After a suspected leak, run the script
+  again with new passwords and update the Railway variables.
 - The script sets default privileges for `telemetry_migrator` in `raw`:
   each table that the migrator creates gives `telemetry_ingest` `SELECT`
   and `INSERT`. The migrations therefore name no role. Migration 0001
