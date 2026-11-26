@@ -43,8 +43,9 @@ libraries that the server process loads (glibc, libstdc++, libgcc).
 **Known exploited.** No compared CVE is in the CISA Known Exploited
 Vulnerabilities catalog (version 2026.11.25, 1805 entries, read twice on
 26 November 2026; 0 matches). Compared: the 152 CVE IDs of the two image
-scans, CVE-2025-69277 of libsodium, and 119 CVE IDs that OSV lists for
-the static C libraries (see "Static C libraries").
+scans, CVE-2025-69277 (libsodium, which the binary does not contain;
+kept from an earlier version of this triage), and 119 CVE IDs that OSV
+lists for the static C libraries (see "Static C libraries").
 
 **Needs action.** None.
 
@@ -147,16 +148,23 @@ one breaks.
 
 1. **Image composition (checked).** The production `Dockerfile` copies
    only one file from the upstream image:
-   `COPY --from=upstream /fleet-telemetry /fleet-telemetry`. The check
-   reads the Dockerfile as instructions: it drops comment lines, joins
-   continuation lines, and compares instruction names without letter
-   case. It requires that this is the only instruction with `from=` (also
-   `--from=0`, an image reference, or a `RUN --mount` source), and that
-   the final stage starts from a base image, not from the upstream image
-   and not from another stage. It fails on a heredoc and on a variable in
-   a `FROM` instruction or a `from=` source. It scans each `FROM` image and
-   fails when the number of scanned images differs from the number of
-   lines that start with `FROM`. The upstream
+   `COPY --from=upstream /fleet-telemetry /fleet-telemetry`. The check is
+   a strict allowlist, not a Dockerfile parser: all bytes must be printable
+   ASCII, tab, or newline; no parser directive (`# name=value`) is
+   allowed; and after removal of empty lines and of lines that start with
+   `#`, the lines must equal the expected lines of this project exactly.
+   Only the two image tags may change (`[A-Za-z0-9._-]+`). The expected
+   lines contain exactly two `FROM` lines (the upstream image `AS
+   upstream`, then `debian`), one `COPY --from=upstream /fleet-telemetry
+   /fleet-telemetry`, and the copy of `config/server_config.json` to
+   `/etc/fleet-telemetry/config.json`. Any other form fails, also a
+   continuation inside a token, a Unicode space, a quote or an escape
+   character in a flag, or a trailing space after a continuation
+   backslash; the message says that the allowlist must change together
+   with the Dockerfile. The task scans the two images of the `FROM` lines
+   and fails when it did not scan two images. `entrypoint.sh` must start
+   the server with `exec /fleet-telemetry -config
+   /etc/fleet-telemetry/config.json` and contain no other `-config`. The upstream
    layer of the binary contains only `fleet-telemetry`. The Debian 12
    files of the upstream image (`gcr.io/distroless/cc-debian12` base,
    upstream [`Dockerfile#L31-L33`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L31-L33))
@@ -229,8 +237,8 @@ one breaks.
    ([`Makefile#L10`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Makefile#L10));
    this cause is not tested. Its ELF `NEEDED` entries are `libm.so.6`, `libstdc++.so.6`, `libgcc_s.so.1`, `libc.so.6`, and
    `ld-linux-x86-64.so.2`. At run time, the server loads these Debian 13
-   libraries of the production image. libzmq 4.3.4, libsodium 1.0.19, and
-   librdkafka 2.3.0 with its bundled libraries (OpenSSL 3.0.11, libcurl
+   libraries of the production image. libzmq 4.3.4 with its own copies of
+   tweetnacl and SHA-1, and librdkafka 2.3.0 with its bundled libraries (OpenSSL 3.0.11, libcurl
    7.86.0, zlib 1.2.13, zstd 1.5.2, lz4 1.9.3) are linked statically (see
    "Static C libraries").
 8. **Config key form (checked).** Upstream decodes the config with Go
@@ -414,8 +422,22 @@ or `grpc.Server.ServeHTTP`.
 osv-scanner and govulncheck do not see C libraries that are linked into
 the binary. Two sources put static C code into `/fleet-telemetry`:
 
-- The upstream Dockerfile builds libsodium and libzmq as static libraries
-  ([`Dockerfile#L5-L20`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L5-L20)).
+- The upstream Dockerfile builds libzmq 4.3.4 as a static library
+  ([`Dockerfile#L14-L20`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L14-L20)).
+  It also builds libsodium 1.0.19
+  ([`Dockerfile#L5-L11`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L5-L11)),
+  but the libzmq build does not use it: libzmq's `./configure` runs
+  without `--with-libsodium`, and libzmq 4.3.4 then uses its own copy of
+  tweetnacl ([`configure.ac#L536-L541`](https://github.com/zeromq/libzmq/blob/v4.3.4/configure.ac#L536-L541):
+  "defaults to tweetnacl", `--with-libsodium` "default=no"). The binary
+  confirms this: the symbol table has the file symbol `tweetnacl.c`;
+  `sodium_init` is the 3-byte stub `xorl %eax, %eax; retq`; the only
+  C symbols with `sodium`, `crypto_`, or `randombytes` in the name are
+  the 14 tweetnacl names of libzmq (`crypto_box*`, `crypto_core_hsalsa20`,
+  `crypto_core_salsa20`, `crypto_sign*`, `randombytes`,
+  `randombytes_close`, `sodium_init`); no `sodium_version_string`,
+  `crypto_core_ed25519_*`, or `crypto_generichash` symbol exists; and the
+  binary contains no `libsodium` string. libsodium is not linked.
 - `confluent-kafka-go/v2` v2.3.0 links its prebuilt bundle
   `kafka/librdkafka_vendor/librdkafka_glibc_linux_amd64.a` (SHA-256
   `7e6c80d323ad6a0dc9fbcb693cf607bc62997a4591e940e7f9d4e8ae56f0f198`;
@@ -427,14 +449,41 @@ the binary. Two sources put static C code into `/fleet-telemetry`:
 | Component | Version | Evidence of the version | Use in this deployment |
 | --------- | ------- | ----------------------- | ---------------------- |
 | libzmq | 4.3.4 | Upstream `Dockerfile#L15`; `zmq_version` in the binary returns 4, 3, 4. | At each start, the Go package `zmq4` creates a libzmq context, without a socket (see "Code that runs at each start"). No socket today. After ADR 0001, the `zmq` dispatcher binds a PUB socket. |
-| libsodium | 1.0.19 | Upstream `Dockerfile#L6`. | Used by libzmq for CURVE. The configuration does not enable CURVE. |
+| tweetnacl (copy in libzmq 4.3.4, `src/tweetnacl.c`) | the libzmq 4.3.4 copy | Binary: file symbol `tweetnacl.c` and its local functions (`car25519`, `pack25519`, `scalarmult`, ...); `sodium_init` is the tweetnacl stub; `randombytes` calls only `getrandom` and `sleep`. | Used by libzmq only for CURVE. The configuration does not enable CURVE. |
+| SHA-1 (copy in libzmq 4.3.4, `external/sha1`) | the libzmq 4.3.4 copy | Binary: file symbol `sha1`, next to the libzmq WebSocket files (`ws_engine`, `ws_listener`). | Used by the libzmq WebSocket transport only. Not configured. |
+| libsodium | not linked | See above: built by the upstream Dockerfile, but not used by the libzmq build; no libsodium symbol or string in the binary. | Not applicable. |
 | librdkafka | 2.3.0 | String `librdkafka v2.3.0` in the binary. | Only behind the `kafka` dispatcher. |
-| OpenSSL (libssl, libcrypto) | 3.0.11 | String `OpenSSL 3.0.11 19 Sep 2023` in the binary; `configure.libssl` sets 3.0.11. | Only behind the `kafka` dispatcher (see below). |
+| OpenSSL (libssl, libcrypto) | 3.0.11 | String `OpenSSL 3.0.11 19 Sep 2023` in the binary; `configure.libssl` sets 3.0.11. | The CPU feature detection runs at each start (see "Code that runs at each start"). All other code only behind the `kafka` dispatcher. |
 | libcurl | 7.86.0 | String `libcurl/7.86.0` in the bundle archive; `configure.libcurl` sets 7.86.0. The binary contains the names of 44 curl objects, but not `version.o`. | Used by librdkafka for the OAUTHBEARER OIDC token request. Only behind the `kafka` dispatcher. |
 | zlib | 1.2.13 | Strings `deflate 1.2.13` and `inflate 1.2.13` in the binary. | Only behind the `kafka` dispatcher. |
 | zstd | 1.5.2 | `ZSTD_versionNumber` returns 10502; `configure.libzstd` sets 1.5.2. | Only behind the `kafka` dispatcher. |
 | lz4 | 1.9.3 (librdkafka copy) | `LZ4_versionNumber` returns 10903; `src/lz4.h` of librdkafka v2.3.0. | Only behind the `kafka` dispatcher. |
 | Cyrus SASL | not linked | The bundle excludes GSSAPI, because Cyrus SASL needs dynamic linking ([`packaging/nuget/staticpackage.py#L17-L20`](https://github.com/confluentinc/librdkafka/blob/v2.3.0/packaging/nuget/staticpackage.py#L17-L20)). The binary has no Cyrus SASL symbol; `rd_kafka_sasl_client_new` is librdkafka code (PLAIN, SCRAM, OAUTHBEARER). | Not applicable. |
+
+Evidence against the binary itself, for each row (round 4 re-check,
+after the libsodium error of an earlier version, which took a component
+name from a build file):
+
+- **From the binary alone:** libzmq (`zmq_version`), tweetnacl (file
+  symbol and functions), SHA-1 (file symbol), librdkafka (version
+  string), OpenSSL (version string; 502 `libcrypto-lib-*` and 39
+  `libssl-lib-*` object names), zlib (version strings; `adler32.o`,
+  `deflate.o`, `inflate.o`), zstd (`ZSTD_versionNumber`; `zstd_*.o`
+  object names), lz4 (`LZ4_versionNumber`), and the absence of libsodium
+  and Cyrus SASL (no symbol, no string).
+- **Partly from the bundle archive:** libcurl. The binary proves that
+  libcurl is linked (44 `libcurl_la-*.o` object names, 84 `curl_*`
+  symbols), but it has no version string, because `version.o` is not
+  linked. The version 7.86.0 comes from the string `libcurl/7.86.0` in
+  the bundle archive of the module that the binary records (same `h1:`
+  hash) and from `configure.libcurl` of librdkafka v2.3.0.
+- **Completeness:** the ELF symbol table has 973 file symbols. After
+  removal of the files of libzmq 4.3.4 (`src/`, `external/sha1`,
+  `tweetnacl`), librdkafka v2.3.0 (`src/`), OpenSSL, libcurl, zlib, zstd,
+  the cgo files of the Go packages (also `dummy.c` of `zmq4`), the Go
+  linker entry `go.go`, and the C run time (`crt1.o`,
+  `crtstuff`, the Go `runtime/cgo` files), no file symbol is left. The
+  list above is complete for the code that has file symbols.
 
 **Code that runs at each start.** Some code of the static components runs
 at each start, in every configuration. Method: the ELF dynamic section
@@ -448,7 +497,7 @@ functions (`go tool objdump`). The glibc start code calls `_init`
 | ---------- | ------------ | ----- | -------- |
 | ELF `_init` | `OPENSSL_cpuid_setup` of OpenSSL 3.0.11: CPU feature detection. It reads the environment variable `OPENSSL_ia32cap` (`getenv`), parses it with `ossl_strtouint64`, and runs `OPENSSL_ia32_cpuid` (the `CPUID` instruction). | The process environment and the CPU. No network input. The environment comes from the Railway service variables; no file of this repository sets `OPENSSL_ia32cap`. | `_init` at `0x408000` calls `OPENSSL_cpuid_setup`; its only calls are `getenv@plt`, `ossl_strtouint64`, and `OPENSSL_ia32_cpuid`. OpenSSL 3.0.11 [`crypto/cpuid.c#L95-L157`](https://github.com/openssl/openssl/blob/openssl-3.0.11/crypto/cpuid.c#L95-L157). None of the 45 OSV records for OpenSSL 3.0.11 contains `cpuid` or `ia32cap` in its summary or details. |
 | ELF `.init_array` | `frame_dummy` (C run time) and the libzmq constructor of `ctx.cpp`, which only sets `zmq::ctx_t::max_socket_id` to 0. | None. | Disassembly of both entries. |
-| Go `zmq4.init.0` | `zmq_version`, then `zmq4_ctx_new` (libzmq `zmq_ctx_new`): it allocates a `ctx_t`, reads `getpid`, initialises libsodium randomness (`random_open`, `sodium_init`), and creates the local signalling descriptor of the terminate mailbox (`eventfd` on Linux). It opens no network socket and starts no I/O thread: libzmq starts the reaper and the I/O threads only with the first socket. | The kernel random source. No network input. | `go tool objdump`: the only Go `init` with a direct call into C is `zmq4.init.0` (calls `Version` and `_C2func_zmq4_ctx_new`); [`zmq4.go#L129-L158`](https://github.com/pebbe/zmq4/blob/v1.2.10/zmq4.go#L129-L158). libzmq 4.3.4 [`zmq.cpp#L130-L148`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/zmq.cpp#L130-L148), [`ctx.cpp#L76-L105`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L76-L105), [`ctx.cpp#L478-L491`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L478-L491) (`start` only in `create_socket`). |
+| Go `zmq4.init.0` | `zmq_version`, then `zmq4_ctx_new` (libzmq `zmq_ctx_new`): it allocates a `ctx_t`, reads `getpid`, and creates the local signalling descriptor of the terminate mailbox (`eventfd`; `make_fdpair` calls `eventfd@plt`). `zmq::random_open()` is a single `retq` in this build, so no random source is read. It opens no network socket and starts no I/O thread: libzmq starts the reaper and the I/O threads only with the first socket. | None (the process ID only). No network input. | `go tool objdump`: the only Go `init` with a direct call into C is `zmq4.init.0` (calls `Version` and `_C2func_zmq4_ctx_new`); [`zmq4.go#L129-L158`](https://github.com/pebbe/zmq4/blob/v1.2.10/zmq4.go#L129-L158). libzmq 4.3.4 [`zmq.cpp#L130-L148`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/zmq.cpp#L130-L148), [`ctx.cpp#L76-L105`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L76-L105), [`ctx.cpp#L478-L491`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L478-L491) (`start` only in `create_socket`). |
 
 The direct-call scan does not follow indirect calls from a Go `init`
 function. The Go packages with C calls in the binary are `kafka` of
@@ -470,7 +519,7 @@ runs without the `kafka` dispatcher:
   `ConfigMap` and calls `convertKafkaConfig` only for the Kafka producer
   ([`config/config.go#L386-L396`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L386-L396)).
 - libzmq does not use OpenSSL: the binary has no GnuTLS symbol and no
-  libzmq TLS transport; libzmq uses libsodium (`crypto_box` symbols).
+  libzmq TLS transport; libzmq uses its tweetnacl copy for CURVE.
 - The `vuln` task fails when a record type names a dispatcher other than
   `logger` or `zmq`, also through a repeated `records` object.
 
@@ -490,7 +539,9 @@ commit, not a scanner result):
 | lz4 1.9.3 | `d443718` (tag `v1.9.3`) | 1 (CVE-2021-3520) | Fixed in the librdkafka copy: librdkafka v2.1.0 updated `lz4.c` for CVE-2021-3520 ([`CHANGELOG.md#L237`](https://github.com/confluentinc/librdkafka/blob/v2.3.0/CHANGELOG.md#L237)). |
 | librdkafka 2.3.0 | `95a542c` (tag `v2.3.0`) | 0 | No record. Class D. |
 | libzmq 4.3.4 | `4097855` (tag `v4.3.4`) | 0 | No record. The known advisories CVE-2020-15166, CVE-2021-20235, and CVE-2021-20236 affect versions before 4.3.3. |
-| libsodium 1.0.19 | `fb4533b` (tag `1.0.19-RELEASE`) | 0 | No record. CVE-2025-69277 affects `crypto_core_ed25519_is_valid_point` with untrusted input. This triage did not check whether libzmq calls this function; CURVE is not enabled. |
+| tweetnacl (libzmq copy) | none of its own | not applicable | tweetnacl has no release commits and no OSV package. The copy is a file of the libzmq repository, so the libzmq 4.3.4 query above covers it (0 records). Reachable only through CURVE, which is not enabled. Not compared further. |
+| SHA-1 (libzmq copy) | none of its own | not applicable | A file of the libzmq repository, covered by the libzmq 4.3.4 query. Reachable only through the WebSocket transport, which is not configured. |
+| libsodium 1.0.19 | `fb4533b` (tag `1.0.19-RELEASE`) | 0 | Not linked (see above). CVE-2025-69277 does not apply: `crypto_core_ed25519_is_valid_point` is not in the binary. |
 
 An empty OSV answer does not prove that no vulnerability exists. The 119
 CVE IDs of these records are not in the CISA KEV catalog 2026.11.25. The
@@ -512,8 +563,9 @@ Decision: **not in the production image.** Evidence: the production
 (fact 1). The production base is Debian 13, and its packages are triaged
 below. One `PackageOverrides` entry with `ecosystem = "Debian:12"`
 ignores these advisories in the upstream image scan only. The `vuln` task
-fails when the Dockerfile copies anything else from the upstream image, or
-when the final stage starts from the upstream image.
+fails when the Dockerfile differs from its allowlist, which allows only
+the copy of `/fleet-telemetry` from the upstream image and a final stage
+from `debian`.
 
 ## Debian 13 base
 
@@ -608,14 +660,12 @@ Reassessment rule:
   `osv-scanner-<repository, / replaced by ->.toml`. An image without a
   file fails the task.
 - Before the scans, the `vuln` task checks these premises and fails when
-  one breaks. Dockerfile, read as instructions (comment lines dropped,
-  continuation lines joined, instruction names without letter case): no
-  heredoc; no variable in a `FROM` instruction or a `from=` source; the
-  only instruction with `from=` is the copy of `/fleet-telemetry` from
-  the upstream stage; the final stage starts from a base image, not from
-  the upstream image or another stage. After the scans, the task fails
-  when the number of scanned images differs from the number of lines that
-  start with `FROM`. `config/server_config.json` (fact 8): exactly one
+  one breaks. Dockerfile (fact 1): a strict allowlist of the expected
+  lines; only the two image tags may change; printable ASCII only; no
+  parser directive. After the scans, the task fails when it did not scan
+  the two images. `entrypoint.sh`: the server starts with
+  `-config /etc/fleet-telemetry/config.json`, and no other `-config`
+  exists. `config/server_config.json` (fact 8): exactly one
   JSON value; the same leaf paths in the token stream and in the parsed
   value, so no repeated key of any kind; lowercase keys
   (`^[a-z0-9_]+$`) in the root, `monitoring`, and `tls` objects; all
@@ -683,8 +733,8 @@ the gating advisory rate falls below one each month over 60 days.
 4. KEV: download
    `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`,
    collect the CVE IDs and the `upstream` CVE IDs of the osv-scanner JSON
-   output (152 IDs on 26 November 2026), add CVE-2025-69277 and the CVE
-   IDs of the OSV commit queries for the static C libraries (119 IDs), and
+   output (152 IDs on 26 November 2026), add CVE-2025-69277 (libsodium,
+   not linked) and the CVE IDs of the OSV commit queries for the static C libraries (119 IDs), and
    intersect with `.vulnerabilities[].cveID` of the catalog.
 5. Static C libraries: `POST https://api.osv.dev/v1/query` with
    `{"commit": "<release commit>"}` for each release commit of the table
@@ -693,4 +743,5 @@ the gating advisory rate falls below one each month over 60 days.
    `LZ4_versionNumber`, and `zmq_version` with `go tool objdump`.
 6. Config premises: run the premise part of the `vuln` task (the lines
    before `cargo deny`) in a scratch directory that holds a variant
-   `Dockerfile` and `config/server_config.json`.
+   `Dockerfile`, `entrypoint.sh`, and `config/server_config.json`. The
+   harness of the PR comments does this for each variant.

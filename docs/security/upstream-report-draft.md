@@ -74,15 +74,21 @@ do. All deployments still ship them, and scanners flag every image.
    base image.
 2. The Dockerfile builds libzmq 4.3.4
    ([Dockerfile#L15](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L15)).
-   The issue text mentions 4.3.5, the newest libzmq tag. The libsodium
-   version is 1.0.19
-   ([Dockerfile#L6](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L6));
-   the newest tag is 1.0.22. Scanners cannot see the static libzmq,
-   libsodium, and librdkafka 2.3.0 in the binary. The librdkafka bundle
-   of `confluent-kafka-go/v2` v2.3.0 also links OpenSSL 3.0.11 and
-   libcurl 7.86.0 statically; OSV lists 45 and 123 records for these
-   release commits. They are reachable only through the `kafka`
-   dispatcher.
+   The issue text mentions 4.3.5, the newest libzmq tag. The Dockerfile
+   also builds libsodium 1.0.19
+   ([Dockerfile#L5-L11](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L5-L11)),
+   but the libzmq `./configure` runs without `--with-libsodium`, so libzmq
+   uses its own tweetnacl copy and the binary does not contain libsodium
+   (file symbol `tweetnacl.c`; `sodium_init` is the tweetnacl stub; no
+   libsodium symbol or string). If libzmq should use libsodium, the
+   configure step needs `--with-libsodium`; if not, the libsodium build
+   steps can go. Scanners cannot see the static libzmq (with tweetnacl)
+   and librdkafka 2.3.0 in the binary. The librdkafka bundle of
+   `confluent-kafka-go/v2` v2.3.0 also links OpenSSL 3.0.11 and libcurl
+   7.86.0 statically; OSV lists 45 and 123 records for these release
+   commits. Their network code is reachable only through the `kafka`
+   dispatcher. The OpenSSL CPU feature detection
+   (`OPENSSL_cpuid_setup`) runs from the ELF `_init` at each start.
 3. GO-2026-5553 is a false positive for v0.10.1: the fix d5ca0da is in the
    tag. Scanners report it because `go build cmd/main.go` records the main
    module version as `(devel)`. Since Go 1.24, a build of the package
