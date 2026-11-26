@@ -355,14 +355,19 @@ Scope and gaps of `vuln`:
   request and each push to `main`; no scheduled run exists yet. The job
   does not change the points of DOCTRINE.md P7 above: the lead still runs
   `mise run vuln` at these points. The result of the job:
-  - A green `vuln` job is a merge condition of a PR that changes
-    `Cargo.lock`, `Cargo.toml`, `deny.toml`, the `vuln` task in
-    `mise.toml`, the `Dockerfile`, `entrypoint.sh`, `config/`, or the
-    ignore files in `docs/security/`.
+  - A green `vuln` job is a merge condition of a PR that changes an input
+    of the job: `Cargo.lock`, `Cargo.toml`, `deny.toml`, the `vuln` task
+    or the scanner pins in `[tools]` of `mise.toml` (cargo-deny,
+    osv-scanner, crane, jq), the `vuln` job of `.github/workflows/ci.yml`,
+    any lockfile that `osv-scanner scan source -r .` reads, the
+    `Dockerfile`, `entrypoint.sh`, `config/`, or the ignore files in
+    `docs/security/`.
   - For any other PR, a red `vuln` job of any cause (a new advisory, an
     expired ignore entry, a broken premise, or a failed image download)
     starts a triage in a `chore/deps-<topic>` PR. It does not block that
-    other PR.
+    other PR. Before that other PR merges with a red `vuln` job, the lead
+    compares the IDs of the new findings with the CISA KEV catalog. The
+    comparison is manual, because `vuln` does not read the catalog (above).
   - When a finding is a known exploited vulnerability (for example in the
     CISA KEV catalog) or a malicious package version, DOCTRINE.md P7
     applies: its fix is due before other work.
@@ -387,9 +392,11 @@ job `vuln` runs `mise run setup` and `mise run vuln` (see the scope of
 to `main`.
 
 - Each PR has one concurrency group: a new push to the PR cancels the old
-  run of that PR. Each commit pushed to `main` has a group of its own
-  (`github.sha`), so a later push cancels neither its running nor its
-  pending run. Each commit of `main` keeps its own run.
+  run of that PR. Each push to `main` has a group of its own (`github.sha`
+  of the tip commit), so a later push cancels neither its running nor its
+  pending run. There is one run for each push to `main`, for the tip
+  commit of that push. With merge commits only, that is one run for each
+  merge.
 - The runner installs the tools of `mise.toml` and the Rust toolchain of
   `rust-toolchain.toml` through mise, so CI and the development machine
   use the same versions. The mise version is pinned in the workflow.
@@ -442,7 +449,7 @@ isolation before creating, migrating, or dropping any database.
 
 **Dependency freshness check:** `cargo update --dry-run --verbose`, `pnpm outdated --recursive`, and `mise outdated --bump`. `cargo update` stays within SemVer-compatible versions, so also compare each direct crate requirement with its latest crates.io release. In this project, `cargo update --dry-run --verbose` (Cargo 1.100) also lists each locked crate that is behind its latest crates.io release across major versions, as `Unchanged <crate> <version> (available: <latest>)`. Checked on 26 November 2026 with a probe crate that requires `thiserror = "1"`: the output was `Unchanged thiserror v1.0.69 (available: v2.0.21)`. Compare `rust-toolchain.toml` with the latest stable Rust release. Compare each infrastructure version in §15, for example the database server, the container base image, and the source builder, with its latest stable release.
 
-In this project, `mise run deps` also reads the CI pins of `.github/workflows/ci.yml` (§15) and prints each pin with the newest release tag: each action (and it fails when the pinned SHA is not the commit of the tag in the comment), the mise version, and the runner label with the newest Ubuntu runner image that has a tag in `actions/runner-images`. It reads the tags with `git ls-remote` and fails when it cannot read a tag list. A newer runner image can be a beta: before a change of the runner label, check in the README of `actions/runner-images` that the image is generally available.
+In this project, `mise run deps` also reads the CI pins of `.github/workflows/ci.yml` (§15) and prints each pin with the newest release tag: each action (and it fails when the pinned SHA is not the commit of the tag in the comment), the mise version, and the runner label with the newest Ubuntu runner image that has a tag in `actions/runner-images`. It reads the tags with `git ls-remote` and fails when it cannot read a tag list. Before it reads the tags, it checks the workflow against a strict allowlist of lines, like the Dockerfile check of `vuln`: each line with a `uses`, `version`, or `runs-on` key (also quoted, also without `- `) must be `- uses: <owner>/<repo>@<40 lowercase hex> # vX.Y.Z` (a full release tag), `version: X.Y.Z` directly under the `with:` of each mise action step, or `runs-on: ubuntu-NN.04`; each job has one `runs-on`; YAML anchors and aliases are not allowed. Any other line fails the task with its line number, and the check changes together with the workflow. A newer runner image can be a beta: before a change of the runner label, check in the README of `actions/runner-images` that the image is generally available.
 
 **Vulnerability check:** `cargo deny check advisories`, `pnpm audit`, and `osv-scanner scan source -r .` for the lockfiles. `osv-scanner scan image <image>` for each container image. Compare the Rust toolchain and each infrastructure version in §15 with its vendor security advisories. Record each surface without scanner coverage.
 
@@ -881,7 +888,7 @@ a verification environment; its pins are the four rows that start with
 | PostgreSQL                | 18, Neon Free plan                                       | Project `telemetry`, region `aws-eu-central-1`, database `neondb`, branch `production`. Values from the owner; the storage PR reads `SHOW server_version`. No tables yet. |
 | Neon production compute   | Fixed 0.25 CU (autoscaling minimum and maximum 0.25)     | Lead decision (ADR 0001). Applied on 26 November 2026 through the Neon API on endpoint `ep-young-dawn-bgyaj83l`; the response showed 0.25 and 0.25, and `suspend_timeout_seconds` 0 (plan default, 5 minutes). Check the effective size and the consumption after the first week of ingest. |
 | PostgreSQL test database  | Neon branch `test`, fixed 0.25 CU                        | Created on 26 November 2026 from `production`, before it held vehicle data (§5). Shares the 100 CU-hours of the project; budget at most 5 CU-hours each month (ADR 0001). |
-| CI runner image           | GitHub-hosted `ubuntu-26.04`, x86_64                     | `.github/workflows/ci.yml`. Image version 20261122.9.1 (Ubuntu 26.04.1) in the first runs; GitHub updates the image within the label. `ubuntu-latest` pointed to `ubuntu-26.04` on 26 November 2026. |
+| CI runner image           | GitHub-hosted `ubuntu-26.04`, x86_64                     | `.github/workflows/ci.yml`. Ubuntu 26.04.1. GitHub updates the image within the label, and two jobs of one run can get different image versions (for example 20261122.9.1, 20261116.202.1, and 20261116.88.1 on 26 November 2026); the log of each job shows its version. `ubuntu-latest` pointed to `ubuntu-26.04` on 26 November 2026. |
 | CI mise                   | 2026.11.14                                               | `version` input of the mise action in `.github/workflows/ci.yml`. Latest release on 26 November 2026; the same version as on the development machine. |
 | CI action: checkout       | `actions/checkout` v7.0.1, commit `3d3c42e5aac5ba805825da76410c181273ba90b1` | Pinned by the full commit SHA. Latest release on 26 November 2026. |
 | CI action: mise           | `jdx/mise-action` v5.3.0, commit `924e7c586e33d7d4bae9c14e26c5d22e2beb6e78` | Pinned by the full commit SHA. Latest release on 26 November 2026. |

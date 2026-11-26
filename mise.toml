@@ -118,12 +118,51 @@ run = [
   # and the runner label, with the newest release tags. git ls-remote reads
   # the public tags; no token is needed. The step fails when it cannot read a tag
   # list, or when an action SHA is not the commit of its tag comment.
+  # The workflow check is a strict allowlist of lines, not a YAML parser
+  # (like the Dockerfile check of `vuln`): each line with a `uses`,
+  # `version`, or `runs-on` key must have the one allowed form, each mise
+  # action step must have a `version` input, each job must have one
+  # `runs-on`, and YAML anchors and aliases are not allowed. Anything else
+  # fails, and the check must change together with the workflow.
   '''
   workflow=.github/workflows/ci.yml
   export GIT_TERMINAL_PROMPT=0
   status=0
+  fix="Update the CI pin step of the deps task (mise.toml) together with the workflow."
   tags() { git ls-remote --tags "https://github.com/$1"; }
   newest() { sed -n 's#^[0-9a-f]*[[:space:]]refs/tags/\(v[0-9]*[.][0-9]*[.][0-9]*\)$#\1#p' | sort -V | tail -1; }
+  [ -f "$workflow" ] || { echo "deps: $workflow is missing"; exit 1; }
+  uses_form=' +- uses: [a-z0-9-]+/[a-z0-9._-]+@[0-9a-f]{40} # v[0-9]+[.][0-9]+[.][0-9]+'
+  version_form=' +version: [0-9]+[.][0-9]+[.][0-9]+'
+  runs_form=' +runs-on: ubuntu-[0-9]+[.]04'
+  # Every line with one of the keys (also quoted, also without "- ") and
+  # every anchor or alias must be an allowed line.
+  bad="$(grep -nE '(uses|version|runs-on).?[[:space:]]*:|^[^#]*[&*][A-Za-z0-9_-]' "$workflow" |
+    grep -vE "^[0-9]+:($uses_form|$version_form|$runs_form)$" | sed 's/^\([0-9]*\):/\1: /' || true)"
+  if [ -n "$bad" ]; then
+    printf '%s\n' "$bad" | while IFS= read -r line; do
+      echo "deps: $workflow line $line"
+    done
+    echo "deps: the lines above are outside the allowlist. Allowed: '- uses: <owner>/<repo>@<40 lowercase hex> # vX.Y.Z' (a full release tag), 'version: X.Y.Z' (the mise action input), and 'runs-on: ubuntu-NN.04'. $fix"
+    status=1
+  fi
+  # Each mise action step: the next two lines are "with:" and "version:".
+  if ! awk '
+    want && NR == want + 1 && $0 !~ /^ +with:$/ { bad = 1 }
+    want && NR == want + 2 { if ($0 !~ /^ +version: /) bad = 1; want = 0 }
+    /^ +- uses: jdx\/mise-action@/ { want = NR; steps++ }
+    /^ +version: / { versions++ }
+    END { exit (bad || want || steps == 0 || versions != steps) }' "$workflow"; then
+    echo "deps: each jdx/mise-action step of $workflow needs 'with:' and 'version: X.Y.Z' on the next two lines, and no other 'version:' line may exist. $fix"
+    status=1
+  fi
+  # Each job has exactly one runs-on line.
+  jobs="$(awk '/^jobs:$/ { j = 1; next } j && /^[^ #]/ { j = 0 } j && /^  [A-Za-z0-9_-]+:$/ { n++ } END { print n + 0 }' "$workflow")"
+  runs="$(grep -cE "^$runs_form$" "$workflow" || true)"
+  if [ "$jobs" -eq 0 ] || [ "$runs" -ne "$jobs" ]; then
+    echo "deps: $workflow has $jobs jobs and $runs allowed runs-on lines; each job needs one. $fix"
+    status=1
+  fi
   pins="$(sed -n 's/^ *- uses: \([^ ]*@[0-9a-f]\{40\}\) # \(v[0-9.]*\)$/\1#\2/p' "$workflow" | sort -u)"
   [ -n "$pins" ] || { echo "deps: no pinned action in $workflow"; status=1; }
   for pin in $pins; do
