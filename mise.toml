@@ -93,16 +93,39 @@ description = "Vulnerability check (STACK.md §3): Rust dependencies and the FRO
 # on premises of the Dockerfile and config/server_config.json
 # (docs/security/image-advisories.md). The task checks these premises first
 # and fails when one breaks, so that the triage is done again.
-run = """
+# The script is a TOML literal string: backslashes reach the shell as written.
+run = '''
 status=0
-other_sources="$(grep -iE 'from=' Dockerfile || true)"
+# Read the Dockerfile as instructions: drop comment lines and join
+# continuation lines. Instruction names are compared without letter case.
+dockerfile="$(awk '
+  /^[[:space:]]*#/ { next }
+  { line = line $0 }
+  /\\$/ { sub(/\\$/, " ", line); next }
+  { print line; line = "" }
+  END { if (line != "") print line }
+' Dockerfile)"
+if printf '%s\n' "$dockerfile" | grep -qE '<<'; then
+  echo "vuln: the Dockerfile has a heredoc; the premise check cannot read it"
+  status=1
+fi
+if printf '%s\n' "$dockerfile" | grep -iE '^[[:space:]]*from[[:space:]]|from=' | grep -q '\$'; then
+  echo "vuln: a FROM line or a from= source of the Dockerfile uses a variable"
+  status=1
+fi
+other_sources="$(printf '%s\n' "$dockerfile" | grep -iE 'from=' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' || true)"
 if [ "$other_sources" != "COPY --from=upstream /fleet-telemetry /fleet-telemetry" ]; then
   echo "vuln: the only Dockerfile line with from= must copy /fleet-telemetry from the upstream image"
   status=1
 fi
+# Each FROM instruction names one image to scan.
+images="$(printf '%s\n' "$dockerfile" | awk '
+  toupper($1) == "FROM" { for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; break } }
+')"
+from_lines="$(grep -ciE '^[[:space:]]*from([[:space:]]|$)' Dockerfile || true)"
 # The final stage must start from a base image: not from the upstream image
 # and not from another stage. The check compares names without letter case.
-final_base="$(awk '
+final_base="$(printf '%s\n' "$dockerfile" | awk '
   toupper($1) == "FROM" {
     base = ""
     for (i = 2; i <= NF; i++) if ($i !~ /^--/) { base = tolower($i); break }
@@ -110,16 +133,21 @@ final_base="$(awk '
     last = base
   }
   END { if (last in stages) print "stage:" last; else print last }
-' Dockerfile)"
+')"
 case "$final_base" in
   ""|stage:*|*fleet-telemetry*)
     echo "vuln: the final Dockerfile stage must start from a base image, not from the upstream image or another stage"
     status=1
     ;;
 esac
-# fleet-telemetry decodes its config with Go encoding/json, which matches
-# keys without letter case and keeps the last of two equal keys. jq is case
-# sensitive, so a key in another letter case or a duplicate key fails here.
+# fleet-telemetry decodes its config with Go encoding/json: keys match
+# without letter case, a repeated key decodes again into the same field (a
+# repeated object merges into the first one), and only the first JSON value
+# of the file counts. jq is case sensitive and keeps only the last of two
+# equal keys. So the check requires lowercase keys, exactly one JSON value,
+# and the same leaf paths in the token stream and in the parsed value; a
+# repeated key of any kind breaks the last rule.
+config=config/server_config.json
 if ! jq -e '
   def lower_keys: keys | all(test("^[a-z0-9_]+$"));
   lower_keys
@@ -131,9 +159,11 @@ if ! jq -e '
   and ((.status_port // 0) == 0)
   and ((.monitoring.profiler_port // 0) == 0)
   and ((.monitoring.prometheus_metrics_host // "127.0.0.1") == "127.0.0.1")
-' config/server_config.json > /dev/null ||
-  ! jq -n -e --stream '[inputs | select(length == 2) | .[0]] | length == (unique | length)' config/server_config.json > /dev/null; then
-  echo "vuln: config/server_config.json breaks a premise of the ignore files (key case, duplicate keys, dispatchers, client CAs, or listeners)"
+' "$config" > /dev/null ||
+  ! jq -s -e 'length == 1' "$config" > /dev/null ||
+  [ "$(jq -n -c --stream '[inputs | select(length == 2) | .[0]] | sort' "$config")" != \
+    "$(jq -c '[path(.. | select((type != "object" and type != "array") or length == 0))] | sort' "$config")" ]; then
+  echo "vuln: $config breaks a premise of the ignore files (key case, one JSON value, repeated keys, dispatchers, client CAs, or listeners)"
   status=1
 fi
 cargo deny --locked check advisories || status=1
@@ -142,7 +172,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 printf '{}' > "$work/config.json"
 export DOCKER_CONFIG="$work"
-for image in $(awk '/^FROM/ { print $2 }' Dockerfile); do
+scanned=0
+for image in $images; do
   echo "image: $image"
   if crane pull --platform linux/amd64 "$image" "$work/image.tar"; then
     crane digest --platform linux/amd64 "$image"
@@ -154,11 +185,16 @@ for image in $(awk '/^FROM/ { print $2 }' Dockerfile); do
       osv-scanner scan image --archive "$work/image.tar" || true
       status=1
     fi
+    scanned=$((scanned + 1))
   else
     echo "vuln: cannot download $image"
     status=1
   fi
   rm -f "$work/image.tar"
 done
+if [ "$scanned" -ne "$from_lines" ]; then
+  echo "vuln: scanned $scanned images, but the Dockerfile has $from_lines FROM lines"
+  status=1
+fi
 exit "$status"
-"""
+'''
