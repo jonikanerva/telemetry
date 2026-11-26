@@ -1,0 +1,33 @@
+# cargo-deny policy (STACK.md §14). Generated with `cargo deny init` from
+# cargo-deny 0.22.1 and reduced to the settings that this project uses.
+# Reference: https://embarkstudios.github.io/cargo-deny/checks/index.html
+
+[graph]
+# The production image runs on Linux. macOS is the development platform.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin"]
+
+[advisories]
+# Vulnerabilities and unmaintained crates fail the check by default.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Each licence of the current dependency tree. Add a licence only after a
+# review of the crate that needs it.
+allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0"]
+confidence-threshold = 0.8
+
+[licenses.private]
+# The first-party crates are not published and have no licence.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = false
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
