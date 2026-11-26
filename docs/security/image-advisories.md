@@ -53,7 +53,10 @@ the static C libraries (see "Static C libraries").
 1. Post the drafted comment `docs/security/upstream-report-draft.md` to
    the existing upstream issue 578 of the `fleet-telemetry` repository
    (`https://github.com/teslamotors/fleet-telemetry/issues/578`),
-   or decide not to post it. The draft contains no deployment detail.
+   or decide not to post it. The draft contains no deployment detail. Do
+   not paste this URL or an issue reference into a commit message, an
+   issue, a pull request, or a comment of this repository: GitHub turns
+   it into a visible event on the upstream issue.
 2. Accept the residual risk: the internet-facing binary carries outdated
    Go modules and static C libraries. The protection depends on mTLS, on
    the dispatcher configuration, and on the loopback listeners. A holder
@@ -145,10 +148,15 @@ one breaks.
 1. **Image composition (checked).** The production `Dockerfile` copies
    only one file from the upstream image:
    `COPY --from=upstream /fleet-telemetry /fleet-telemetry`. The check
-   requires that this is the only Dockerfile line with `from=` (also
-   `--from=0`, an image reference, or a `RUN --mount` source). It also
-   requires that the final stage starts from a base image, not from the
-   upstream image and not from another stage. The upstream
+   reads the Dockerfile as instructions: it drops comment lines, joins
+   continuation lines, and compares instruction names without letter
+   case. It requires that this is the only instruction with `from=` (also
+   `--from=0`, an image reference, or a `RUN --mount` source), and that
+   the final stage starts from a base image, not from the upstream image
+   and not from another stage. It fails on a heredoc and on a variable in
+   a `FROM` instruction or a `from=` source. It scans each `FROM` image and
+   fails when the number of scanned images differs from the number of
+   lines that start with `FROM`. The upstream
    layer of the binary contains only `fleet-telemetry`. The Debian 12
    files of the upstream image (`gcr.io/distroless/cc-debian12` base,
    upstream [`Dockerfile#L31-L33`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L31-L33))
@@ -228,12 +236,19 @@ one breaks.
 8. **Config key form (checked).** Upstream decodes the config with Go
    `encoding/json`
    ([`config/config_initializer.go#L52`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config_initializer.go#L52)).
-   `encoding/json` matches keys to fields without letter case, and for
-   two equal keys it uses the last one (a map value merges both). jq is
-   case sensitive. The `vuln` task therefore requires lowercase keys
-   (`^[a-z0-9_]+$`) in the root, `monitoring`, and `tls` objects, and no
-   duplicate key anywhere in the file. The record type names inside
-   `records` are data and keep their case.
+   `encoding/json` matches keys to fields without letter case. A repeated
+   key decodes again into the same field, so a repeated object merges
+   into the first one. The decoder reads only the first JSON value of the
+   file. jq is case sensitive, keeps only the last of two equal keys, and
+   reads every value. The `vuln` task therefore requires:
+   - lowercase keys (`^[a-z0-9_]+$`) in the root, `monitoring`, and `tls`
+     objects (the record type names inside `records` are data and keep
+     their case);
+   - exactly one JSON value in the file (`jq -s 'length == 1'`);
+   - the same sorted list of leaf paths in the token stream
+     (`jq --stream`) and in the parsed value. A repeated key of any kind,
+     also a repeated object, adds leaf paths to the stream that the parsed
+     value does not have, so it breaks this rule.
 
 ## Decision classes
 
@@ -411,7 +426,7 @@ the binary. Two sources put static C code into `/fleet-telemetry`:
 
 | Component | Version | Evidence of the version | Use in this deployment |
 | --------- | ------- | ----------------------- | ---------------------- |
-| libzmq | 4.3.4 | Upstream `Dockerfile#L15`; `zmq_version` in the binary returns 4, 3, 4. | Not used today. After ADR 0001, the `zmq` dispatcher binds a PUB socket. The only C++ static constructor in the binary (`.init_array`) is the libzmq one for `ctx.cpp`; it only sets `zmq::ctx_t::max_socket_id` to 0. |
+| libzmq | 4.3.4 | Upstream `Dockerfile#L15`; `zmq_version` in the binary returns 4, 3, 4. | At each start, the Go package `zmq4` creates a libzmq context, without a socket (see "Code that runs at each start"). No socket today. After ADR 0001, the `zmq` dispatcher binds a PUB socket. |
 | libsodium | 1.0.19 | Upstream `Dockerfile#L6`. | Used by libzmq for CURVE. The configuration does not enable CURVE. |
 | librdkafka | 2.3.0 | String `librdkafka v2.3.0` in the binary. | Only behind the `kafka` dispatcher. |
 | OpenSSL (libssl, libcrypto) | 3.0.11 | String `OpenSSL 3.0.11 19 Sep 2023` in the binary; `configure.libssl` sets 3.0.11. | Only behind the `kafka` dispatcher (see below). |
@@ -421,8 +436,29 @@ the binary. Two sources put static C code into `/fleet-telemetry`:
 | lz4 | 1.9.3 (librdkafka copy) | `LZ4_versionNumber` returns 10903; `src/lz4.h` of librdkafka v2.3.0. | Only behind the `kafka` dispatcher. |
 | Cyrus SASL | not linked | The bundle excludes GSSAPI, because Cyrus SASL needs dynamic linking ([`packaging/nuget/staticpackage.py#L17-L20`](https://github.com/confluentinc/librdkafka/blob/v2.3.0/packaging/nuget/staticpackage.py#L17-L20)). The binary has no Cyrus SASL symbol; `rd_kafka_sasl_client_new` is librdkafka code (PLAIN, SCRAM, OAUTHBEARER). | Not applicable. |
 
-**Bundled OpenSSL in the deployed configuration.** No code path of the
-deployed configuration enters the bundled OpenSSL:
+**Code that runs at each start.** Some code of the static components runs
+at each start, in every configuration. Method: the ELF dynamic section
+(`objdump -p`: `INIT`, `INIT_ARRAY` of 2 entries, `FINI`, `FINI_ARRAY`,
+no `PREINIT_ARRAY`), the disassembly of `_init` and of each
+`.init_array` entry, and the direct calls of the 457 Go package `init`
+functions (`go tool objdump`). The glibc start code calls `_init`
+(`DT_INIT`) and then the `.init_array` entries before `main`.
+
+| Start path | What it runs | Input | Evidence |
+| ---------- | ------------ | ----- | -------- |
+| ELF `_init` | `OPENSSL_cpuid_setup` of OpenSSL 3.0.11: CPU feature detection. It reads the environment variable `OPENSSL_ia32cap` (`getenv`), parses it with `ossl_strtouint64`, and runs `OPENSSL_ia32_cpuid` (the `CPUID` instruction). | The process environment and the CPU. No network input. The environment comes from the Railway service variables; no file of this repository sets `OPENSSL_ia32cap`. | `_init` at `0x408000` calls `OPENSSL_cpuid_setup`; its only calls are `getenv@plt`, `ossl_strtouint64`, and `OPENSSL_ia32_cpuid`. OpenSSL 3.0.11 [`crypto/cpuid.c#L95-L157`](https://github.com/openssl/openssl/blob/openssl-3.0.11/crypto/cpuid.c#L95-L157). None of the 45 OSV records for OpenSSL 3.0.11 contains `cpuid` or `ia32cap` in its summary or details. |
+| ELF `.init_array` | `frame_dummy` (C run time) and the libzmq constructor of `ctx.cpp`, which only sets `zmq::ctx_t::max_socket_id` to 0. | None. | Disassembly of both entries. |
+| Go `zmq4.init.0` | `zmq_version`, then `zmq4_ctx_new` (libzmq `zmq_ctx_new`): it allocates a `ctx_t`, reads `getpid`, initialises libsodium randomness (`random_open`, `sodium_init`), and creates the local signalling descriptor of the terminate mailbox (`eventfd` on Linux). It opens no network socket and starts no I/O thread: libzmq starts the reaper and the I/O threads only with the first socket. | The kernel random source. No network input. | `go tool objdump`: the only Go `init` with a direct call into C is `zmq4.init.0` (calls `Version` and `_C2func_zmq4_ctx_new`); [`zmq4.go#L129-L158`](https://github.com/pebbe/zmq4/blob/v1.2.10/zmq4.go#L129-L158). libzmq 4.3.4 [`zmq.cpp#L130-L148`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/zmq.cpp#L130-L148), [`ctx.cpp#L76-L105`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L76-L105), [`ctx.cpp#L478-L491`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L478-L491) (`start` only in `create_socket`). |
+
+The direct-call scan does not follow indirect calls from a Go `init`
+function. The Go packages with C calls in the binary are `kafka` of
+`confluent-kafka-go` (no `init` function), `zmq4`, and the standard
+packages `net` and `os/user`, which call libc only for name and user
+lookups.
+
+**Bundled OpenSSL in the deployed configuration.** Apart from
+`OPENSSL_cpuid_setup` at start, no OpenSSL, libcurl, or librdkafka code
+runs without the `kafka` dispatcher:
 
 - The vehicle TLS server and every Go TLS client use Go `crypto/tls`,
   which is pure Go. The binary does not call the Debian `libssl` either:
@@ -433,13 +469,14 @@ deployed configuration enters the bundled OpenSSL:
   in `datastore/kafka` and in `config`. `config` uses only the Go type
   `ConfigMap` and calls `convertKafkaConfig` only for the Kafka producer
   ([`config/config.go#L386-L396`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L386-L396)).
-- The ELF `.init_array` has two entries: `frame_dummy` (C run time) and
-  the libzmq static constructor. No OpenSSL or librdkafka code runs at
-  start.
 - libzmq does not use OpenSSL: the binary has no GnuTLS symbol and no
   libzmq TLS transport; libzmq uses libsodium (`crypto_box` symbols).
 - The `vuln` task fails when a record type names a dispatcher other than
-  `logger` or `zmq`.
+  `logger` or `zmq`, also through a repeated `records` object.
+
+The start code takes no network input, so the decision for OpenSSL and
+libcurl stays class D: the network-facing code of these components is
+reachable only through the `kafka` dispatcher.
 
 **Manual advisory comparison** (26 November 2026, OSV queries by release
 commit, not a scanner result):
@@ -544,8 +581,9 @@ or pcre2.
 
 The Go server does not use the Debian OpenSSL: it uses Go `crypto/tls`,
 and `libssl` is not in its `NEEDED` list. The binary carries its own
-static OpenSSL 3.0.11 for librdkafka, which the deployed configuration
-does not reach (see "Static C libraries").
+static OpenSSL 3.0.11 for librdkafka. Of that code, only the CPU feature
+detection `OPENSSL_cpuid_setup` runs in the deployed configuration, at
+each start (see "Static C libraries").
 
 Reassessment rule:
 
@@ -570,12 +608,18 @@ Reassessment rule:
   `osv-scanner-<repository, / replaced by ->.toml`. An image without a
   file fails the task.
 - Before the scans, the `vuln` task checks these premises and fails when
-  one breaks: the only Dockerfile line with `from=` is the copy of
-  `/fleet-telemetry` from the upstream stage; the final stage starts from
-  a base image, not from the upstream image or another stage; the keys of
-  the root, `monitoring`, and `tls` objects are lowercase
-  (`^[a-z0-9_]+$`); the file has no duplicate key; all dispatchers in
-  `records` are `logger` or `zmq`; `use_default_eng_ca` is not true;
+  one breaks. Dockerfile, read as instructions (comment lines dropped,
+  continuation lines joined, instruction names without letter case): no
+  heredoc; no variable in a `FROM` instruction or a `from=` source; the
+  only instruction with `from=` is the copy of `/fleet-telemetry` from
+  the upstream stage; the final stage starts from a base image, not from
+  the upstream image or another stage. After the scans, the task fails
+  when the number of scanned images differs from the number of lines that
+  start with `FROM`. `config/server_config.json` (fact 8): exactly one
+  JSON value; the same leaf paths in the token stream and in the parsed
+  value, so no repeated key of any kind; lowercase keys
+  (`^[a-z0-9_]+$`) in the root, `monitoring`, and `tls` objects; all
+  dispatchers in `records` are `logger` or `zmq`; `use_default_eng_ca` is not true;
   `tls.ca_file` is empty; `status_port` and `monitoring.profiler_port`
   are not set; `monitoring.prometheus_metrics_host` is unset or
   `127.0.0.1`.
