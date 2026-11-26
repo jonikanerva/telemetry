@@ -676,7 +676,7 @@ There is one environment: production. Read on 26 November 2026.
 | ------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Railway                   | Hobby plan, project `calmdonut`, service `telemetry`     | Builds from `main` of `jonikanerva/telemetry`. A merge to `main` is a release.          |
 | Ingest server             | `tesla/fleet-telemetry:v0.10.1`                          | Upstream binary, copied into the image in `Dockerfile`.                                 |
-| Ingest base image         | `debian:bookworm-slim`                                   | Follow-up: a newer Debian stable release exists. Update in a `chore/deps` PR.           |
+| Ingest base image         | `debian:trixie-slim`                                     | Debian 13 (trixie), the current stable release. Point release 13.8 on 26 November 2026. |
 | Railway TCP proxy         | `zephyr.proxy.rlwy.net:57438` to container port 4443     | The vehicle's signed config contains host `telemetry.calmdonut.com` and port 57438.     |
 | DNS                       | Cloudflare, `telemetry` CNAME, DNS only                  | A proxied record breaks the vehicle mTLS connection.                                    |
 | Ingest TLS certificate    | Cloudflare Origin CA, ECC, valid until 22 November 2041  | Railway variables `TLS_CERT` and `TLS_KEY`. The Origin CA ECC root expires 15 August 2029. |

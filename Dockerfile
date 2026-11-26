@@ -2,7 +2,7 @@
 # The entrypoint script needs a shell to write the TLS files from variables.
 FROM tesla/fleet-telemetry:v0.10.1 AS upstream
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
