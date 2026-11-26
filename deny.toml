@@ -17,6 +17,14 @@ ignore = []
 allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0"]
 confidence-threshold = 0.8
 
+# foldhash 0.1 has the Zlib licence. prost-build needs it through petgraph
+# and hashbrown (feature `default-hasher`), and no feature turns it off. It
+# runs in the build script only and is not part of the ingest binary. The
+# exception covers this one crate, not the licence for every crate.
+[[licenses.exceptions]]
+crate = "foldhash"
+allow = ["Zlib"]
+
 [licenses.private]
 # The first-party crates are not published and have no licence.
 ignore = true

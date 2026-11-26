@@ -12,6 +12,8 @@
 
 pub mod cli;
 pub mod config;
+pub mod decode;
 pub mod http;
 pub mod lifecycle;
 pub mod logging;
+pub mod record;

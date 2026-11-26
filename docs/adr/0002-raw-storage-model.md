@@ -31,7 +31,9 @@
   is missing when `fleet-telemetry` dies
   ([server.go#L149-L160](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/server.go#L149-L160)).
 - `prost` drops unknown fields. A newer `Value` variant decodes as `None`
-  (ADR 0001).
+  (ADR 0001). Upstream keeps unknown fields when it encodes a record again
+  (Go `proto.Unmarshal` and `proto.Marshal` without options,
+  [`telemetry/record.go#L152-L201`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/telemetry/record.go#L152-L201)).
 - Neon Free plan: 1 GB storage for each project. Child branches count with
   their changes. Writes fail when the storage is full. 10 branches for each
   project [N1]. A role created with SQL is not a member of
@@ -73,12 +75,17 @@ Columns:
   `json_value jsonb`.
 - `raw.vehicle_alert`: `vehicle_id`, `name text NOT NULL`,
   `audiences smallint[] NOT NULL` (enum numbers), `started_at timestamptz`,
-  `ended_at timestamptz`, `created_at timestamptz` (of `VehicleAlerts`),
-  `received_at timestamptz NOT NULL`.
+  `ended_at timestamptz`, `created_at timestamptz NOT NULL` (of
+  `VehicleAlerts`), `received_at timestamptz NOT NULL`.
 - `raw.vehicle_error`: `vehicle_id`, `created_at timestamptz` (of the item),
   `name text NOT NULL`, `tags jsonb NOT NULL`, `body text NOT NULL`,
-  `record_created_at timestamptz` (of `VehicleErrors`),
+  `record_created_at timestamptz NOT NULL` (of `VehicleErrors`),
   `received_at timestamptz NOT NULL`.
+- The record time is `NOT NULL` in every table, because a record without
+  `created_at` goes to `raw.unprocessed_record` as a whole, for all four
+  record types ("Unknown data"). The times of an alert or an error item
+  (`started_at`, `ended_at`, `raw.vehicle_error.created_at`) can be
+  missing and allow NULL.
 - `raw.connectivity_event`: `vehicle_id`, `connection_id uuid NOT NULL`,
   `status smallint NOT NULL` (enum number), `network_interface text NOT NULL`
   (as sent, also when empty), `created_at timestamptz NOT NULL` (server
@@ -86,8 +93,9 @@ Columns:
 - `raw.unprocessed_record`: `id bigint` identity, `topic text NOT NULL`,
   `payload bytea NOT NULL` (the original protobuf bytes),
   `reason text NOT NULL`, `sqlstate text`, `received_at timestamptz NOT NULL`.
-  `reason` is one of `decode_failed`, `unknown_topic`, `missing_created_at`,
-  `unknown_value_variant`, `conflicting_duplicate`, `database_rejected`.
+  A CHECK constraint limits `reason` to `decode_failed`, `unknown_topic`,
+  `missing_created_at`, `unknown_value_variant`, `unknown_fields`,
+  `conflicting_duplicate`, and `database_rejected`.
 - `raw.ingest_event`: `id bigint` identity, `run_id uuid NOT NULL` (random
   for each process start), `occurred_at timestamptz NOT NULL`,
   `kind text NOT NULL` (`started`, `stopped`, `gate_closed`, `gate_opened`,
@@ -134,7 +142,15 @@ Unknown data:
   This is partial success within one record. The unprocessed row makes the
   exclusion visible.
 - A record that does not decode, has an unknown topic, or has no
-  `created_at` goes to `raw.unprocessed_record` as a whole.
+  `created_at` goes to `raw.unprocessed_record` as a whole. The
+  `created_at` rule applies to all four record types.
+- A record with a field that the vendored schema does not know, at any
+  depth, keeps its rows, and the complete record also goes to
+  `raw.unprocessed_record` with reason `unknown_fields`. `prost` skips
+  such a field, but upstream keeps it when it encodes the record again, so
+  a newer vehicle schema can send it. The decode compares each field
+  number with the vendored schema to find it. A record with an unknown
+  value variant gets only the reason `unknown_value_variant`.
 - Text that PostgreSQL rejects (for example a NUL byte) is caught before the
   insert and stored as unprocessed with reason `database_rejected`.
 
@@ -335,11 +351,15 @@ model did not keep.
 - The database size passes 600 MB, or 12 months of data exist.
 - The owner sets the raw retention rule.
 - Count of `conflicting_duplicate` rows above zero, or many
-  `unknown_value_variant` rows after a firmware update.
+  `unknown_value_variant` or `unknown_fields` rows after a firmware update.
 - The derived phase needs other indexes or a compact copy of old data.
 
 ## Not verified
 
+- That the vehicle always sets `created_at` on `VehicleAlerts` and
+  `VehicleErrors`. No source states it. Rows in `raw.unprocessed_record`
+  with reason `missing_created_at` and topic `alerts` or `errors` show a
+  violation.
 - The size per row. The storage PR measures it.
 - That the vehicle never sends two different values for one field with the
   same `created_at`. The `conflicting_duplicate` count shows it.
