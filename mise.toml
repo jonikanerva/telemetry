@@ -22,6 +22,9 @@ run = [
   # global mise config. Keep this list equal to [tools].
   "mise install cargo-nextest cargo-deny github:Boshen/cargo-shear cargo:sqlx-cli gitleaks osv-scanner jq crane",
   "rustup toolchain install",
+  # mise sets RUSTUP_TOOLCHAIN, and rustup then ignores the `targets` of
+  # rust-toolchain.toml. Add the Linux target of `lint` explicitly.
+  "rustup target add x86_64-unknown-linux-gnu",
   "rustup show active-toolchain",
   "cargo fetch --locked",
   "echo 'setup: no test services are needed. The tests use no network and no database.'",
@@ -32,8 +35,15 @@ description = "Format the Rust code"
 run = "cargo fmt --all"
 
 [tasks.lint]
-description = "Run Clippy with warnings as errors"
-run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+description = "Run Clippy with warnings as errors, for the host and for the Linux production target"
+run = [
+  "cargo clippy --workspace --all-targets --locked -- -D warnings",
+  # Compile-time evidence for linux/amd64 only: Clippy type-checks the code
+  # for the target and links nothing, so no Linux linker is needed. Build
+  # scripts and proc macros run on the host. It does not run the tests on
+  # Linux (STACK.md §13).
+  "cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gnu -- -D warnings",
+]
 
 [tasks.build]
 description = "Build the release binary with the locked dependencies"
