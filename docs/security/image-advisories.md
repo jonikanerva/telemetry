@@ -40,17 +40,19 @@ of this change is that build. 65 Debian 13 groups have no Debian fix; they
 are accepted as a group with a reassessment rule. 14 of them are in
 libraries that the server process loads (glibc, libstdc++, libgcc).
 
-**Known exploited.** No CVE of the scan is in the CISA Known Exploited
-Vulnerabilities catalog (version 2026.11.25, 1805 entries, read on
-26 November 2026; 153 CVE IDs compared, 0 matches).
+**Known exploited.** No compared CVE is in the CISA Known Exploited
+Vulnerabilities catalog (version 2026.11.25, 1805 entries, read twice on
+26 November 2026; 0 matches). Compared: the 152 CVE IDs of the two image
+scans, CVE-2025-69277 of libsodium, and 119 CVE IDs that OSV lists for
+the static C libraries (see "Static C libraries").
 
 **Needs action.** None.
 
 **Decisions for the owner.**
 
 1. Post the drafted comment `docs/security/upstream-report-draft.md` to
-   upstream issue
-   [teslamotors/fleet-telemetry#578](https://github.com/teslamotors/fleet-telemetry/issues/578),
+   the existing upstream issue 578 of the `fleet-telemetry` repository
+   (`https://github.com/teslamotors/fleet-telemetry/issues/578`),
    or decide not to post it. The draft contains no deployment detail.
 2. Accept the residual risk: the internet-facing binary carries outdated
    Go modules and static C libraries. The protection depends on mTLS, on
@@ -144,7 +146,9 @@ one breaks.
    only one file from the upstream image:
    `COPY --from=upstream /fleet-telemetry /fleet-telemetry`. The check
    requires that this is the only Dockerfile line with `from=` (also
-   `--from=0`, an image reference, or a `RUN --mount` source). The upstream
+   `--from=0`, an image reference, or a `RUN --mount` source). It also
+   requires that the final stage starts from a base image, not from the
+   upstream image and not from another stage. The upstream
    layer of the binary contains only `fleet-telemetry`. The Debian 12
    files of the upstream image (`gcr.io/distroless/cc-debian12` base,
    upstream [`Dockerfile#L31-L33`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L31-L33))
@@ -218,7 +222,18 @@ one breaks.
    this cause is not tested. Its ELF `NEEDED` entries are `libm.so.6`, `libstdc++.so.6`, `libgcc_s.so.1`, `libc.so.6`, and
    `ld-linux-x86-64.so.2`. At run time, the server loads these Debian 13
    libraries of the production image. libzmq 4.3.4, libsodium 1.0.19, and
-   librdkafka 2.3.0 are linked statically (see "Static C libraries").
+   librdkafka 2.3.0 with its bundled libraries (OpenSSL 3.0.11, libcurl
+   7.86.0, zlib 1.2.13, zstd 1.5.2, lz4 1.9.3) are linked statically (see
+   "Static C libraries").
+8. **Config key form (checked).** Upstream decodes the config with Go
+   `encoding/json`
+   ([`config/config_initializer.go#L52`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config_initializer.go#L52)).
+   `encoding/json` matches keys to fields without letter case, and for
+   two equal keys it uses the last one (a map value merges both). jq is
+   case sensitive. The `vuln` task therefore requires lowercase keys
+   (`^[a-z0-9_]+$`) in the root, `monitoring`, and `tls` objects, and no
+   duplicate key anywhere in the file. The record type names inside
+   `records` are data and keep their case.
 
 ## Decision classes
 
@@ -248,7 +263,7 @@ group.
 
 Fix versions are from the OSV records. No `fleet-telemetry` release
 contains them; v0.10.1 is the newest release, and upstream `main` is at
-the same commit. Upstream issue #578 asks for the update.
+the same commit. Upstream issue 578 asks for the update.
 
 ### github.com/aws/aws-sdk-go
 
@@ -301,10 +316,16 @@ v0.33.0. The binary uses `x/net` only through other modules. Import graph
 (`GOOS=linux GOARCH=amd64 go list -deps ./cmd` at the tag):
 
 - `x/net/http2` is imported by `google.golang.org/grpc/internal/transport`
-  and `google.golang.org/api/transport/http`. The only upstream package
-  through which `x/net/http2`, `google.golang.org/grpc`, `x/net/idna`,
-  and `x/text/unicode/norm` enter the build is `datastore/googlepubsub`
-  (the Pub/Sub dispatcher).
+  and `google.golang.org/api/transport/http`. `x/net/http2`,
+  `google.golang.org/grpc`, `x/net/idna`, and `x/text/unicode/norm` enter
+  the build through `cloud.google.com/go/pubsub`. Two upstream packages
+  import that module: `datastore/googlepubsub` (the Pub/Sub dispatcher)
+  and `config`, which uses it only as a field type (`Publisher
+  *pubsub.Client`,
+  [`config/config.go#L148`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L148)).
+  The only call that creates a Pub/Sub client is in
+  `datastore/googlepubsub/publisher.go#L56`, which runs only for the
+  Pub/Sub producer.
 - `x/net/proxy` is imported only by paho MQTT. The only upstream package
   through which it enters is `datastore/mqtt`.
 
@@ -359,8 +380,9 @@ v0.21.0.
 
 ### google.golang.org/grpc
 
-v1.56.3. Imported only through `cloud.google.com/go/pubsub`, which only
-`datastore/googlepubsub` uses. The binary has no gRPC server: no upstream
+v1.56.3. Imported only through `cloud.google.com/go/pubsub`. Only
+`datastore/googlepubsub` creates a Pub/Sub client; `config` uses the
+module only as a field type (see `golang.org/x/net`). The binary has no gRPC server: no upstream
 file creates one, and govulncheck finds no call of `grpc.Server.Serve`
 or `grpc.Server.ServeHTTP`.
 
@@ -375,24 +397,70 @@ or `grpc.Server.ServeHTTP`.
 ## Static C libraries in `/fleet-telemetry`
 
 osv-scanner and govulncheck do not see C libraries that are linked into
-the binary. The upstream build links these statically:
+the binary. Two sources put static C code into `/fleet-telemetry`:
 
-| Library | Version | Source | Use in this deployment |
-| ------- | ------- | ------ | ---------------------- |
-| libzmq | 4.3.4 | upstream [`Dockerfile#L15`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L15) | Not used today. After ADR 0001, the `zmq` dispatcher binds a PUB socket on `127.0.0.1:5284`. |
-| libsodium | 1.0.19 | upstream [`Dockerfile#L6`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L6) | Used by libzmq for CURVE security. The configuration does not enable CURVE. |
-| librdkafka | 2.3.0, with its bundled dependencies | `confluent-kafka-go/v2` v2.3.0 | Only behind the `kafka` dispatcher, which is not configured. |
+- The upstream Dockerfile builds libsodium and libzmq as static libraries
+  ([`Dockerfile#L5-L20`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L5-L20)).
+- `confluent-kafka-go/v2` v2.3.0 links its prebuilt bundle
+  `kafka/librdkafka_vendor/librdkafka_glibc_linux_amd64.a` (SHA-256
+  `7e6c80d323ad6a0dc9fbcb693cf607bc62997a4591e940e7f9d4e8ae56f0f198`;
+  the module hash in the binary is `h1:icCHutJouWlQREayFwCc7lxDAhws08td+W3/gdqgZts=`).
+  The bundle contains librdkafka and the libraries that librdkafka v2.3.0
+  builds from source
+  ([`mklove/modules`](https://github.com/confluentinc/librdkafka/tree/v2.3.0/mklove/modules)).
 
-Manual check on 26 November 2026, not a scanner result:
+| Component | Version | Evidence of the version | Use in this deployment |
+| --------- | ------- | ----------------------- | ---------------------- |
+| libzmq | 4.3.4 | Upstream `Dockerfile#L15`; `zmq_version` in the binary returns 4, 3, 4. | Not used today. After ADR 0001, the `zmq` dispatcher binds a PUB socket. The only C++ static constructor in the binary (`.init_array`) is the libzmq one for `ctx.cpp`; it only sets `zmq::ctx_t::max_socket_id` to 0. |
+| libsodium | 1.0.19 | Upstream `Dockerfile#L6`. | Used by libzmq for CURVE. The configuration does not enable CURVE. |
+| librdkafka | 2.3.0 | String `librdkafka v2.3.0` in the binary. | Only behind the `kafka` dispatcher. |
+| OpenSSL (libssl, libcrypto) | 3.0.11 | String `OpenSSL 3.0.11 19 Sep 2023` in the binary; `configure.libssl` sets 3.0.11. | Only behind the `kafka` dispatcher (see below). |
+| libcurl | 7.86.0 | String `libcurl/7.86.0` in the bundle archive; `configure.libcurl` sets 7.86.0. The binary contains the names of 44 curl objects, but not `version.o`. | Used by librdkafka for the OAUTHBEARER OIDC token request. Only behind the `kafka` dispatcher. |
+| zlib | 1.2.13 | Strings `deflate 1.2.13` and `inflate 1.2.13` in the binary. | Only behind the `kafka` dispatcher. |
+| zstd | 1.5.2 | `ZSTD_versionNumber` returns 10502; `configure.libzstd` sets 1.5.2. | Only behind the `kafka` dispatcher. |
+| lz4 | 1.9.3 (librdkafka copy) | `LZ4_versionNumber` returns 10903; `src/lz4.h` of librdkafka v2.3.0. | Only behind the `kafka` dispatcher. |
+| Cyrus SASL | not linked | The bundle excludes GSSAPI, because Cyrus SASL needs dynamic linking ([`packaging/nuget/staticpackage.py#L17-L20`](https://github.com/confluentinc/librdkafka/blob/v2.3.0/packaging/nuget/staticpackage.py#L17-L20)). The binary has no Cyrus SASL symbol; `rd_kafka_sasl_client_new` is librdkafka code (PLAIN, SCRAM, OAUTHBEARER). | Not applicable. |
 
-- OSV queries for the release commits of libzmq v4.3.4, libsodium
-  1.0.19-RELEASE, and librdkafka v2.3.0 returned no record. An empty
-  answer does not prove that no vulnerability exists.
-- The known libzmq advisories CVE-2020-15166, CVE-2021-20235, and
-  CVE-2021-20236 affect versions before 4.3.3.
-- libsodium CVE-2025-69277 affects `crypto_core_ed25519_is_valid_point`
-  with untrusted input. This triage did not check whether libzmq calls
-  this function; CURVE is not enabled.
+**Bundled OpenSSL in the deployed configuration.** No code path of the
+deployed configuration enters the bundled OpenSSL:
+
+- The vehicle TLS server and every Go TLS client use Go `crypto/tls`,
+  which is pure Go. The binary does not call the Debian `libssl` either:
+  `libssl.so` is not in its `NEEDED` list.
+- OpenSSL and libcurl are in the bundle only for librdkafka. Go code
+  reaches librdkafka only through the `confluent-kafka-go/v2/kafka`
+  package, which has no `init` function. Upstream imports that package
+  in `datastore/kafka` and in `config`. `config` uses only the Go type
+  `ConfigMap` and calls `convertKafkaConfig` only for the Kafka producer
+  ([`config/config.go#L386-L396`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L386-L396)).
+- The ELF `.init_array` has two entries: `frame_dummy` (C run time) and
+  the libzmq static constructor. No OpenSSL or librdkafka code runs at
+  start.
+- libzmq does not use OpenSSL: the binary has no GnuTLS symbol and no
+  libzmq TLS transport; libzmq uses libsodium (`crypto_box` symbols).
+- The `vuln` task fails when a record type names a dispatcher other than
+  `logger` or `zmq`.
+
+**Manual advisory comparison** (26 November 2026, OSV queries by release
+commit, not a scanner result):
+
+| Component | Release commit | OSV records | Decision |
+| --------- | -------------- | ----------- | -------- |
+| OpenSSL 3.0.11 | `6ba3884` (tag `openssl-3.0.11`) | 45 (45 CVE IDs) | Not affected while the `kafka` dispatcher is not configured (class D). The records were not compared one by one. |
+| libcurl 7.86.0 | `cd95ee9` (tag `curl-7_86_0`) | 123 (68 CVE IDs) | Class D, as above. Not compared one by one. |
+| zlib 1.2.13 | `04f42ce` (tag `v1.2.13`) | 5 | Class D. 3 of them are in `minizip`, `untgz`, or the Perl module, which are not part of the library. |
+| zstd 1.5.2 | `e47e674` (tag `v1.5.2`) | 0 | No record. |
+| lz4 1.9.3 | `d443718` (tag `v1.9.3`) | 1 (CVE-2021-3520) | Fixed in the librdkafka copy: librdkafka v2.1.0 updated `lz4.c` for CVE-2021-3520 ([`CHANGELOG.md#L237`](https://github.com/confluentinc/librdkafka/blob/v2.3.0/CHANGELOG.md#L237)). |
+| librdkafka 2.3.0 | `95a542c` (tag `v2.3.0`) | 0 | No record. Class D. |
+| libzmq 4.3.4 | `4097855` (tag `v4.3.4`) | 0 | No record. The known advisories CVE-2020-15166, CVE-2021-20235, and CVE-2021-20236 affect versions before 4.3.3. |
+| libsodium 1.0.19 | `fb4533b` (tag `1.0.19-RELEASE`) | 0 | No record. CVE-2025-69277 affects `crypto_core_ed25519_is_valid_point` with untrusted input. This triage did not check whether libzmq calls this function; CURVE is not enabled. |
+
+An empty OSV answer does not prove that no vulnerability exists. The 119
+CVE IDs of these records are not in the CISA KEV catalog 2026.11.25. The
+OpenSSL and curl records are not compared one by one, because the code is
+not reachable in this deployment; the `kafka` premise of the `vuln` task
+guards this decision. Compare them before any change enables the `kafka`
+dispatcher.
 
 STACK.md §13 records this surface as a gap without a scanner.
 
@@ -407,7 +475,8 @@ Decision: **not in the production image.** Evidence: the production
 (fact 1). The production base is Debian 13, and its packages are triaged
 below. One `PackageOverrides` entry with `ecosystem = "Debian:12"`
 ignores these advisories in the upstream image scan only. The `vuln` task
-fails when the Dockerfile copies anything else from the upstream image.
+fails when the Dockerfile copies anything else from the upstream image, or
+when the final stage starts from the upstream image.
 
 ## Debian 13 base
 
@@ -453,7 +522,9 @@ Loaded by the running server process (14 groups):
 
 On disk only; the running service does not execute or load these
 packages (51 groups). The entrypoint runs `/bin/sh` (dash), `mkdir`, and
-`chmod`, which load only `libc.so.6` and `libselinux.so.1`.
+`chmod`, which load only `libc.so.6` and `libselinux.so.1`; `libselinux.so.1`
+loads `libpcre2-8.so.0`. The scan has no gating advisory for libselinux
+or pcre2.
 
 | Source package | Groups (max score) |
 | -------------- | ------------------ |
@@ -471,8 +542,10 @@ packages (51 groups). The entrypoint runs `/bin/sh` (dash), `mkdir`, and
 | tar | DEBIAN-CVE-2026-5704 (5.5), -18477 (4.4), -18508 (4.4) |
 | util-linux | DEBIAN-CVE-2026-3184 (5.3), -76642 (8.5), -78408 (7.9), -78409 (7.0), -78410 (7.8) |
 
-The Go server does not use OpenSSL: it uses Go `crypto/tls`, and
-`libssl` is not in its `NEEDED` list.
+The Go server does not use the Debian OpenSSL: it uses Go `crypto/tls`,
+and `libssl` is not in its `NEEDED` list. The binary carries its own
+static OpenSSL 3.0.11 for librdkafka, which the deployed configuration
+does not reach (see "Static C libraries").
 
 Reassessment rule:
 
@@ -498,10 +571,18 @@ Reassessment rule:
   file fails the task.
 - Before the scans, the `vuln` task checks these premises and fails when
   one breaks: the only Dockerfile line with `from=` is the copy of
-  `/fleet-telemetry` from the upstream stage; all dispatchers in `records` are `logger` or `zmq`;
-  `use_default_eng_ca` is not true; `tls.ca_file` is empty;
-  `status_port` and `monitoring.profiler_port` are not set;
-  `monitoring.prometheus_metrics_host` is unset or `127.0.0.1`.
+  `/fleet-telemetry` from the upstream stage; the final stage starts from
+  a base image, not from the upstream image or another stage; the keys of
+  the root, `monitoring`, and `tls` objects are lowercase
+  (`^[a-z0-9_]+$`); the file has no duplicate key; all dispatchers in
+  `records` are `logger` or `zmq`; `use_default_eng_ca` is not true;
+  `tls.ca_file` is empty; `status_port` and `monitoring.profiler_port`
+  are not set; `monitoring.prometheus_metrics_host` is unset or
+  `127.0.0.1`.
+- The check does not read the `zmq` bind address. The ADR 0001
+  deployment change, which enables the `zmq` dispatcher and makes libzmq
+  4.3.4 listen, must add a premise that `zmq.addr` binds the loopback
+  interface.
 - After an expiry date, an entry stops to apply, and `vuln` fails on the
   finding again. An unused entry gives a warning only. Remove unused
   entries in the next triage.
@@ -558,4 +639,14 @@ the gating advisory rate falls below one each month over 60 days.
 4. KEV: download
    `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`,
    collect the CVE IDs and the `upstream` CVE IDs of the osv-scanner JSON
-   output, and intersect the two lists.
+   output (152 IDs on 26 November 2026), add CVE-2025-69277 and the CVE
+   IDs of the OSV commit queries for the static C libraries (119 IDs), and
+   intersect with `.vulnerabilities[].cveID` of the catalog.
+5. Static C libraries: `POST https://api.osv.dev/v1/query` with
+   `{"commit": "<release commit>"}` for each release commit of the table
+   in "Static C libraries". Versions in the binary: search the binary for
+   the version strings, and read `ZSTD_versionNumber`,
+   `LZ4_versionNumber`, and `zmq_version` with `go tool objdump`.
+6. Config premises: run the premise part of the `vuln` task (the lines
+   before `cargo deny`) in a scratch directory that holds a variant
+   `Dockerfile` and `config/server_config.json`.
