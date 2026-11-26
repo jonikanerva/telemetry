@@ -98,7 +98,7 @@ run = [
 ]
 
 [tasks.deps]
-description = "Dependency freshness check (STACK.md §3); reads crates.io and the Rust release channel"
+description = "Dependency freshness check (STACK.md §3); reads crates.io, the Rust release channel, the image tags, and the tags of the CI pins"
 run = [
   # `--verbose` lists each locked crate that is behind its latest crates.io
   # release, also across major versions: "Unchanged <crate> (available: <latest>)".
@@ -114,6 +114,47 @@ run = [
   # An unreadable tag list fails the task: a missing check is not a pass.
   "work=\"$(mktemp -d)\"; printf '{}' > \"$work/config.json\"; tag=\"$(DOCKER_CONFIG=\"$work\" crane ls tesla/fleet-telemetry | grep -E '^v[0-9]+[.][0-9]+[.][0-9]+$' | sort -V | tail -1)\"; rm -rf \"$work\"; test -n \"$tag\" || { echo 'deps: cannot read the tesla/fleet-telemetry tags'; exit 1; }; echo \"latest tesla/fleet-telemetry tag: $tag\"",
   "curl -fsS https://deb.debian.org/debian/dists/stable/Release | grep -E '^(Codename|Version):'",
+  # Pins of the CI workflow (STACK.md §15): each action, the mise version,
+  # and the runner label, with the newest release tags. git ls-remote reads
+  # the public tags; no token is needed. The step fails when it cannot read a tag
+  # list, or when an action SHA is not the commit of its tag comment.
+  '''
+  workflow=.github/workflows/ci.yml
+  export GIT_TERMINAL_PROMPT=0
+  status=0
+  tags() { git ls-remote --tags "https://github.com/$1"; }
+  newest() { sed -n 's#^[0-9a-f]*[[:space:]]refs/tags/\(v[0-9]*[.][0-9]*[.][0-9]*\)$#\1#p' | sort -V | tail -1; }
+  pins="$(sed -n 's/^ *- uses: \([^ ]*@[0-9a-f]\{40\}\) # \(v[0-9.]*\)$/\1#\2/p' "$workflow" | sort -u)"
+  [ -n "$pins" ] || { echo "deps: no pinned action in $workflow"; status=1; }
+  for pin in $pins; do
+    ref="${pin%%#*}"; tag="${pin#*#}"
+    repo="${ref%@*}"; sha="${ref#*@}"
+    list="$(tags "$repo")" || list=""
+    latest="$(printf '%s\n' "$list" | newest)"
+    # An annotated tag has a ^{} line with the commit; a lightweight tag has none.
+    tag_sha="$(printf '%s\n' "$list" | awk -v t="refs/tags/$tag" '$2 == t "^{}" { c = $1 } $2 == t && c == "" { l = $1 } END { print (c != "" ? c : l) }')"
+    if [ -z "$latest" ] || [ -z "$tag_sha" ]; then
+      echo "deps: cannot read the tags of $repo"; status=1; continue
+    fi
+    echo "pinned action: $repo $tag ($sha); latest tag: $latest"
+    [ "$tag_sha" = "$sha" ] || { echo "deps: $repo pins $sha, but $tag is $tag_sha"; status=1; }
+  done
+  mise_pin="$(sed -n 's/^ *version: \([0-9.]*\)$/\1/p' "$workflow" | sort -u)"
+  mise_latest="$(tags jdx/mise | newest)"
+  if [ -z "$mise_latest" ] || [ "$(printf '%s\n' "$mise_pin" | grep -c .)" -ne 1 ]; then
+    echo "deps: cannot read the mise pin of $workflow or the mise tags"; status=1
+  else
+    echo "pinned CI mise: $mise_pin; latest tag: ${mise_latest#v}"
+  fi
+  runners="$(sed -n 's/^ *runs-on: //p' "$workflow" | sort -u | paste -sd ' ' -)"
+  ubuntu="$(tags actions/runner-images | sed -n 's#.*refs/tags/ubuntu\([0-9][0-9]\)/.*#\1#p' | sort -n | tail -1)"
+  if [ -z "$ubuntu" ]; then
+    echo "deps: cannot read the runner image tags"; status=1
+  else
+    echo "pinned CI runner: $runners; newest Ubuntu runner image with a tag: $ubuntu.04 (check its status in the runner-images README)"
+  fi
+  exit "$status"
+  ''',
 ]
 
 [tasks.vuln]

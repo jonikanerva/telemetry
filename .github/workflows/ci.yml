@@ -12,9 +12,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # A new push to a PR stops the old run of that PR. Each push to main keeps
-  # its own run as evidence for that commit.
+  # One group for each PR, and one group for each commit pushed to main.
+  # A new push to a PR cancels the old run of that PR. A push to main has a
+  # group of its own, so no later push can cancel its run (also not a
+  # pending run), and each commit of main keeps its evidence.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

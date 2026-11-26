@@ -700,11 +700,9 @@ the PR changes the design and updates this ADR.
 - Linux runtime of `ingest` (PR #18 tested on macOS only; `STACK.md` §13).
   Before the first deployment that starts `ingest`:
   1. `cargo nextest run --workspace --locked` passes one time on
-     linux/amd64, in a build stage of the image or a Linux VM. If this is
-     not possible, the PR records why, and checks 2 to 6 are the only
-     evidence. Update (issue #20): the CI workflow now runs this suite on
+     linux/amd64. Update (issue #20): the CI workflow runs this suite on
      linux/amd64 for each PR, without the tests that need a database. The
-     deployment PR links that run (`STACK.md` §13).
+     deployment PR links the green run of its head (`STACK.md` §13).
   2. `ingest` is PID 1. On a redeploy, the log of the old deployment shows
      `shutdown_started` with reason `SIGTERM`, `gate_stopped`,
      `child_killed` with `exit_signal` 9, the `stopped` event, and
