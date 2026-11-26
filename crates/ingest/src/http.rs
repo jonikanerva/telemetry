@@ -42,6 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
 use hyper::server::conn::http1;
@@ -51,6 +52,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::{JoinError, JoinSet};
 use tracing::{info, warn};
+
+use crate::readiness::GateState;
 
 /// Bounds of the HTTP server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,16 +83,21 @@ const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// Builds the router of the health endpoint.
 ///
-/// `GET /health` answers 200 while the server runs. ADR 0001 makes the answer
-/// depend on the gate: 200 only when the gate is open and the start-up
-/// check passed. The gate does not exist yet. The change that adds the gate
-/// also changes this handler.
-pub fn router() -> Router {
-    Router::new().route("/health", get(health))
+/// `GET /health` answers 200 only when the gate is open and the start-up
+/// check passed, not in degraded mode (ADR 0001). Otherwise it answers 503.
+/// [`GateState::is_healthy`] gives the answer. In this phase the gate stays
+/// closed, so the answer is 503 (provisional rule of
+/// [`crate::readiness`]).
+pub fn router(gate: watch::Receiver<GateState>) -> Router {
+    Router::new().route("/health", get(health)).with_state(gate)
 }
 
-async fn health() -> StatusCode {
-    StatusCode::OK
+async fn health(State(gate): State<watch::Receiver<GateState>>) -> StatusCode {
+    if gate.borrow().is_healthy() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 /// Serves `router` on `listener` until `shutdown` completes. Then stops as
@@ -158,7 +166,7 @@ pub async fn serve(
         );
         connections.shutdown().await;
     }
-    info!("shutdown_complete");
+    info!("health_server_stopped");
 }
 
 async fn serve_connection(
@@ -236,6 +244,8 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::*;
+    use crate::events::recording::RecordingSink;
+    use crate::readiness::{Pipeline, Readiness};
 
     const TEST_LIMITS: ServerLimits = ServerLimits {
         header_read_timeout: Duration::from_millis(300),
@@ -307,9 +317,24 @@ mod tests {
         started.elapsed()
     }
 
+    /// A router whose gate is in the given state. The receiver keeps the
+    /// last state after the sender is dropped.
+    fn router_with(set: impl FnOnce(&Readiness)) -> Router {
+        let readiness = Readiness::new(Arc::new(RecordingSink::default()));
+        set(&readiness);
+        router(readiness.subscribe())
+    }
+
+    fn healthy_router() -> Router {
+        router_with(|readiness| {
+            readiness.set_child_running(true);
+            readiness.set_pipeline(Pipeline::Ready);
+        })
+    }
+
     #[tokio::test]
     async fn health_answers_200_and_shutdown_completes() {
-        let server = TestServer::start(router(), TEST_LIMITS).await;
+        let server = TestServer::start(healthy_router(), TEST_LIMITS).await;
         let address = server.address;
 
         let health = get_response(address, "/health").await;
@@ -322,8 +347,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn health_answers_503_unless_the_gate_is_open_and_not_degraded() {
+        type SetState = fn(&Readiness);
+        let cases: [(&str, SetState); 3] = [
+            ("closed gate", |_| {}),
+            ("running child, no pipeline", |readiness| {
+                readiness.set_child_running(true);
+            }),
+            ("degraded mode", |readiness| {
+                readiness.set_child_running(true);
+                readiness.set_pipeline(Pipeline::Degraded);
+            }),
+        ];
+        for (case, set) in cases {
+            let server = TestServer::start(router_with(set), TEST_LIMITS).await;
+            let health = get_response(server.address, "/health").await;
+            assert!(health.starts_with("HTTP/1.1 503 "), "{case}: {health}");
+            server.stop().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn health_follows_the_gate_state() {
+        let readiness = Readiness::new(Arc::new(RecordingSink::default()));
+        let server = TestServer::start(router(readiness.subscribe()), TEST_LIMITS).await;
+        readiness.set_child_running(true);
+        readiness.set_pipeline(Pipeline::Ready);
+        let health = get_response(server.address, "/health").await;
+        assert!(health.starts_with("HTTP/1.1 200 "), "{health}");
+        readiness.shut();
+        let health = get_response(server.address, "/health").await;
+        assert!(health.starts_with("HTTP/1.1 503 "), "{health}");
+        server.stop().await;
+    }
+
+    #[tokio::test]
     async fn a_client_that_does_not_finish_its_request_head_is_cut_off() {
-        let server = TestServer::start(router(), TEST_LIMITS).await;
+        let server = TestServer::start(healthy_router(), TEST_LIMITS).await;
         let mut client = stalled_client(server.address).await;
 
         let elapsed = time_to_close(&mut client).await;
@@ -334,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_that_sends_nothing_is_cut_off() {
-        let server = TestServer::start(router(), TEST_LIMITS).await;
+        let server = TestServer::start(healthy_router(), TEST_LIMITS).await;
         let mut client = TcpStream::connect(server.address).await.unwrap();
 
         let elapsed = time_to_close(&mut client).await;
@@ -345,7 +405,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_idle_keep_alive_connection_is_cut_off() {
-        let server = TestServer::start(router(), TEST_LIMITS).await;
+        let server = TestServer::start(healthy_router(), TEST_LIMITS).await;
         let mut client = TcpStream::connect(server.address).await.unwrap();
         client
             .write_all(b"GET /health HTTP/1.1\r\nHost: test\r\n\r\n")
@@ -366,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_connection_logs_a_static_class_only() {
         let (capture, _guard) = crate::logging::capture::install(crate::logging::ALLOWED_FIELDS);
-        let server = TestServer::start(router(), TEST_LIMITS).await;
+        let server = TestServer::start(healthy_router(), TEST_LIMITS).await;
         let mut client = TcpStream::connect(server.address).await.unwrap();
         client
             .write_all(b"GET /health?token=hunter2 HTTP/1.1\r\nBad Header hunter2\r\n\r\n")
@@ -392,7 +452,7 @@ mod tests {
             ..TEST_LIMITS
         };
         let (capture, _guard) = crate::logging::capture::install(crate::logging::ALLOWED_FIELDS);
-        let server = TestServer::start(router(), limits).await;
+        let server = TestServer::start(healthy_router(), limits).await;
 
         // The client sends pipelined requests and never reads. With a small
         // receive buffer, the response writes of the server stop soon.
@@ -441,7 +501,7 @@ mod tests {
             shutdown_deadline: Duration::from_secs(5),
             ..TEST_LIMITS
         };
-        let server = TestServer::start(router(), limits).await;
+        let server = TestServer::start(healthy_router(), limits).await;
         let mut client = TcpStream::connect(server.address).await.unwrap();
         client
             .write_all(b"GET /health HTTP/1.1\r\nHost: test\r\n\r\n")
@@ -485,7 +545,7 @@ mod tests {
             header_read_timeout: Duration::from_secs(60),
             ..TEST_LIMITS
         };
-        let server = TestServer::start(router(), limits).await;
+        let server = TestServer::start(healthy_router(), limits).await;
         let mut client = stalled_client(server.address).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -519,7 +579,7 @@ mod tests {
             max_connections: 1,
             ..TEST_LIMITS
         };
-        let server = TestServer::start(router(), limits).await;
+        let server = TestServer::start(healthy_router(), limits).await;
         let first = stalled_client(server.address).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
