@@ -88,8 +88,29 @@ description = "Vulnerability check (STACK.md §3): Rust dependencies and the FRO
 # $DOCKER_CONFIG/config.json when that file exists. The task points
 # DOCKER_CONFIG at a temporary directory with an empty config.json, so the
 # pulls are anonymous and the local credential files are not read.
+# Each image scan reads the reviewed ignore file
+# docs/security/osv-scanner-<repository with / as ->.toml. The entries rely
+# on premises of the Dockerfile and config/server_config.json
+# (docs/security/image-advisories.md). The task checks these premises first
+# and fails when one breaks, so that the triage is done again.
 run = """
 status=0
+other_sources="$(grep -iE 'from=' Dockerfile || true)"
+if [ "$other_sources" != "COPY --from=upstream /fleet-telemetry /fleet-telemetry" ]; then
+  echo "vuln: the only Dockerfile line with from= must copy /fleet-telemetry from the upstream image"
+  status=1
+fi
+if ! jq -e '
+  ([(.records // {}) | .[][]] | all(. == "logger" or . == "zmq"))
+  and ((.use_default_eng_ca // false) == false)
+  and ((.tls.ca_file // "") == "")
+  and ((.status_port // 0) == 0)
+  and ((.monitoring.profiler_port // 0) == 0)
+  and ((.monitoring.prometheus_metrics_host // "127.0.0.1") == "127.0.0.1")
+' config/server_config.json > /dev/null; then
+  echo "vuln: config/server_config.json breaks a premise of the ignore files (dispatchers, client CAs, or listeners)"
+  status=1
+fi
 cargo deny --locked check advisories || status=1
 osv-scanner scan source -r . || status=1
 work="$(mktemp -d)"
@@ -100,7 +121,14 @@ for image in $(awk '/^FROM/ { print $2 }' Dockerfile); do
   echo "image: $image"
   if crane pull --platform linux/amd64 "$image" "$work/image.tar"; then
     crane digest --platform linux/amd64 "$image"
-    osv-scanner scan image --archive "$work/image.tar" || status=1
+    ignore_file="docs/security/osv-scanner-$(printf '%s' "${image%%[:@]*}" | tr '/' '-').toml"
+    if [ -f "$ignore_file" ]; then
+      osv-scanner scan image --config "$ignore_file" --archive "$work/image.tar" || status=1
+    else
+      echo "vuln: no reviewed ignore file $ignore_file for $image"
+      osv-scanner scan image --archive "$work/image.tar" || true
+      status=1
+    fi
   else
     echo "vuln: cannot download $image"
     status=1
