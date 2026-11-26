@@ -37,7 +37,20 @@ use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
 use tracing_subscriber::registry::LookupSpan;
 
 /// Field names whose values the logs may contain.
-pub const ALLOWED_FIELDS: &[&str] = &["connections", "error", "message", "port", "signal"];
+///
+/// - `kind` and `reason`: the `ingest_event` kind and its reason. Both hold
+///   static words and numbers only ([`crate::events`]).
+/// - `count`: the count of an `ingest_event`.
+pub const ALLOWED_FIELDS: &[&str] = &[
+    "connections",
+    "count",
+    "error",
+    "kind",
+    "message",
+    "port",
+    "reason",
+    "signal",
+];
 
 /// Keys that the formatter writes itself. An event field cannot replace them.
 pub const RESERVED_KEYS: &[&str] = &["level", "target", "timestamp"];
