@@ -55,8 +55,9 @@
 //! Who can hold a slot, and for how long:
 //!
 //! - Any peer before the first byte from `fleet-telemetry`: at most 10 s
-//!   (rule 1). When `fleet-telemetry` ends its side without a byte just
-//!   before the 10 s, the close linger follows: at most 15 s.
+//!   (rule 1). The deadline stays active during the close linger, so a
+//!   connection that `fleet-telemetry` ends without any byte also ends at
+//!   10 s.
 //! - A client after `fleet-telemetry` closed: at most 5 s after the gate
 //!   has written the last bytes to the client socket. The gate sees the
 //!   end of the stream only after it has forwarded the bytes before it. A
@@ -107,7 +108,7 @@ use socket2::{SockRef, TcpKeepalive};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf, copy_buf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot, watch};
-use tokio::task::{JoinError, JoinSet};
+use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tokio::time::{Instant, MissedTickBehavior, sleep, sleep_until, timeout, timeout_at};
 use tracing::{info, warn};
 
@@ -361,6 +362,8 @@ enum End {
     NoFirstByte,
     /// The gate closed.
     GateClosed,
+    /// The copy task panicked.
+    Panicked,
 }
 
 impl End {
@@ -372,6 +375,7 @@ impl End {
             Self::UpstreamUnavailable => "upstream_unavailable",
             Self::NoFirstByte => "no_first_byte",
             Self::GateClosed => "gate_closed",
+            Self::Panicked => "copy_task_panicked",
         }
     }
 }
@@ -426,13 +430,17 @@ where
         };
         let (seen, mut first_seen) = oneshot::channel();
         let (upstream_ended, mut upstream_end) = oneshot::channel();
-        let mut copy = tokio::spawn(copy_both(
+        // The guard aborts the copy task also when this task is cancelled
+        // before its own abort below, for example by the abort of the stop at
+        // the close deadline. A dropped `JoinHandle` alone would detach the
+        // copy task, and it would go on without the controls.
+        let mut copy = AbortOnDrop(tokio::spawn(copy_both(
             client,
             upstream,
             limits.buffer_size,
             seen,
             upstream_ended,
-        ));
+        )));
         let mut no_first_byte = pin!(sleep_until(deadline));
         let mut linger = pin!(sleep_until(deadline));
         let mut first_byte_at = None;
@@ -442,13 +450,15 @@ where
         let (end, error) = loop {
             tokio::select! {
                 () = &mut closed => break (End::GateClosed, None),
-                copied = &mut copy => {
+                copied = &mut copy.0 => {
                     copy_done = true;
                     break match copied {
                         Ok(Ok(end)) => (end, None),
                         Ok(Err(kind)) => (End::Failed, Some(kind)),
-                        // A panic of the copy task.
-                        Err(_join) => (End::Failed, None),
+                        Err(_join) => {
+                            warn!("gate_copy_task_panicked");
+                            (End::Panicked, None)
+                        }
                     };
                 }
                 at = &mut first_seen, if waiting => {
@@ -484,9 +494,10 @@ where
             }
         };
         if !copy_done {
-            copy.abort();
-            // The task drops both sockets when it ends.
-            copy.await.ok();
+            copy.0.abort();
+            // The task drops both sockets when it ends. Only then does the
+            // caller return the permit of the connection.
+            (&mut copy.0).await.ok();
         }
         if waiting {
             first_byte_at = first_seen.try_recv().ok();
@@ -498,6 +509,15 @@ where
         error,
         first_byte: first_byte_at.map(|at| at.saturating_duration_since(accepted_at)),
         duration: accepted_at.elapsed(),
+    }
+}
+
+/// A task handle that aborts its task when it is dropped.
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

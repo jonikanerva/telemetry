@@ -176,6 +176,226 @@ async fn a_gate_close_ends_a_connection_with_a_flow_to_the_client() {
     }
 }
 
+#[tokio::test]
+async fn a_cancelled_connection_task_ends_its_copy_task() {
+    // Review round 2, finding A: the connection task can be cancelled
+    // before it aborts the copy task (the abort of the stop at the close
+    // deadline, or a dropped connection set). The copy task must end with
+    // it and close both streams.
+    let (_readiness, gate) = open_gate();
+    let (mut client, mut upstream, task) = start_forward(gate);
+    upstream.write_all(b"s").await.unwrap();
+    let mut first = [0_u8; 1];
+    client.read_exact(&mut first).await.unwrap();
+
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    // Both peers see the end, and a later write of the client reaches no
+    // one.
+    let mut rest = Vec::new();
+    let read = tokio::time::timeout(WAIT, client.read_to_end(&mut rest)).await;
+    assert_eq!(read.expect("the client saw no end").unwrap(), 0);
+    assert!(client.write_all(b"after").await.is_err());
+    let mut received = Vec::new();
+    let read = tokio::time::timeout(WAIT, upstream.read_to_end(&mut received)).await;
+    read.expect("the upstream saw no end").unwrap();
+    assert_eq!(received, b"");
+}
+
+/// A client stream that records the largest read request, and panics on
+/// a read when `panic` is set. It writes nothing and never ends.
+struct Probe {
+    largest_read: Arc<std::sync::atomic::AtomicUsize>,
+    panic: bool,
+}
+
+impl AsyncRead for Probe {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        assert!(!self.panic, "test panic in the copy task");
+        self.largest_read
+            .fetch_max(buf.remaining(), std::sync::atomic::Ordering::Relaxed);
+        let coop = std::task::ready!(tokio::task::coop::poll_proceed(cx));
+        let room = buf.initialize_unfilled().len();
+        buf.advance(room);
+        coop.made_progress();
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for Probe {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn each_copy_direction_reads_into_a_buffer_of_8_kib() {
+    let (readiness, gate) = open_gate();
+    let epoch = gate.borrow().epoch();
+    let largest = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let client = Probe {
+        largest_read: Arc::clone(&largest),
+        panic: false,
+    };
+    let largest_upstream = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let upstream = Probe {
+        largest_read: Arc::clone(&largest_upstream),
+        panic: false,
+    };
+    let task = tokio::spawn(async move {
+        forward(
+            client,
+            async { Ok(upstream) },
+            Instant::now(),
+            &LIMITS,
+            gate,
+            epoch,
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    readiness.set_child_running(false);
+    tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
+    let read = std::sync::atomic::Ordering::Relaxed;
+    assert_eq!(largest.load(read), LIMITS.buffer_size);
+    assert_eq!(largest_upstream.load(read), LIMITS.buffer_size);
+    assert_eq!(LIMITS.buffer_size, 8 * 1024);
+}
+
+#[tokio::test]
+async fn a_panic_in_the_copy_task_is_reported_as_a_panic() {
+    let (capture, _guard) = capture::install(ALLOWED_FIELDS);
+    let (_readiness, gate) = open_gate();
+    let epoch = gate.borrow().epoch();
+    let client = Probe {
+        largest_read: Arc::default(),
+        panic: true,
+    };
+    let (gate_upstream, _upstream) = duplex(1024);
+    let report = tokio::time::timeout(
+        WAIT,
+        forward(
+            client,
+            async { Ok(gate_upstream) },
+            Instant::now(),
+            &LIMITS,
+            gate,
+            epoch,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.end, End::Panicked);
+    assert_eq!(report.end.as_str(), "copy_task_panicked");
+    let text = capture.text();
+    assert!(
+        text.contains("\"message\":\"gate_copy_task_panicked\""),
+        "{text}"
+    );
+    assert!(!text.contains("test panic"), "{text}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_end_of_stream_is_not_a_first_byte() {
+    let (_readiness, gate) = open_gate();
+    let (_client, mut upstream, task) = start_forward(gate);
+    bounded(async move {
+        // `fleet-telemetry` ends its side without a byte just before the
+        // 10 s; the client stays.
+        tokio::time::sleep(Duration::from_millis(9_900)).await;
+        upstream.shutdown().await.unwrap();
+        let report = task.await.unwrap();
+        assert_eq!(report.first_byte, None);
+        // The rule 1 deadline stays active during the close linger, so the
+        // connection ends at 10 s, not after the linger.
+        assert_eq!(report.end, End::NoFirstByte);
+        assert_eq!(report.duration, Duration::from_secs(10));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn forward_returns_only_after_both_streams_are_closed() {
+    // The caller returns the permit when `forward` returns, so both streams
+    // must be closed by then, also when a control ends the connection.
+    let (readiness, gate) = open_gate();
+    let epoch = gate.borrow().epoch();
+    let (mut client, gate_client) = duplex(1024);
+    let (gate_upstream, mut upstream) = duplex(1024);
+    upstream.write_all(b"s").await.unwrap();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        readiness.set_child_running(false);
+    });
+    let report = tokio::time::timeout(
+        WAIT,
+        forward(
+            gate_client,
+            async { Ok(gate_upstream) },
+            Instant::now(),
+            &LIMITS,
+            gate,
+            epoch,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.end, End::GateClosed);
+    // Each read is polled once, without a yield, so no other task runs
+    // between the return and these reads: the end of each stream must be
+    // there at once.
+    let mut first = [0_u8; 1];
+    assert!(matches!(
+        poll_once(client.read_exact(&mut first)).await,
+        Poll::Ready(Ok(1))
+    ));
+    let mut rest = Vec::new();
+    let at_once = poll_once(client.read_to_end(&mut rest)).await;
+    assert!(matches!(at_once, Poll::Ready(Ok(0))), "{at_once:?}");
+    let at_once = poll_once(upstream.read_to_end(&mut rest)).await;
+    assert!(matches!(at_once, Poll::Ready(Ok(0))), "{at_once:?}");
+}
+
+/// Polls a future one time and returns the result, without a yield.
+async fn poll_once<F: Future>(future: F) -> Poll<F::Output> {
+    let mut future = pin!(future);
+    std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_aborted_gate_task_ends_every_forwarded_connection() {
+    // The shutdown aborts the gate task when it passes its bound; the
+    // connection set and the copy tasks must end with it.
+    let gate = TestGate::start_open().await;
+    let mut client = gate.connect().await;
+    let mut upstream = gate.accept_upstream().await;
+    upstream.write_all(b"x").await.unwrap();
+    let mut first = [0_u8; 1];
+    client.read_exact(&mut first).await.unwrap();
+
+    gate.task.abort();
+    assert!(gate.task.await.unwrap_err().is_cancelled());
+    client.write_all(b"after").await.ok();
+    assert_eq!(read_until_closed(&mut upstream).await, b"");
+    assert_eq!(read_until_closed(&mut client).await, b"");
+}
+
 /// An in-memory stream for the tests of a flow without pause. A flowing
 /// stream always has data to read; a silent stream never has data. Both
 /// take every byte that is written at once. So a copy from a flowing
