@@ -135,6 +135,12 @@ pub(crate) async fn within<T>(
 /// would block the pool of two connections (ADR 0001) for as long as the
 /// peer keeps the TCP connection open.
 ///
+/// An idle pool connection that went silent: the next acquire checks it
+/// with a round trip inside the call deadline. When the deadline passes,
+/// the acquire is dropped, and with it the idle connection: the socket
+/// closes and the slot is free (`SQLx` 0.9.1, `Floating` has no drop of
+/// its own). This path is read from the source, not tested.
+///
 /// What stays: a connection that goes back to the pool after an answer is
 /// still checked with that unbounded wait. The server answered a moment
 /// before, so it blocks only when the server goes silent in that moment.

@@ -277,9 +277,10 @@ caller retries. Each transaction has a client deadline of 90 s, also for a
 connection that goes silent. After the deadline the writer closes the
 connection at once and frees its pool slot; a connection goes back to the
 pool only after the server answered. A failed write tells the caller how
-many records at the start of the batch are stored; after a break during a
-`COMMIT`, the next transaction can be stored too, and the idempotent
-re-send covers it. The writer calls a progress hook of the caller before
+many records at the start of the batch are stored. After a break during a
+`COMMIT`, the transaction whose `COMMIT` broke can be stored too (the
+records from that count to the end of that transaction), and the
+idempotent re-send covers it. The writer calls a progress hook of the caller before
 each transaction attempt, so the caller beats the watchdog at least every
 90 s also during a long split. Queue items leave memory only after their
 rows commit.

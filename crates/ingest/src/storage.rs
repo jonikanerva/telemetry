@@ -27,7 +27,7 @@
 //! | [`Writer::write`] | [`FailureClass::Answered`] | `records[..committed]` | Keep every record. Retry as above; after three equal codes in a row, retry once each 60 minutes (ADR 0001). |
 //! | [`Writer::write`] | [`FailureClass::Data`] | `records[..committed]` | A defect: the database refused even the `database_rejected` row of the record `records[committed]`, so its bytes cannot be stored. Log the code and the count, remove `records[..=committed]` from the queue, and write the rest. A retry would fail the same way without end. |
 //! | [`write_events`] | `Ok` | Every event, except the counted `rejected` ones | Remove the events; log a count of rejected events, which cannot be stored. |
-//! | [`write_events`] | `NoAnswer` or `Answered` | Nothing of this call | Keep the events and retry with the cadence above. |
+//! | [`write_events`] | `NoAnswer` or `Answered` | Not known exactly. The first insert holds all events; when the connection breaks before its answer, it can be committed. After a data error of that insert, the function inserts each event on its own: a later failure leaves the events before it stored, and the failed insert can be committed too. | Keep every event and retry with the cadence above. The insert is idempotent, so a stored event becomes a duplicate. |
 //! | [`check_migrations`] | `NoAnswer` | | Retry; degraded mode after 120 s (ADR 0001, gate condition 3). |
 //! | [`check_migrations`] | `Answered` | | Keep the gate closed; retry with the cadence above. |
 //!

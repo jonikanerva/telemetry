@@ -50,8 +50,12 @@ pub struct EventOutcome {
 ///
 /// # Errors
 ///
-/// Returns the first failure that is not a data error. The caller keeps the
-/// events and calls the function again; the insert is idempotent.
+/// Returns the first failure that is not a data error. What is stored is
+/// then not known exactly: an insert whose answer was lost can be
+/// committed, and after a data error of the first insert, the events
+/// before the failed single insert are stored. The caller keeps every
+/// event and calls the function again; the insert is idempotent, so a
+/// stored event becomes a duplicate.
 pub async fn write_events(
     pool: &PgPool,
     run_id: Uuid,
