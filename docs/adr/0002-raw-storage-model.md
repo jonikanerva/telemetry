@@ -124,7 +124,10 @@ Columns:
   `kind text NOT NULL` (`started`, `stopped`, `gate_closed`, `gate_opened`,
   `degraded_mode`, `child_exited`, `records_dropped`, `zmq_shortfall`,
   `gate_full`),
-  `reason text`, `dropped_count bigint` (it holds every unsigned 32-bit
+  `reason text` (for `records_dropped`: `queue_full` when the full queue
+  dropped the records, `database_refused` when the database refused even
+  the `unprocessed_record` row of a record; ADR 0001, "Decisions of the
+  pipeline change"), `dropped_count bigint` (it holds every unsigned 32-bit
   count of the event sink),
   `first_received_at timestamptz`, `last_received_at timestamptz`. A
   `records_dropped`, `zmq_shortfall`, or `gate_full` row must have the
@@ -427,6 +430,13 @@ cannot create objects in `raw` or `public`.
   6 hours. Two runs can therefore share the branch at the same time. The
   tests refuse the production endpoint and a database with a schema
   `raw`. The branch counts against the 1 GB of the project.
+- The end-to-end tests run the real `ingest run` on the schema and the
+  roles of a test. A debug build reads the schema from
+  `INGEST_TEST_SCHEMA` (a plain identifier); a release build always uses
+  `raw` (ADR 0001, "Decisions of the pipeline change", test overrides).
+  The binary connects as the ingest role of the test, through a TCP proxy
+  of the test on the loopback interface (the URL has `hostaddr`), so a
+  test can cut the database without a change of the certificate check.
 - The test compute draws from the same 100 CU-hours as production. Budget:
   at most 20 active hours (5 CU-hours) each month (ADR 0001). Tests close
   their connections when they end, so the compute scales to zero after 5

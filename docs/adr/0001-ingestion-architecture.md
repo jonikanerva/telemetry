@@ -297,8 +297,8 @@ see these drops directly. It detects them:
   ([`server/streaming/server.go#L149-L191`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/server.go#L149-L191)).
 - When the watchdog ends the process, no final read happens and no
   `zmq_shortfall` event exists for that run.
-- The ingest PR confirms the metric name and labels against the real
-  binary.
+- The ingest PR confirmed the metric name and labels in the upstream
+  source; the deployment PR confirms them on the real binary.
 
 Railway configuration as code in `/ingest/railway.json`:
 
@@ -513,6 +513,108 @@ can contain row values). The child's stdout and stderr go through `ingest`.
 a VIN on some error paths, for example
 [`server/streaming/server.go#L197`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/server.go#L197).
 
+### Decisions of the pipeline change (issue #13)
+
+The pipeline change implements the delivery path above
+(`crates/ingest/src/pipeline/`). This section records the points that the
+sections above leave open. Each point has a test.
+
+- **Configuration.** `ingest run` reads `DATABASE_URL` (the role
+  `telemetry_ingest`), `INGEST_ZMQ_PORT` (the port of `zmq.addr`, 5284),
+  `INGEST_METRICS_PORT` (the port of `monitoring.prometheus_metrics_port`,
+  9090), and `INGEST_FLUSH_INTERVAL_SECONDS` (optional, 1 to 900, default
+  900). Both new ports are on the loopback interface and must differ from
+  the other ports. An interval above 900 s would make the crash loss
+  larger than the bound of "Delivery guarantee".
+- **Test overrides.** The end-to-end tests run the real binary with a
+  schema of their own and shorter limits (`INGEST_TEST_*`, `src/config.rs`).
+  Only a debug build reads these variables, and each one can only make
+  its limit smaller. The image must run a release build
+  (`cargo build --release`), which never reads them.
+- **ZMQ messages.** The first frame is the topic, the second frame the
+  payload. A message with one frame has an empty payload; a message with
+  more frames has the other frames joined, so no received byte is lost.
+  The decode then stores such a message as unprocessed. Upstream sends two
+  frames (fact 4).
+- **SUB socket.** `zeromq` 0.7.0 with the features `tcp-transport` and
+  `tokio-runtime`. Each first connect attempt has a bound of 5 s, and the
+  next attempt follows at once, so the reader beats its heartbeat. After
+  the first connect, the crate reconnects by itself (100 ms, doubling to
+  30 s) and sends the subscription again. Gate condition 2 is cleared on
+  the `Disconnected` event of the socket and also when the child stops
+  running, so that a restarted child cannot open the gate before the new
+  subscription has settled.
+- **No answer for the cadence and gate condition 3.** SQLSTATE class `08`
+  and `57P` (for example `57P01`, the server ended the session at a Neon
+  compute restart) count as no answer. They are transient and need no
+  manual fix. Without this rule, three compute restarts in a row would
+  move the writer to the 60-minute cadence, which is longer than the
+  vehicle buffer.
+- **Degraded mode.** The time of no answer starts with the first check
+  that has no answer yet, so the limit can pass during a check that waits
+  for the connect timeout of 15 s. An answered failure ends the time; a
+  new time of no answer of 120 s enters degraded mode again.
+- **Equal answered failures.** A write that stored records before it
+  failed made progress: the cadence starts again at 1 s, and only attempts
+  without progress count toward the three equal failures.
+- **Statement timeout.** After SQLSTATE `57014` or a client deadline, the
+  next batch has half the signal rows and half the bytes, down to one
+  record; a successful batch restores the full size. Without this rule,
+  the same batch would time out again, and the third timeout would park
+  the writer at 60 minutes.
+- **Flush trigger at the high mark.** The writer also flushes when the
+  queue closes the gate. Without it, a burst of records without signal
+  rows could keep the gate closed for up to one flush interval.
+- **Batches.** The writer writes the queue from the front, one
+  transaction for each call (at most 5,000 signal rows and 8 MiB of
+  messages), and removes the items after each commit.
+- **Refused record.** When the database refuses even the
+  `unprocessed_record` row of a record (the defect case of the storage
+  contract), the writer removes the record, logs the SQLSTATE, and records
+  a `records_dropped` event with the reason `database_refused` and the
+  receive time of the record. A full queue gives the reason `queue_full`.
+- **Writer heartbeat.** The writer beats each second while it waits for a
+  trigger or a retry, and before each database call. The storage calls a
+  progress function after the connect and before each transaction of a
+  call, and the writer beats there, because one call can hold many
+  transactions when a data error splits a batch. The longest wait without
+  a beat is 15 s before the first progress call, 90 s between two, and
+  95 s after the last; the start-up check is one call of at most 90 s.
+  All are below the limit of 120 s. A call that waits past every deadline
+  ends the process through the watchdog. The writer makes one call at a
+  time, so the process holds at most one database connection.
+- **Events.** The events wait in a buffer of at most 10,000 events (about
+  1 MiB); a new event beyond the bound is counted and not kept, except the
+  `stopped` event. The events take part in the flush interval like the
+  records. After the start-up check passes, the writer flushes at once, so
+  the `started` event is stored while the compute is awake. The buffer
+  makes the event times strictly increasing in microseconds, so that two
+  events of one kind never share the key `(run_id, kind, occurred_at)`.
+  A task writes the log line of each event; the record of an event takes
+  no I/O, also when it is called inside the lock of the gate state.
+- **Shortfall check.** The metric is `dispatch_total` with the label
+  `record_type`, without a namespace
+  ([`server/streaming/socket.go#L378-L382`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/socket.go#L378-L382),
+  [`metrics/adapter/prometheus/prometheus.go#L27-L42`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/metrics/adapter/prometheus/prometheus.go#L27-L42));
+  the Prometheus collector exists only when the metrics port is set
+  ([`metrics/metrics.go#L59-L66`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/metrics/metrics.go#L59-L66)).
+  A value can be in float notation, for example `1e+06`. The gap of one
+  read is the sum over `V`, `alerts`, and `errors` of `dispatched -
+  received`, each at least 0. The reader counts a message by its raw
+  topic before the queue can drop it, so a drop is not also a shortfall.
+  The counts start again at the first `Connected` event after a child
+  stop. The window of a `zmq_shortfall` event starts at the last read
+  without a new gap. A read has a body of at most 1 MiB and a deadline of
+  0.75 s for the connect, the request, and the body. The response also
+  holds `vin_signal_count` with the VIN as a label; the parser reads only
+  `dispatch_total`.
+- **Shutdown.** Step 1 waits until the gate task has ended, also after an
+  abort. Each step gives its work its bound minus 250 ms and aborts it at
+  the bound. The `stopped` event is recorded before step 5, so the final
+  flush stores it. A final flush that leaves records or events unstored
+  logs `flush_incomplete` with the counts, and the process exits with code
+  1.
+
 ## Key alternatives
 
 - **MQTT.** Needs a broker process or service. The per-field messages lose
@@ -675,8 +777,11 @@ the PR changes the design and updates this ADR.
 - The pre-deploy command runs `ingest migrate` in place of the start
   command, with the service variables, and a failure stops the deployment.
 - A settle time of 250 ms after the SUB connection is enough for the PUB
-  side to apply the subscription. The ingest PR also tests this against the
-  real `fleet-telemetry` binary.
+  side to apply the subscription. Update (issue #13): the ingest PR tested
+  the settle time only against the fake child of the tests, which uses the
+  PUB socket of the `zeromq` crate, not libzmq. The real binary needs
+  libzmq through cgo and was not built. The deployment PR checks it: no
+  `zmq_shortfall` event after the first vehicle connection of a start.
 - Whether the container sees the client address of a connection through
   the Railway TCP proxy. Record the answer. A per-source limit is possible
   only if it does; that is a later decision.
@@ -706,7 +811,9 @@ the PR changes the design and updates this ADR.
   bound, and the container memory at the bound. The ingest PR tests that
   the gate refuses connection 1025 and records `gate_full`.
 - The `dispatch_total` metric name and labels on the real binary, and that
-  the shortfall check reports zero in normal use.
+  the shortfall check reports zero in normal use. Update (issue #13): the
+  name and the label are confirmed in the upstream source ("Decisions of
+  the pipeline change"), not on the real binary.
 - Linux runtime of `ingest` (PR #18 tested on macOS only; `STACK.md` §13).
   Before the first deployment that starts `ingest`:
   1. `cargo nextest run --workspace --locked` passes one time on
