@@ -41,6 +41,7 @@ use tracing_subscriber::registry::LookupSpan;
 /// - `kind` and `reason`: the `ingest_event` kind and its reason. Both hold
 ///   static words and numbers only ([`crate::events`]).
 /// - `count`: the count of an `ingest_event`.
+/// - `task`: the static name of a task that the watchdog watches.
 pub const ALLOWED_FIELDS: &[&str] = &[
     "connections",
     "count",
@@ -50,6 +51,7 @@ pub const ALLOWED_FIELDS: &[&str] = &[
     "port",
     "reason",
     "signal",
+    "task",
 ];
 
 /// Keys that the formatter writes itself. An event field cannot replace them.

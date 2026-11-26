@@ -19,3 +19,4 @@ pub mod lifecycle;
 pub mod logging;
 pub mod readiness;
 pub mod record;
+pub mod watchdog;
