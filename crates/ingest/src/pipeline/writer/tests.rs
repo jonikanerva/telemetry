@@ -911,3 +911,100 @@ async fn a_call_that_waits_past_the_limit_ends_the_writer_through_the_watchdog()
     };
     assert!(watchdog_acts(script, secs(1), secs(3)).await);
 }
+
+// Three tests of the reviewer of round 2 of PR #22: the opposite fault of
+// finding B1, where a rule opens the gate too early.
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_check_keeps_the_gate_closed_with_a_full_queue_then_opens() {
+    // Condition 3 is independent of condition 4: a full queue that cannot
+    // be written keeps the reason `database_refused`, and no write runs.
+    let script = Script {
+        checks: [fail(answered("42501")), fail(answered("42501"))].into(),
+        ..Script::default()
+    };
+    let mut harness = start(script, two_item_limits());
+    sleep(Duration::from_millis(1_500)).await;
+    assert_eq!(harness.conditions.database(), Database::Refused);
+    harness.push("a", 0);
+    harness.push("b", 0);
+    sleep(secs(1)).await;
+    assert_eq!(
+        harness.readiness.state().closed_reason(),
+        Some("database_refused")
+    );
+    assert_eq!(harness.writes(), Vec::<(Duration, usize)>::new());
+    assert_eq!(harness.checks(), [secs(0), secs(1)]);
+    // The next check comes on the cadence (3 s).
+    sleep(secs(5)).await;
+    assert_eq!(harness.conditions.database(), Database::Passed);
+    assert!(harness.queue.is_empty());
+    assert!(harness.readiness.state().is_healthy());
+    harness.shut_down(secs(20)).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_record_with_one_item_left_keeps_the_gate_closed_until_a_write_succeeds() {
+    // The empty-queue rule must not open the gate while an item above the
+    // low mark waits after a failed write.
+    let script = Script {
+        writes: [
+            fail(NO_ANSWER),
+            Step::Fail {
+                error: data("22021"),
+                committed: 0,
+            },
+            fail(NO_ANSWER),
+        ]
+        .into(),
+        ..Script::default()
+    };
+    let mut harness = start(script, two_item_limits());
+    harness.push("a", 0);
+    harness.push("b", 0);
+    sleep(Duration::from_millis(500)).await;
+    // Write 1 at 0 s failed; write 2 at 1 s refused `a`; write 3 at once
+    // (the loop continues) failed without an answer: `b` waits.
+    sleep(Duration::from_millis(1_100)).await;
+    assert_eq!(harness.writes().len(), 3, "{:?}", harness.writes());
+    assert_eq!(harness.queue.stats().items, 1);
+    assert_eq!(
+        harness.readiness.state().closed_reason(),
+        Some("queue_high_mark")
+    );
+    // The retry 1 s later succeeds and opens the gate.
+    sleep(secs(5)).await;
+    assert!(harness.queue.is_empty());
+    assert_eq!(harness.records(), payloads(&["b"]));
+    assert!(harness.readiness.state().is_healthy());
+    harness.shut_down(secs(20)).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn after_an_empty_queue_reopen_the_high_mark_closes_again_and_is_written() {
+    let script = Script {
+        writes: [
+            fail(NO_ANSWER),
+            Step::Fail {
+                error: NO_ANSWER,
+                committed: 2,
+            },
+        ]
+        .into(),
+        ..Script::default()
+    };
+    let mut harness = start(script, two_item_limits());
+    harness.push("a", 0);
+    harness.push("b", 0);
+    sleep(secs(10)).await;
+    assert!(harness.readiness.state().is_healthy());
+    harness.push("c", 0);
+    harness.push("d", 0);
+    // The high mark closes the gate again, and the writer writes at once
+    // or on the cadence.
+    sleep(secs(10)).await;
+    assert!(harness.queue.is_empty());
+    assert_eq!(harness.records(), payloads(&["a", "b", "c", "d"]));
+    assert!(harness.readiness.state().is_healthy());
+    harness.shut_down(secs(20)).await;
+}
