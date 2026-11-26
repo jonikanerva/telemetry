@@ -12,7 +12,7 @@ application that stores and shows the data is planned.
 
 | Part                | State                                                             |
 | ------------------- | ----------------------------------------------------------------- |
-| Ingest service      | Deployed. The vehicle connects and streams eight test signals.    |
+| Ingest service      | Deployed. The vehicle connects. The config selects 20 fields ([usage estimate](docs/telemetry-usage-estimate.md)). |
 | Storage             | Planned. The ingest service writes the records to its log only.   |
 | Application and web | Planned. See [VISION.md](VISION.md) for the product direction.    |
 
