@@ -45,7 +45,9 @@
 //!   on at once. A retry would fail the same way without end.
 //! - Every other failure keeps the records and waits for the retry cadence
 //!   ([`Cadence`]). It also clears the "last write succeeded" condition of
-//!   the low mark.
+//!   the low mark. When the failure leaves the queue empty, the queue opens
+//!   the gate anyway: no record waits, so no retry follows that could open
+//!   it (ADR 0001, "No permanent close").
 //! - **Shrink.** A statement timeout (SQLSTATE `57014`) or a client
 //!   deadline (`timeout`) would repeat without end for the same batch: three
 //!   equal answered failures park the writer at 60 minutes. After such a

@@ -6,7 +6,8 @@
 //! database, so CI runs them on Linux too. They use a short deadline; the
 //! code path is the one of [`RUN_CALL_DEADLINE`](super::RUN_CALL_DEADLINE).
 //! The tests of the storage binary check the close after a success on the
-//! real database (`pg_stat_activity`).
+//! real database (`pg_stat_activity`). The tests of the pipeline writer use
+//! the fake server too, for the store that calls the storage.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -33,7 +34,7 @@ const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 /// What the fake server does after the startup.
 #[derive(Clone, Copy)]
-enum Mode {
+pub(crate) enum Mode {
     /// Reads and never answers.
     Silent,
     /// Answers each query (`Q`) and each `Sync` (`S`) with SQLSTATE 42P01
@@ -51,13 +52,13 @@ struct Counts {
 }
 
 /// A server that answers the startup and then follows its [`Mode`].
-struct FakeServer {
+pub(crate) struct FakeServer {
     port: u16,
     counts: Arc<Counts>,
 }
 
 impl FakeServer {
-    fn start(mode: Mode) -> Self {
+    pub(crate) fn start(mode: Mode) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let counts = Arc::new(Counts::default());
@@ -80,7 +81,7 @@ impl FakeServer {
 
     /// Settings without TLS: the fake server has no certificate. The path
     /// after the startup is the same as with TLS.
-    fn options(&self) -> PgConnectOptions {
+    pub(crate) fn options(&self) -> PgConnectOptions {
         PgConnectOptions::new_without_pgpass()
             .host("127.0.0.1")
             .port(self.port)

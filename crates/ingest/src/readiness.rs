@@ -59,6 +59,7 @@ pub enum Pipeline {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GateState {
     child_running: bool,
+    child_stops: u64,
     pipeline: Pipeline,
     shut: bool,
     epoch: u64,
@@ -67,6 +68,7 @@ pub struct GateState {
 impl GateState {
     const INITIAL: Self = Self {
         child_running: false,
+        child_stops: 0,
         pipeline: Pipeline::NotReady(PIPELINE_STARTING),
         shut: false,
         epoch: 0,
@@ -89,6 +91,15 @@ impl GateState {
     #[must_use]
     pub const fn child_running(&self) -> bool {
         self.child_running
+    }
+
+    /// The number of changes of gate condition 1 from true to false: one
+    /// for each child stop. A receiver of the watch channel can miss a
+    /// value when a stop and the next start come close together; the count
+    /// still shows the stop.
+    #[must_use]
+    pub const fn child_stops(&self) -> u64 {
+        self.child_stops
     }
 
     /// True after [`Readiness::shut`].
@@ -166,6 +177,9 @@ impl Readiness {
         self.state.send_if_modified(|state| {
             let before = *state;
             change(state);
+            if before.child_running && !state.child_running {
+                state.child_stops = state.child_stops.wrapping_add(1);
+            }
             if before.is_open() && !state.is_open() {
                 state.epoch = state.epoch.wrapping_add(1);
             }
@@ -312,6 +326,25 @@ mod tests {
         }
         let open = readiness.state().is_open();
         assert_eq!(names.last() == Some(&"gate_opened"), open);
+    }
+
+    #[tokio::test]
+    async fn a_stop_and_a_start_between_two_reads_still_count_the_stop() {
+        let (readiness, _sink) = readiness();
+        let mut receiver = readiness.subscribe();
+        readiness.set_child_running(true);
+        receiver.borrow_and_update();
+        assert_eq!(readiness.state().child_stops(), 0);
+        // The receiver reads only the last value: the child runs again.
+        readiness.set_child_running(false);
+        readiness.set_child_running(true);
+        let state = *receiver.borrow_and_update();
+        assert!(state.child_running());
+        assert_eq!(state.child_stops(), 1);
+        // A stop while the child does not run is no new stop.
+        readiness.set_child_running(false);
+        readiness.set_child_running(false);
+        assert_eq!(readiness.state().child_stops(), 2);
     }
 
     #[tokio::test]

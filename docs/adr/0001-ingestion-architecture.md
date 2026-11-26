@@ -129,7 +129,8 @@ The service `telemetry` runs one image with two processes.
        path";
   4. the queue did not close the gate. The queue closes the gate at the high
      mark. The gate opens again when the queue is below the low mark and the
-     last write succeeded.
+     last write succeeded, or when the queue is empty (issue #13, "No
+     permanent close").
 - When the gate closes, `ingest` stops forwarding and closes every
   forwarded connection. The vehicle then keeps its data in its own buffer
   (fact 1). This moves buffering to the vehicle whenever the consumer cannot
@@ -382,7 +383,8 @@ with reason `unknown_fields` (ADR 0002, "Unknown data").
    need the original bytes.
 2. The queue is bounded by 64 MiB, counted as the payload bytes plus the
    decoded rows of all items. High mark: 75 % closes
-   the gate. Low mark: 25 %, after a successful write, opens it again. The
+   the gate. Low mark: 25 %, after a successful write, opens it again; an
+   empty queue opens it after any write ("No permanent close"). The
    last 25 % takes the records that are in flight when the gate closes.
 3. If the queue is full, the reader drops the newest message, counts it, and
    keeps reading. The writer stores the count and the time range as a gap
@@ -530,7 +532,18 @@ sections above leave open. Each point has a test.
   schema of their own and shorter limits (`INGEST_TEST_*`, `src/config.rs`).
   Only a debug build reads these variables, and each one can only make
   its limit smaller. The image must run a release build
-  (`cargo build --release`), which never reads them.
+  (`cargo build --release`), which never reads them. What enforces this
+  rule: the `cfg!(debug_assertions)` gate in `src/main.rs` is the only
+  reader of `TestOverrides`, and the workspace sets no profile that turns
+  on debug assertions in a release build. The process tests show that a
+  debug build reads the variables and logs `test_overrides` as its first
+  line. No automated test runs the release binary: a manual run on 26
+  November 2026 showed that a release binary ignores
+  `INGEST_TEST_QUEUE_BYTES=1`, which a debug build rejects. The
+  deployment change must check the image binary: a start with
+  `INGEST_TEST_QUEUE_BYTES=1` does not stop with `invalid_configuration`,
+  and no log line is `test_overrides`. After each release, the deployment
+  log must hold no `test_overrides` line.
 - **ZMQ messages.** The first frame is the topic, the second frame the
   payload. A message with one frame has an empty payload; a message with
   more frames has the other frames joined, so no received byte is lost.
@@ -543,7 +556,12 @@ sections above leave open. Each point has a test.
   30 s) and sends the subscription again. Gate condition 2 is cleared on
   the `Disconnected` event of the socket and also when the child stops
   running, so that a restarted child cannot open the gate before the new
-  subscription has settled.
+  subscription has settled. The gate state counts the child stops, and
+  the reader compares the count, because the watch channel can merge a
+  stop and the next start into one value. The reader applies the stops
+  before each `Connected` event. So the counts of the shortfall check
+  start again for each new child, and a `Connected` event of a new child
+  always starts a settle time.
 - **No answer for the cadence and gate condition 3.** SQLSTATE class `08`
   and `57P` (for example `57P01`, the server ended the session at a Neon
   compute restart) count as no answer. They are transient and need no
@@ -568,6 +586,45 @@ sections above leave open. Each point has a test.
 - **Batches.** The writer writes the queue from the front, one
   transaction for each call (at most 5,000 signal rows and 8 MiB of
   messages), and removes the items after each commit.
+- **No permanent close.** Invariant: a gate condition of the pipeline is
+  false only while a future event of the process can make it true. No
+  state waits for an action of the owner or for a record that the closed
+  gate keeps out. Each condition has one owner, and the owner keeps the
+  invariant:
+  - Condition 4 (the queue): the queue holds the gate closed only while
+    it holds at least one item. While an item waits, the writer always
+    has a next attempt: a flush at once, because the closed queue wants a
+    flush, or a retry on the cadence, which never gives up. A successful
+    write opens the gate. An empty queue has no next write, so the queue
+    itself opens the gate when it becomes empty, also after a failed
+    write. Two paths empty the queue after a failure: the writer removes
+    a refused last record, or a failed write committed every record.
+    Review round 1 of PR #22 found the first path (finding B1): before
+    this rule, the gate stayed closed until a manual restart.
+  - Condition 3 (the writer): while the check has not passed (`Pending`,
+    `Refused`, or `Degraded`), the next check always has a time on the
+    cadence. A passed check stays passed for the process.
+  - Condition 2 (the reader): each child stop clears the condition, and
+    the `Connected` event of the next child always starts a settle time
+    ("SUB socket" above). Premises in `zeromq` 0.7.0, read in its source:
+    the reconnect loop has no attempt limit (`src/reconnect.rs`, line
+    134); the crate sends `Disconnected` of the old peer to the monitor
+    before it wakes the reconnect task (`src/backend.rs`, lines 321 to
+    338), and the reconnect task sends `Connected` after its backoff
+    (`src/reconnect.rs`, lines 144 and 168). One channel carries both
+    events, so the reader never sees the `Disconnected` event of the old
+    peer after the `Connected` event of the new one. The channel holds
+    1,024 events (`src/sub.rs`, line 106), and the crate drops an event
+    when it is full. The reader reads the channel at each turn of its
+    loop, and the watchdog ends a reader that stops for 30 s, so the
+    channel does not fill while the reader runs.
+  - Condition 1 (the supervisor): the supervisor restarts the child
+    without end (PR #18).
+  - The shutdown closes the gate for the rest of the process on purpose.
+    No path cancels a shutdown.
+  The tests: one for each path that empties the queue after a failure,
+  one for a full queue in degraded mode, one for a refused check that
+  passes later, and two for the order of a child stop and a connect.
 - **Refused record.** When the database refuses even the
   `unprocessed_record` row of a record (the defect case of the storage
   contract), the writer removes the record, logs the SQLSTATE, and records

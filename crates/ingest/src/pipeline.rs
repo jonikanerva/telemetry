@@ -28,12 +28,12 @@
 //! | Bound | Value | Source |
 //! | ----- | ----- | ------ |
 //! | Queue | 64 MiB of payload bytes and decoded rows | ADR 0001, "Delivery path", step 2 |
-//! | Gate marks | closes at 75 %, opens below 25 % after a successful write | ADR 0001, gate condition 4 |
+//! | Gate marks | closes at 75 %, opens below 25 % after a successful write, or when the queue is empty | ADR 0001, gate condition 4 |
 //! | Flush | oldest item 900 s old, 5,000 signal rows, the high mark, or the shutdown | ADR 0001, step 4 |
 //! | Settle | 250 ms after the `Connected` event of the SUB socket | ADR 0001, gate condition 2 |
 //! | Degraded mode | 120 s of no answer | ADR 0001, gate condition 3 |
 //! | Retry | 1 s, doubling to 5 minutes, with jitter; 60 minutes after three equal answered failures | ADR 0001, step 5 |
-//! | Shortfall check | each 60 s, one HTTP read of at most 1 MiB within 1 s | ADR 0001, "ZMQ shortfall check" |
+//! | Shortfall check | each 60 s, one HTTP read of at most 1 MiB within 0.75 s (the shutdown step bound of 1 s minus the step margin of 250 ms) | ADR 0001, "ZMQ shortfall check" |
 //! | Events | 10,000 events wait at most | this change |
 
 pub mod cadence;

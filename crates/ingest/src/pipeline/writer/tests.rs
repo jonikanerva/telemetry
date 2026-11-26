@@ -406,6 +406,8 @@ async fn an_answered_failure_keeps_the_gate_closed_and_slows_to_60_minutes() {
     // 0, then 1 s, 2 s, then 60 minutes after the third equal failure.
     assert_eq!(checks, [0, 1, 3, 3_603, 7_203]);
     assert_eq!(harness.conditions.database(), Database::Passed);
+    // The refused state has a next check, so it does not last.
+    assert!(harness.readiness.state().is_healthy());
     harness.shut_down(secs(20)).await;
 }
 
@@ -707,6 +709,131 @@ async fn the_final_flush_runs_the_check_first() {
     // 2,500 ms.
     assert_eq!(checks, [0, 1_000, 1_500, 2_500]);
     assert_eq!(harness.records(), payloads(&["a"]));
+}
+
+// The gate conditions of the writer and the queue never stay false without
+// a next event that can make them true (ADR 0001, "No permanent close").
+
+/// Limits with a queue bound of 2.5 items without signal rows: two items
+/// reach the high mark.
+fn two_item_limits() -> Limits {
+    let one = item("x", 0).bytes();
+    Limits {
+        queue_bytes: one * 2 + one / 2,
+        ..Limits::PRODUCTION
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_last_record_does_not_keep_the_gate_closed() {
+    // Review round 1 of PR #22, finding B1: a failed write, then the defect
+    // case removes the last record.
+    let script = Script {
+        writes: [
+            fail(NO_ANSWER),
+            Step::Fail {
+                error: data("22021"),
+                committed: 1,
+            },
+        ]
+        .into(),
+        ..Script::default()
+    };
+    let mut harness = start(script, two_item_limits());
+    harness.push("a", 0);
+    harness.push("b", 0);
+    sleep(secs(10)).await;
+    assert!(harness.queue.is_empty());
+    assert_eq!(harness.records(), payloads(&["a"]));
+    sleep(Duration::from_secs(7200)).await;
+    assert_eq!(harness.readiness.state().closed_reason(), None);
+    harness.shut_down(secs(20)).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_write_that_committed_every_record_does_not_keep_the_gate_closed() {
+    // A failure after the last commit: the queue is empty, and no write
+    // follows.
+    let script = Script {
+        writes: [
+            fail(NO_ANSWER),
+            Step::Fail {
+                error: NO_ANSWER,
+                committed: 2,
+            },
+        ]
+        .into(),
+        ..Script::default()
+    };
+    let mut harness = start(script, two_item_limits());
+    harness.push("a", 0);
+    harness.push("b", 0);
+    sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        harness.readiness.state().closed_reason(),
+        Some("queue_high_mark")
+    );
+    sleep(secs(10)).await;
+    assert!(harness.queue.is_empty());
+    assert_eq!(harness.records(), payloads(&["a", "b"]));
+    assert!(harness.readiness.state().is_healthy());
+    harness.shut_down(secs(20)).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_full_queue_in_degraded_mode_opens_the_gate_when_a_check_passes() {
+    // The checks fail without an answer until 255 s (see
+    // `no_answer_for_120_s_enters_degraded_mode_and_a_later_check_ends_it`).
+    let script = Script {
+        checks: std::iter::repeat_n(fail(NO_ANSWER), 8).collect(),
+        ..Script::default()
+    };
+    let mut harness = start(script, two_item_limits());
+    sleep(secs(130)).await;
+    assert_eq!(harness.conditions.database(), Database::Degraded);
+    harness.push("a", 0);
+    harness.push("b", 0);
+    sleep(secs(1)).await;
+    // No write before a check has passed: the queue keeps the gate closed.
+    assert_eq!(
+        harness.readiness.state().closed_reason(),
+        Some("queue_high_mark")
+    );
+    assert_eq!(harness.writes(), Vec::<(Duration, usize)>::new());
+    sleep(secs(130)).await;
+    assert_eq!(harness.writes(), [(secs(255), 2)]);
+    assert!(harness.readiness.state().is_healthy());
+    harness.shut_down(secs(20)).await;
+}
+
+#[tokio::test]
+async fn the_database_store_passes_the_progress_hook_to_the_storage() {
+    // Review round 1 of PR #22, mutation M10. The storage calls the hook
+    // after the connect. The fake server answers the startup without TLS
+    // and refuses each query, so each call ends at once with an answered
+    // failure.
+    use crate::storage::deadline_tests::{FakeServer, Mode};
+    let server = FakeServer::start(Mode::Refuse);
+    let mut store = DatabaseStore::new(server.options(), Uuid::nil());
+    let record = item("a", 1);
+
+    let mut beats = 0_u32;
+    let failure = store
+        .write(&[record.queued()], &mut || beats += 1)
+        .await
+        .unwrap_err();
+    assert_eq!(failure.error.class, FailureClass::Answered);
+    assert!(beats >= 1, "the write call did not run the hook");
+
+    let mut beats = 0_u32;
+    let error = store
+        .write_events(&[IngestEvent::now(EventKind::Started)], &mut || {
+            beats += 1;
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.class, FailureClass::Answered);
+    assert!(beats >= 1, "the events call did not run the hook");
 }
 
 /// Runs a writer with `script` and a watchdog with the writer limit

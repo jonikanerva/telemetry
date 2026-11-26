@@ -13,8 +13,16 @@
 //!   drops the newest message and counts it (ADR 0001, step 3).
 //! - **Gate marks.** At 75 % of the bound the queue closes the gate (gate
 //!   condition 4). The gate opens again when the queue holds less than 25 %
-//!   and the last write succeeded. The last 25 % takes the records that are
-//!   in flight when the gate closes.
+//!   and the last write succeeded, or when the queue is empty. The last
+//!   25 % takes the records that are in flight when the gate closes.
+//! - **Invariant: no permanent close.** The queue holds the gate closed
+//!   only while it holds at least one item. While an item waits, the writer
+//!   always has a next attempt (a flush at once, because the closed queue
+//!   wants a flush, or a retry on the cadence, which never gives up), and a
+//!   successful write opens the gate. An empty queue has no next write, so
+//!   it opens the gate itself: for example after a failed write that
+//!   committed every record, or after the writer removed a refused last
+//!   record (ADR 0001, gate condition 4).
 //! - **Order.** The reader adds items at the back. Only the writer removes
 //!   items, from the front, after their commit. So the front of the queue
 //!   does not change while the writer writes a batch, and the lock is never
@@ -313,8 +321,12 @@ impl Queue {
         self.reopen(&mut inner);
     }
 
+    /// The only place that opens gate condition 4 again (module
+    /// documentation, "Gate marks"). An empty queue always opens it: no
+    /// item waits, so no write follows that could set `last_write_ok`.
     fn reopen(&self, inner: &mut Inner) {
-        if inner.closed && inner.last_write_ok && inner.stats.bytes < self.low_mark {
+        let may_open = inner.last_write_ok || inner.items.is_empty();
+        if inner.closed && may_open && inner.stats.bytes < self.low_mark {
             inner.closed = false;
             self.conditions.set_queue_closed(false);
         }
@@ -463,15 +475,42 @@ mod tests {
     async fn the_gate_stays_closed_below_the_low_mark_after_a_failed_write() {
         let fixture = fixture(4000, 5000);
         let queue = &fixture.queue;
-        for _ in 0..3 {
-            assert!(queue.push(item_of(1000)));
+        for _ in 0..4 {
+            assert!(queue.push(item_of(750)));
         }
         queue.set_last_write_ok(false);
+        // 750 bytes: below the low mark, but an item waits for the retry.
         queue.remove(3);
-        assert!(queue.is_empty());
         assert!(!fixture.readiness.state().is_open());
         queue.set_last_write_ok(true);
         assert!(fixture.readiness.state().is_open());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_empty_queue_never_holds_the_gate_closed() {
+        // The invariant of the module documentation: after a failed write,
+        // no later write comes when the queue is empty, in any order of the
+        // two reports.
+        for remove_first in [false, true] {
+            let fixture = fixture(4000, 5000);
+            let queue = &fixture.queue;
+            for _ in 0..3 {
+                assert!(queue.push(item_of(1000)));
+            }
+            assert!(!fixture.readiness.state().is_open());
+            if remove_first {
+                queue.remove(3);
+                queue.set_last_write_ok(false);
+            } else {
+                queue.set_last_write_ok(false);
+                queue.remove(3);
+            }
+            assert!(queue.is_empty());
+            assert!(
+                fixture.readiness.state().is_open(),
+                "remove first: {remove_first}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
