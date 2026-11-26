@@ -191,6 +191,10 @@ struct Harness {
     task: JoinHandle<()>,
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "a test helper that copies the limits once for each test"
+)]
 fn start(script: Script, limits: Limits) -> Harness {
     let script = Arc::new(Mutex::new(script));
     let wake = Arc::new(Notify::new());

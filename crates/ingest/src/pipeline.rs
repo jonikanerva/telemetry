@@ -31,7 +31,7 @@
 //! | Gate marks | closes at 75 %, opens below 25 % after a successful write, or when the queue is empty | ADR 0001, gate condition 4 |
 //! | Flush | oldest item 900 s old, 5,000 signal rows, the high mark, or the shutdown | ADR 0001, step 4 |
 //! | Settle | 250 ms after the connect and the subscription of a SUB socket | ADR 0001, gate condition 2 |
-//! | Socket rebuild | drain the old socket to its end, at most 1 s (quiet 200 ms); after a lost peer, wait 0, then 100 ms doubling to 5 s | ADR 0001, "SUB socket" |
+//! | Socket rebuild | drain the old socket to its end, at most 1 s (quiet 200 ms); after a lost peer, wait 0, then 100 ms doubling to 5 s; after a stall, wait 0, then 30 s doubling to 15 minutes with the gate closed | ADR 0001, "SUB socket" |
 //! | Degraded mode | 120 s of no answer | ADR 0001, gate condition 3 |
 //! | Retry | 1 s, doubling to 5 minutes, with jitter; 60 minutes after three equal answered failures | ADR 0001, step 5 |
 //! | Shortfall check and stall rule | each 15 s, one HTTP read of at most 1 MiB within 0.75 s (the shutdown step bound of 1 s minus the step margin of 250 ms) | ADR 0001, "ZMQ shortfall check" and "SUB socket" |
@@ -89,6 +89,12 @@ pub struct Limits {
     pub rebuild_backoff_first: Duration,
     /// The longest wait before a new SUB socket after a lost peer.
     pub rebuild_backoff_max: Duration,
+    /// The wait before a new SUB socket after the second stall in a row.
+    pub stall_backoff_first: Duration,
+    /// The longest wait before a new SUB socket after a stall. It stays
+    /// below the vehicle buffer of 2,500 s, which holds the records while
+    /// the gate is closed.
+    pub stall_backoff_max: Duration,
     /// The most events that wait for the writer.
     pub max_events: usize,
     /// The shortest time between two `records_dropped` events of the
@@ -115,6 +121,8 @@ impl Limits {
         rebuild_quiet: Duration::from_millis(200),
         rebuild_backoff_first: Duration::from_millis(100),
         rebuild_backoff_max: Duration::from_secs(5),
+        stall_backoff_first: Duration::from_secs(30),
+        stall_backoff_max: Duration::from_mins(15),
         max_events: 10_000,
         drop_event_interval: Duration::from_secs(60),
     };
@@ -144,5 +152,8 @@ mod tests {
         // records stays far below the vehicle buffer of 2,500 s (ADR 0001,
         // "SUB socket").
         assert!(limits.shortfall_period * 2 <= Duration::from_secs(30));
+        // While the reader waits after repeated stalls, the gate is closed
+        // and the vehicle buffers.
+        assert!(limits.stall_backoff_max < Duration::from_secs(2_500));
     }
 }

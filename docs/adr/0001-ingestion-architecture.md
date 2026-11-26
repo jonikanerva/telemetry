@@ -502,7 +502,7 @@ visible:
 | Restart during a database outage, including a Neon suspension after 100 CU-hours, which lasts until the next billing period [N1] | The queue that existed before the restart is lost (crash line). After the restart the gate stays closed for 120 s (vehicle buffer only), then opens in degraded mode. Then as in the outage line. | As in the crash and outage lines. A Neon suspension also shows as failed writes in the log. |
 | Shutdown flush fails within 20 s, for example a deploy during a database outage | The queue at shutdown. | The log has the count. A `stopped` event cannot be written. |
 | The child dies by itself | Messages in its libzmq send queue: milliseconds of data. | `child_exited` event. The count is unknown. |
-| The SUB socket stops receiving while the gate is open (for example the `zeromq` defect of "SUB socket", or a lost `Disconnected` event) | The records that the child dispatched and acked for at most two metrics periods (30 s), plus about 2 s for the read and the new socket; one more period after a failed read. The vehicle does not resend acked records. | `zmq_shortfall` events with the count, the `gate_closed` event with the reason `subscriber_stalled`, and the log line `subscriber_rebuilt`. |
+| The SUB socket stops receiving while the gate is open (for example the `zeromq` defect of "SUB socket", or a lost `Disconnected` event) | The records that the child dispatched and acked for at most two metrics periods (30 s), plus about 2 s for the read and the new socket; one more period (45 s) for a new socket of the same child or after a failed read. This holds each time the gate opens a stalled socket; after repeated stalls the gate stays closed for 30 s, doubling to 15 minutes, and the vehicle buffers. The vehicle does not resend acked records. | `zmq_shortfall` events with the count, the `gate_closed` event with the reason `subscriber_stalled`, and the log line `subscriber_rebuilt`. |
 | A connection closes with messages that were sent but not acked (gate closing, deploy, rate limit) | Those messages, if the vehicle does not resend them (fact 1, not verified). | None in `ingest`. Stored `is_resend` values show whether resends happen. |
 | Accepted risk: a peer that stalls inside the TLS handshake | A live peer holds one connection until it closes it. A peer that goes away holds it until the dead-peer bound closes it (gate rule 3): about 150 s after its last answer when no data is unacknowledged (keep-alive), about 925 to 1,045 s when data is unacknowledged (retransmission timeout, `tcp_retries2` 15). Both are below the vehicle buffer of at least 2,500 s. This is the same class of exposure that upstream has today. If the Railway proxy terminates TCP, the close of a gone peer depends on the proxy (deployment check). | None for a single peer. |
 | Accepted risk: a flood that fills the 1024-connection bound | No new connection while the flood holds the bound: while the flooding peers keep their connections alive, plus the dead-peer bound after they go away (about 150 s idle, about 925 to 1,045 s with unacknowledged data). The vehicle cannot connect and relies on its own buffer (at least 2,500 s). Then as in the next line. | `gate_full` events, and gaps between `connectivity_event` rows. |
@@ -591,19 +591,32 @@ sections above leave open. Each point has a test.
     least one period before: a drop at the libzmq high water mark drops
     the newest records, and the queued older ones still arrive. An idle
     child dispatches nothing, so the rule cannot act while no vehicle is
-    connected. The reader then clears gate condition 2 with the reason
+    connected. The rule takes the received count from a snapshot before
+    the metrics request, so a record that arrives during the request
+    does not look older than the counter of the child. A new socket of
+    the same child starts with no point, so records that the child
+    dispatched before the new subscription do not count against it. The
+    reader then clears gate condition 2 with the reason
     `subscriber_stalled` and replaces the socket. The rule names the
     socket that it judged, so a request cannot replace a newer socket.
-    After the `n`-th stall request in a row without a received record,
-    the next request waits `2^n` reads (at most 64 reads, 16 minutes).
+  - **Repeated stalls.** The first stall gets a new socket at once. After
+    each further stall in a row without a received record, the reader
+    waits 30 s, doubling to 15 minutes, before the next socket, and gate
+    condition 2 stays false during the wait. So the vehicle keeps its
+    data in its own buffer (at least 2,500 s) during the wait, and the
+    gate opens a stalled socket for at most one detection window between
+    two waits. A received record or a child stop ends the row.
   - **Period.** The shortfall check and the stall rule share one metrics
     read each 15 s (it was 60 s before review round 2). One read is a
     small HTTP request on the loopback interface.
   - **Detection bound.** Records can be lost for at most two periods
     (30 s) after the first record that the stalled socket did not
     receive, plus the read deadline of 0.75 s and the replacement (at
-    most 1 s of drain and one connect). After a failed metrics read, add
-    one period. In that window `fleet-telemetry` acks each record after
+    most 1 s of drain and one connect). For a new socket of the same
+    child, and after a failed metrics read, add one period (45 s). This
+    bound holds for each time that the gate opens a stalled socket;
+    between two such times the gate stays closed ("Repeated stalls"). In
+    that window `fleet-telemetry` acks each record after
     it hands the record to the PUB socket, and PUB drops it without a
     subscriber (fact 2, the `zmq` row of fact 3). So the vehicle does not
     resend these records: they are lost, and the `zmq_shortfall` events

@@ -120,6 +120,14 @@ struct Run {
 
 impl Run {
     fn start(endpoint: String) -> Self {
+        Self::start_with(endpoint, Limits::PRODUCTION)
+    }
+
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "a test helper that copies the limits once for each test"
+    )]
+    fn start_with(endpoint: String, limits: Limits) -> Self {
         let sink = RecordingSink::default();
         let readiness = Arc::new(Readiness::new(Arc::new(sink.clone())));
         readiness.set_child_running(true);
@@ -129,7 +137,7 @@ impl Run {
         ));
         conditions.set_database(Database::Passed);
         let queue = Arc::new(Queue::new(
-            &Limits::PRODUCTION,
+            &limits,
             Arc::clone(&conditions),
             Arc::new(tokio::sync::Notify::new()),
         ));
@@ -137,7 +145,7 @@ impl Run {
         let (stalled, stall_requests) = watch::channel(None);
         let reader = Reader {
             endpoint,
-            limits: Limits::PRODUCTION,
+            limits,
             queue: Arc::clone(&queue),
             conditions: Arc::clone(&conditions),
             received: Arc::clone(&received),
@@ -274,6 +282,53 @@ async fn a_stall_request_replaces_only_the_named_socket() {
     // reason of the stall.
     assert_eq!(run.received.snapshot().generation, 1);
     assert_eq!(run.closed_reasons(), ["subscriber_stalled"]);
+    run.stop().await;
+    drop(publisher);
+}
+
+#[tokio::test]
+async fn a_second_stall_in_a_row_waits_with_the_gate_closed() {
+    let (mut publisher, endpoint) = publisher().await;
+    let limits = Limits {
+        stall_backoff_first: Duration::from_millis(600),
+        ..Limits::PRODUCTION
+    };
+    let run = Run::start_with(endpoint, limits);
+    run.wait_ready_on(1).await;
+    // The first stall: a new socket at once.
+    run.stalled.send_replace(Some(1));
+    run.wait_ready_on(2).await;
+    // The second stall in a row: the gate stays closed for the wait.
+    let stalled_at = Instant::now();
+    run.stalled.send_replace(Some(2));
+    run.wait_until(Duration::from_secs(5), "closed", |run| {
+        run.conditions.pipeline() == Pipeline::NotReady("subscriber_stalled")
+    })
+    .await;
+    run.wait_ready_on(3).await;
+    assert!(
+        stalled_at.elapsed() >= Duration::from_millis(600),
+        "{:?}",
+        stalled_at.elapsed()
+    );
+    // A received record ends the row: the next stall gets a new socket at
+    // once again.
+    publisher
+        .send(message(&[b"tesla_telemetry_V", b"x"]))
+        .await
+        .unwrap();
+    run.wait_until(Duration::from_secs(5), "received", |run| {
+        run.received.snapshot().vehicle_data == 1
+    })
+    .await;
+    let stalled_at = Instant::now();
+    run.stalled.send_replace(Some(3));
+    run.wait_ready_on(4).await;
+    assert!(
+        stalled_at.elapsed() < Duration::from_millis(600),
+        "{:?}",
+        stalled_at.elapsed()
+    );
     run.stop().await;
     drop(publisher);
 }

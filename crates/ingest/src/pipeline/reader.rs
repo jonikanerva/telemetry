@@ -38,6 +38,14 @@
 //!   latest after [`Limits::rebuild_drain`] (1 s). Then the reader drops
 //!   the socket and makes a new one. So a rebuild loses no record that
 //!   the old socket received.
+//! - **Waits.** After a lost peer, the next socket waits 0, then
+//!   [`Limits::rebuild_backoff_first`] (100 ms) doubling to
+//!   [`Limits::rebuild_backoff_max`] (5 s). After a stall, it waits 0,
+//!   then [`Limits::stall_backoff_first`] (30 s) doubling to
+//!   [`Limits::stall_backoff_max`] (15 minutes), with gate condition 2
+//!   false, so a socket that stalls again and again cannot keep the gate
+//!   open. A received record resets both waits; a child stop resets them
+//!   and ends a wait.
 //! - **Generation.** The first socket after a child stop starts a new
 //!   generation of the received counts, because the counter of a new child
 //!   starts at 0. The stop count of the gate state shows each stop, also
@@ -172,16 +180,16 @@ impl Rebuild {
         !matches!(self, Self::PeerLost | Self::SubscribeFailed)
     }
 
-    /// True when the next socket waits for the backoff. A peer that ends
-    /// again and again must not make a busy loop.
+    /// True when the next socket waits for the backoff of a lost peer. A
+    /// peer that ends again and again must not make a busy loop.
     const fn backs_off(self) -> bool {
         matches!(self, Self::PeerLost | Self::SubscribeFailed)
     }
 }
 
-/// The wait before a new socket after a lost peer: none, then the first
-/// wait, doubling to the longest one. A received message or a child stop
-/// resets it.
+/// The wait before a new socket: none, then the first wait, doubling to
+/// the longest one. A received message or a child stop resets it. The
+/// reader has one for lost peers and one for stalls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Backoff {
     next: Duration,
@@ -312,7 +320,12 @@ struct Loop {
     drops: CountThrottle,
     /// The count of child stops of the current generation.
     generation_stops: Option<u64>,
+    /// The wait after a lost peer.
     backoff: Backoff,
+    /// The wait after a stall, with gate condition 2 false: a socket that
+    /// stalls again and again must not open the gate for one detection
+    /// window after each new socket (ADR 0001, "SUB socket").
+    stall_backoff: Backoff,
     /// False after the sender of the gate state is gone.
     gate_open: bool,
     /// False after the sender of the stall requests is gone.
@@ -369,6 +382,10 @@ impl Reader {
             backoff: Backoff::new(
                 self.limits.rebuild_backoff_first,
                 self.limits.rebuild_backoff_max,
+            ),
+            stall_backoff: Backoff::new(
+                self.limits.stall_backoff_first,
+                self.limits.stall_backoff_max,
             ),
             gate_open: true,
             stalled_open: true,
@@ -464,6 +481,7 @@ impl Reader {
             let new_child = state.generation_stops != Some(stops);
             if new_child {
                 state.backoff.reset();
+                state.stall_backoff.reset();
             }
             state.generation_stops = Some(stops);
             let id = self.received.connected(new_child);
@@ -488,6 +506,7 @@ impl Reader {
                 message = live.socket.recv() => {
                     if message.is_ok() {
                         state.backoff.reset();
+                        state.stall_backoff.reset();
                     }
                     self.message(message, state);
                 }
@@ -550,6 +569,7 @@ impl Reader {
         }
         if reason == Rebuild::ChildStopped {
             state.backoff.reset();
+            state.stall_backoff.reset();
         }
         if reason.drains() {
             let mut end = Drain::new(
@@ -579,11 +599,35 @@ impl Reader {
                 }
             }
         }
+        let stops = live.stops;
         drop(live);
-        if reason.backs_off() {
-            return waits.pause(state.backoff.take()).await;
+        let wait = if reason == Rebuild::Stalled {
+            state.stall_backoff.take()
+        } else if reason.backs_off() {
+            state.backoff.take()
+        } else {
+            Duration::ZERO
+        };
+        // Gate condition 2 stays false during the wait. A child stop ends
+        // the wait: the next socket is the first one to a new child.
+        let pause = sleep(wait);
+        tokio::pin!(pause);
+        loop {
+            tokio::select! {
+                () = &mut pause => return true,
+                _ = waits.tick.tick() => waits.heartbeat.beat(),
+                changed = self.gate.changed(), if state.gate_open => {
+                    if changed.is_err() {
+                        state.gate_open = false;
+                    } else if self.gate.borrow_and_update().child_stops() != stops {
+                        state.backoff.reset();
+                        state.stall_backoff.reset();
+                        return true;
+                    }
+                }
+                _ = &mut *waits.drain => return false,
+            }
         }
-        true
     }
 
     /// The drain of the shutdown (module documentation).
