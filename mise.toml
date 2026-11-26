@@ -88,24 +88,112 @@ description = "Vulnerability check (STACK.md §3): Rust dependencies and the FRO
 # $DOCKER_CONFIG/config.json when that file exists. The task points
 # DOCKER_CONFIG at a temporary directory with an empty config.json, so the
 # pulls are anonymous and the local credential files are not read.
-run = """
+# Each image scan reads the reviewed ignore file
+# docs/security/osv-scanner-<repository with / as ->.toml. The entries rely
+# on premises of the Dockerfile, entrypoint.sh, and config/server_config.json
+# (docs/security/image-advisories.md). The task checks these premises first
+# and fails when one breaks, so that the triage is done again.
+# The script is a TOML literal string: backslashes reach the shell as written.
+run = '''
 status=0
+# Dockerfile premise: a strict allowlist, not a parser. The instruction
+# lines must equal the expected lines of this project. Only the two image
+# tags may change. Any other change fails, and the allowlist below must be
+# updated in the same change as the Dockerfile, with a new triage.
+dockerfile_fail() {
+  echo "vuln: $1. Update the Dockerfile allowlist of the vuln task (mise.toml) and docs/security/image-advisories.md together with the Dockerfile."
+  status=1
+}
+if LC_ALL=C grep -q "$(printf '[^\t -~]')" Dockerfile; then
+  dockerfile_fail "the Dockerfile has a byte outside printable ASCII, tab, and newline"
+fi
+if grep -qiE '^#[[:space:]]*[a-z]+[[:space:]]*=' Dockerfile; then
+  dockerfile_fail "the Dockerfile has a parser directive (# name=value)"
+fi
+instructions="$(grep -vE '^(#.*)?$' Dockerfile || true)"
+upstream_tag="$(printf '%s\n' "$instructions" | sed -n '1s/^FROM tesla\/fleet-telemetry:\([A-Za-z0-9._-]*\) AS upstream$/\1/p')"
+base_tag="$(printf '%s\n' "$instructions" | sed -n '2s/^FROM debian:\([A-Za-z0-9._-]*\)$/\1/p')"
+expected="$(printf '%s\n' \
+  "FROM tesla/fleet-telemetry:$upstream_tag AS upstream" \
+  "FROM debian:$base_tag" \
+  'RUN apt-get update \' \
+  '    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \' \
+  '    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \' \
+  '    && rm -rf /var/lib/apt/lists/*' \
+  'COPY --from=upstream /fleet-telemetry /fleet-telemetry' \
+  'COPY config/server_config.json /etc/fleet-telemetry/config.json' \
+  'COPY entrypoint.sh /entrypoint.sh' \
+  'RUN chmod +x /entrypoint.sh' \
+  'EXPOSE 4443' \
+  'ENTRYPOINT ["/entrypoint.sh"]')"
+if [ -z "$upstream_tag" ] || [ -z "$base_tag" ] || [ "$instructions" != "$expected" ]; then
+  dockerfile_fail "the instruction lines of the Dockerfile differ from the allowlist"
+fi
+images=""
+if [ -n "$upstream_tag" ] && [ -n "$base_tag" ]; then
+  images="tesla/fleet-telemetry:$upstream_tag debian:$base_tag"
+fi
+# The server reads the config that the Dockerfile copies (allowlist above).
+if [ "$(grep -c -- '-config' entrypoint.sh || true)" -ne 1 ] ||
+  ! grep -qx 'exec /fleet-telemetry -config /etc/fleet-telemetry/config.json' entrypoint.sh; then
+  echo "vuln: entrypoint.sh must start the server with -config /etc/fleet-telemetry/config.json and no other -config"
+  status=1
+fi
+# fleet-telemetry decodes its config with Go encoding/json: keys match
+# without letter case, a repeated key decodes again into the same field (a
+# repeated object merges into the first one), and only the first JSON value
+# of the file counts. jq is case sensitive and keeps only the last of two
+# equal keys. So the check requires lowercase keys, exactly one JSON value,
+# and the same leaf paths in the token stream and in the parsed value; a
+# repeated key of any kind breaks the last rule.
+config=config/server_config.json
+if ! jq -e '
+  def lower_keys: keys | all(test("^[a-z0-9_]+$"));
+  lower_keys
+  and ((.monitoring // {}) | lower_keys)
+  and ((.tls // {}) | lower_keys)
+  and ([(.records // {}) | .[][]] | all(. == "logger" or . == "zmq"))
+  and ((.use_default_eng_ca // false) == false)
+  and ((.tls.ca_file // "") == "")
+  and ((.status_port // 0) == 0)
+  and ((.monitoring.profiler_port // 0) == 0)
+  and ((.monitoring.prometheus_metrics_host // "127.0.0.1") == "127.0.0.1")
+' "$config" > /dev/null ||
+  ! jq -s -e 'length == 1' "$config" > /dev/null ||
+  [ "$(jq -n -c --stream '[inputs | select(length == 2) | .[0]] | sort' "$config")" != \
+    "$(jq -c '[path(.. | select((type != "object" and type != "array") or length == 0))] | sort' "$config")" ]; then
+  echo "vuln: $config breaks a premise of the ignore files (key case, one JSON value, repeated keys, dispatchers, client CAs, or listeners)"
+  status=1
+fi
 cargo deny --locked check advisories || status=1
 osv-scanner scan source -r . || status=1
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 printf '{}' > "$work/config.json"
 export DOCKER_CONFIG="$work"
-for image in $(awk '/^FROM/ { print $2 }' Dockerfile); do
+scanned=0
+for image in $images; do
   echo "image: $image"
   if crane pull --platform linux/amd64 "$image" "$work/image.tar"; then
     crane digest --platform linux/amd64 "$image"
-    osv-scanner scan image --archive "$work/image.tar" || status=1
+    ignore_file="docs/security/osv-scanner-$(printf '%s' "${image%%[:@]*}" | tr '/' '-').toml"
+    if [ -f "$ignore_file" ]; then
+      osv-scanner scan image --config "$ignore_file" --archive "$work/image.tar" || status=1
+    else
+      echo "vuln: no reviewed ignore file $ignore_file for $image"
+      osv-scanner scan image --archive "$work/image.tar" || true
+      status=1
+    fi
+    scanned=$((scanned + 1))
   else
     echo "vuln: cannot download $image"
     status=1
   fi
   rm -f "$work/image.tar"
 done
+if [ "$scanned" -ne 2 ]; then
+  echo "vuln: scanned $scanned images, but the Dockerfile allowlist has 2 FROM lines"
+  status=1
+fi
 exit "$status"
-"""
+'''

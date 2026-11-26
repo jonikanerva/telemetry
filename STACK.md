@@ -314,7 +314,7 @@ entry cannot replace it.
 | `test`   | `cargo nextest run --workspace --locked` and `cargo test --doc --workspace --locked`                                                 |
 | `verify` | Format check without edits, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the JSON syntax of `config/`, the shell syntax of `entrypoint.sh`, no tracked `.env*`, `secrets/`, or `.bin/` path, `build`, and `test`. Stops at the first failure. |
 | `deps`   | The dependency freshness check below: the crates, the mise tools, the Rust toolchain, and the `FROM` images of the `Dockerfile` (newest `tesla/fleet-telemetry` release tag, current Debian stable release). |
-| `vuln`   | `cargo deny --locked check advisories`, `osv-scanner scan source -r .`, and `osv-scanner scan image --archive` for each `FROM` image of the `Dockerfile`. crane downloads each image for `linux/amd64` as a Docker archive, with `DOCKER_CONFIG` set to a temporary directory that holds an empty `config.json`, so the pulls are anonymous and no local credential file is read. No container runtime is needed. Runs every scan; fails when a scan fails or finds a vulnerability. |
+| `vuln`   | `cargo deny --locked check advisories`, `osv-scanner scan source -r .`, and `osv-scanner scan image --archive` for each `FROM` image of the `Dockerfile`. crane downloads each image for `linux/amd64` as a Docker archive, with `DOCKER_CONFIG` set to a temporary directory that holds an empty `config.json`, so the pulls are anonymous and no local credential file is read. No container runtime is needed. Each image scan reads the reviewed ignore file `docs/security/osv-scanner-<repository, / as ->.toml` (`--config`); an image without a file fails. First checks the premises of the ignore files. Dockerfile: a strict allowlist; after removal of empty lines and `#` lines, the lines must equal the expected lines of this project, and only the two image tags may change (printable ASCII only, no parser directive); the expected lines copy only `/fleet-telemetry` from the upstream image and the config only from `config/server_config.json`. `entrypoint.sh`: the server starts with `-config /etc/fleet-telemetry/config.json`, and no other `-config` exists. `config/server_config.json`: exactly one JSON value, the same leaf paths in the `jq --stream` token stream and in the parsed value (no repeated key, also no repeated object), lowercase keys in the root, `monitoring`, and `tls` objects, dispatchers `logger` or `zmq` only, no extra client CA, no status port or profiler, metrics on loopback. Runs every scan; fails when a premise breaks, a scan fails, a scan finds a vulnerability that no entry covers, or the task did not scan the two images of the allowlist. A Dockerfile change needs an allowlist change in the same PR. |
 
 Pinned tools: cargo-nextest 0.9.152, cargo-deny 0.22.1, cargo-shear 1.14.1,
 Gitleaks 8.30.1, osv-scanner 2.7.1, SQLx CLI 0.9.1 (features `postgres` and
@@ -325,18 +325,30 @@ Scope and gaps of `vuln`:
 - The image scan covers the two `FROM` images, not the image that Railway
   builds. Only `/fleet-telemetry` comes from `tesla/fleet-telemetry`, so
   the Debian 12 package findings of that image are not in production. The
-  packages that `apt-get` adds during the Railway build are not scanned
-  (§13).
+  packages that `apt-get` installs or upgrades during the Railway build are
+  not scanned (§13).
 - `linux/amd64` is an assumption about the Railway host. It is not
   verified.
-- The Rust toolchain and the mise tools have no scanner (§13).
-- An image scan of Debian always shows advisories that Debian has not
-  fixed. The lead triages each run and compares the counts with the last run.
-- `verify` does not include `vuln`. `vuln` fails on advisories that no
-  change in this repository can fix today, so `verify` would always fail.
-  `verify` keeps `cargo deny --locked check`, which covers the advisories
-  of the Rust dependencies. Reassess when issue #15 delivers a reviewed
-  ignore list for the known image advisories.
+- The Rust toolchain and the mise tools have no scanner (§13). The static
+  C libraries inside `/fleet-telemetry` (libzmq with its tweetnacl copy,
+  librdkafka with its bundled libraries) have no scanner either (§13).
+- The triage `docs/security/image-advisories.md` records a decision for
+  each image advisory. The ignore files contain only advisories with a
+  recorded decision, each with a reason and an expiry date. A new
+  advisory, an expired entry, or a broken premise fails `vuln`. Then the
+  lead triages the finding in a `chore/deps-<topic>` PR. A "needs action"
+  finding gets no entry.
+- `vuln` does not read the CISA KEV catalog. At each vulnerability check,
+  compare the CVE IDs of the ignored advisories with the catalog.
+- `verify` does not include `vuln`. Reassessed with issue #15: with the
+  ignore files, `vuln` passes, but new gating image advisories arrived on
+  9 days between 30 October and 25 November 2026 (evidence in
+  `docs/security/image-advisories.md`). In `verify`, each would block every
+  open change until a reviewed triage merges. `vuln` therefore stays a
+  separate required check at the points of DOCTRINE.md P7. `verify` keeps
+  `cargo deny --locked check`, which covers the advisories of the Rust
+  dependencies. Reassess when a scheduled CI run can execute `vuln`, or
+  when the gating advisory rate falls below one each month over 60 days.
 
 Scope and gaps of `verify`:
 
@@ -661,7 +673,8 @@ remain in GitHub.
 
 | Rule / scope | Reason and consequences | Compensating evidence | Responsible lead / reviewer / approval | Expiry or reassessment |
 | ------------ | ----------------------- | --------------------- | -------------------------------------- | ---------------------- |
-| §3, §14: vulnerability check of the built ingest image layer, the Rust toolchain, and the mise tools | The earlier exception for all freshness and vulnerability checks ends with this first application PR. `mise run vuln` now scans the crates in `Cargo.lock` and both `FROM` images of the `Dockerfile` as archives (crane and `osv-scanner scan image --archive`, no container runtime). Two surfaces stay without a scanner. (1) The image that Railway builds: it stays in the Railway registry, and no local container runtime can build it. The packages that `apt-get` adds during the build (`ca-certificates`, `libstdc++6`) are therefore not scanned. (2) The Rust toolchain and the mise tools: no advisory database that osv-scanner or cargo-deny reads has a record for the Rust toolchain, and no scanner reads the installed tool binaries. Consequence: a known vulnerability in these surfaces is found only by the manual comparison. | In each PR that runs the vulnerability check, record: the Rust toolchain against the GitHub security advisories of `rust-lang/rust`; each mise tool against OSV (crates.io or Go package) and the GitHub security advisories of its repository; the `apt-get` packages against OSV for `Debian:13`. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9). | Reassess when the repository gets a container build check, when the built image can be downloaded, or when a scanner covers the toolchain and the tools. |
+| §3, §14: vulnerability check of the built ingest image layer, the Rust toolchain, and the mise tools | The earlier exception for all freshness and vulnerability checks ends with this first application PR. `mise run vuln` now scans the crates in `Cargo.lock` and both `FROM` images of the `Dockerfile` as archives (crane and `osv-scanner scan image --archive`, no container runtime). Three surfaces stay without a scanner. (1) The image that Railway builds: it stays in the Railway registry, and no local container runtime can build it. The packages that `apt-get` adds or upgrades during the build (`ca-certificates`, `libstdc++6`, and the `apt-get upgrade` results) are therefore not scanned. (2) The Rust toolchain and the mise tools: no advisory database that osv-scanner or cargo-deny reads has a record for the Rust toolchain, and no scanner reads the installed tool binaries. (3) The C code that is linked statically into `/fleet-telemetry`: libzmq 4.3.4 (upstream Dockerfile) with its own copies of tweetnacl and SHA-1, and the librdkafka 2.3.0 bundle of `confluent-kafka-go/v2` v2.3.0 with OpenSSL 3.0.11, libcurl 7.86.0, zlib 1.2.13, zstd 1.5.2, and lz4 1.9.3. libsodium is not linked: the upstream Dockerfile builds libsodium 1.0.19, but the libzmq build uses its tweetnacl copy (no `--with-libsodium`). Cyrus SASL is not linked. At each start, in every configuration, the ELF `_init` runs the OpenSSL CPU feature detection `OPENSSL_cpuid_setup` (reads the environment variable `OPENSSL_ia32cap` and the `CPUID` instruction), and the Go package `zmq4` creates a libzmq context (allocation, process ID, one `eventfd`; no random source, no socket, no I/O thread); neither takes network input. All other code of the bundle components runs only behind the `kafka` dispatcher, which the `vuln` premise check rejects (`docs/security/image-advisories.md`, "Static C libraries"). Consequence: a known vulnerability in these surfaces is found only by the manual comparison. | In each PR that runs the vulnerability check, record: the Rust toolchain against the GitHub security advisories of `rust-lang/rust`; each mise tool against OSV (crates.io or Go package) and the GitHub security advisories of its repository; the `apt-get` packages against OSV for `Debian:13`; each static C component of `/fleet-telemetry` against OSV by release commit, or the reason why a component is not compared one by one (`docs/security/image-advisories.md`, "Static C libraries"). Compare the OpenSSL and libcurl records one by one before a change enables the `kafka` dispatcher. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9); surface (3): qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17). | Reassess when the repository gets a container build check, when the built image can be downloaded, or when a scanner covers the toolchain, the tools, or the static C libraries. |
+| §3: reviewed ignore files of the image scan | `osv-scanner scan image` reports advisories that do not affect this deployment, or that have no fix. The ignore files `docs/security/osv-scanner-tesla-fleet-telemetry.toml` (33 Go groups and the Debian 12 packages of the upstream image) and `docs/security/osv-scanner-debian.toml` (69 Debian 13 groups) hide them, so that `vuln` fails only on new or undecided findings. Consequence: an ignored advisory that later gets a Debian fix or a KEV listing is not shown until its entry expires. | Each entry names its decision in `docs/security/image-advisories.md` and has an expiry date. `vuln` checks the premises of the entries before the scan (the Dockerfile against a strict allowlist; the `-config` path of `entrypoint.sh`; config key case, exactly one JSON value, no repeated key or object, dispatchers, client CAs, listeners) and fails when it did not scan the two images of the allowlist. A build that runs the `apt-get` step installs the Debian fixes of the build date. A cached layer of that step skips the upgrade, and the Railway cache behaviour is not verified; the post-release check of §15 reads the installed package versions from the build log and detects a skipped step. The KEV comparison stays manual. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17). | Go entries expire on 2027-02-24, Debian 13 entries on 2027-01-25. Reassess earlier with a new upstream release, a base image change, a broken premise, or a KEV listing. |
 | §8: readable development formatter | The process has only the JSON formatter. One formatter gives one redaction path: the field allowlist exists once, and a second formatter cannot leak a field that the JSON formatter redacts. Nothing needs readable logs yet. Consequence: developers read the logs with `jq`. | The JSON formatter and its redaction tests in `crates/ingest/src/logging.rs`. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9). | Reassess when a developer workflow needs readable logs, and with the first web PR. |
 | §14: build and test of the ingest image before merge | No local container runtime is available to the lead. Railway builds the image after merge. | Post-release check: the service starts, the TLS certificate verifies, and the vehicle reconnects. | Lead: Claude Code. Approval: owner, with the adoption PR. | Reassess when the repository gets a container build check. |
 | §15: one image for server and SPA | The ingest service is a second image, because it is Tesla's upstream server. | The application still ships as one image. | Lead: Claude Code. Approval: owner, with the adoption PR. | Permanent while the upstream server is used. |
@@ -772,8 +785,8 @@ There is one environment: production. Read on 26 November 2026.
 | Component                 | Version or value                                         | Notes                                                                                   |
 | ------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Railway                   | Hobby plan, project `calmdonut`, service `telemetry`     | Builds from `main` of `jonikanerva/telemetry`. A merge to `main` is a release.          |
-| Ingest server             | `tesla/fleet-telemetry:v0.10.1`                          | Upstream binary, copied into the image in `Dockerfile`.                                 |
-| Ingest base image         | `debian:trixie-slim`                                     | Debian 13 (trixie), the current stable release. Point release 13.8 on 26 November 2026. |
+| Ingest server             | `tesla/fleet-telemetry:v0.10.1`                          | Upstream binary, copied into the image in `Dockerfile`. Go 1.27.4, dynamically linked against the glibc and libstdc++ of the base image. Advisory triage: `docs/security/image-advisories.md`. |
+| Ingest base image         | `debian:trixie-slim`                                     | Debian 13 (trixie), the current stable release. Point release 13.8 on 26 November 2026. Same digest as `trixie-20261123-slim`. The build runs `apt-get upgrade`, so the packages depend on the build date. |
 | Rust toolchain            | 1.100.0, `rust-toolchain.toml`                           | Latest stable on 26 November 2026. Builds `crates/ingest`. The deployed image does not contain the Rust binary yet. |
 | Railway TCP proxy         | `zephyr.proxy.rlwy.net:57438` to container port 4443     | The vehicle's signed config contains host `telemetry.calmdonut.com` and port 57438.     |
 | DNS                       | Cloudflare, `telemetry` CNAME, DNS only                  | A proxied record breaks the vehicle mTLS connection.                                    |
@@ -807,8 +820,28 @@ Project-specific release rules:
 - Post-release check for the ingest service: the deployment status is
   `SUCCESS`, `openssl s_client` verifies the certificate against the Origin
   CA ECC root on port 57438, and the log shows a vehicle connection after the
-  vehicle is next awake.
+  vehicle is next awake. After each build of the ingest image, also read the
+  Railway build log: the `apt-get` step must have run, not come from a cached
+  layer, and the log must show the installed versions of the fixed packages,
+  for example `libzstd1` 1.5.7+dfsg-1+deb13u1 and `passwd` 1:4.17.4-2+deb13u1
+  on 26 November 2026. If the step came from the cache, start a build
+  without the cache. How Railway caches Dockerfile layers is not verified.
 - Recovery: redeploy the previous successful Railway deployment.
+- Image advisories: `mise run vuln` reads the reviewed ignore files in
+  `docs/security/` (§3, §13). When an entry expires or a new advisory
+  appears, triage it in a `chore/deps-<topic>` PR and update
+  `docs/security/image-advisories.md` and the ignore file together. When
+  Debian publishes a fix for a library that the server loads (glibc,
+  gcc-14), start a rebuild of the ingest image, because `apt-get upgrade`
+  applies fixes only at build time. A build can reuse a cached layer of the
+  `apt-get` step; the build log must show that the step ran and installed
+  the fix.
+- The `vuln` premise check does not read the `zmq` bind address. The ADR
+  0001 deployment change enables the `zmq` dispatcher, so libzmq 4.3.4
+  starts to listen. That change must add a premise that `zmq.addr` binds
+  the loopback interface. It must also update the Dockerfile allowlist
+  and the paths of the check, because it moves the Dockerfile and the
+  server config; the strict allowlist fails on any other Dockerfile.
 
 Owner decisions of 26 November 2026 (lead authority):
 
