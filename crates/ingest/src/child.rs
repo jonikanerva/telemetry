@@ -482,8 +482,16 @@ mod tests {
     async fn a_dropped_supervisor_kills_its_child() {
         let (capture, _guard) = capture::install(ALLOWED_FIELDS);
         let supervised = start(command("run"));
+        // Wait for the last output line of the fake child, the line on
+        // standard error: then it writes nothing more. A child that still
+        // writes when the output pipes close would end by SIGPIPE, and the
+        // test would pass without kill-on-drop.
         supervised
-            .wait_until(|s| s.readiness.state().is_open())
+            .wait_until(|_| {
+                with_message(&events(&capture), "child_output")
+                    .iter()
+                    .any(|event| event["stream"] == "stderr")
+            })
             .await;
         let pid = with_message(&events(&capture), "child_started")[0]["pid"]
             .as_u64()
