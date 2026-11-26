@@ -351,7 +351,9 @@ library libzmq). `protobuf` 4.x from Google builds C code through `cc`.
 `prost` drops unknown fields
 ([prost-derive 0.14.6 `src/lib.rs` line 191](https://docs.rs/crate/prost-derive/0.14.6/source/src/lib.rs)).
 A new `Value` variant therefore decodes as `None`. ADR 0002 stores such a
-record unchanged instead of a guessed value.
+record unchanged instead of a guessed value. The decode also finds every
+other field that the vendored schema does not know and stores the record
+with reason `unknown_fields` (ADR 0002, "Unknown data").
 
 ### Delivery path and bounded buffering
 
@@ -681,6 +683,12 @@ the PR changes the design and updates this ADR.
   the gate refuses connection 1025 and records `gate_full`.
 - The `dispatch_total` metric name and labels on the real binary, and that
   the shortfall check reports zero in normal use.
+- The false-positive rate of `unknown_fields` on real vehicle payloads.
+  For each `raw.unprocessed_record` row with reason `unknown_fields` in the
+  first week, decode the stored payload and confirm that it holds a field
+  that the vendored schema does not know. Record the count and the result.
+  A row without such a field is a false positive and a defect of the
+  decode.
 - After the first week, the effective compute size in the Neon console or
   API is still 0.25 CU for production and `test`, and the consumption
   matches the budget of section "Why 15 minutes". If Neon changed the size,
