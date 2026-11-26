@@ -130,10 +130,14 @@ The service `telemetry` runs one image with two processes.
   4. the queue did not close the gate. The queue closes the gate at the high
      mark. The gate opens again when the queue is below the low mark and the
      last write succeeded.
-- When the gate closes, `ingest` stops accepting and closes every forwarded
-  connection. The vehicle then keeps its data in its own buffer (fact 1).
-  This moves buffering to the vehicle whenever the consumer cannot take
-  records.
+- When the gate closes, `ingest` stops forwarding and closes every
+  forwarded connection. The vehicle then keeps its data in its own buffer
+  (fact 1). This moves buffering to the vehicle whenever the consumer cannot
+  take records. A closed gate accepts each new connection and closes it at
+  once (PR #18): the listener stays bound, so a wrong port fails the start,
+  and no client waits in the listen backlog. The Railway TCP proxy accepts
+  the client connection first in both designs, so the vehicle sees the same
+  result as with a closed listener.
 - The gate closes the start race of fact 6. The vehicle cannot reach
   `fleet-telemetry` before the subscription exists.
 - Connection rules. The gate cannot see inside TLS, so it does not guess
@@ -156,9 +160,9 @@ The service `telemetry` runs one image with two processes.
      meanwhile. Not verified on the vehicle: the deployment PR checks it.
   2. **Resource bound of 1024 connections.** The bound exists only to bound
      memory and file descriptors. Each forwarded connection uses two
-     copy buffers of 8 KiB (the Tokio default,
-     `tokio::io::copy_bidirectional`), so 1024 connections use 16 MiB of
-     buffers, plus small task state. The 16 MiB excludes kernel socket
+     copy buffers of 8 KiB (one `BufReader` of 8 KiB with
+     `tokio::io::copy_buf` for each direction, PR #18), so 1024 connections
+     use 16 MiB of buffers, plus small task state. The 16 MiB excludes kernel socket
      buffers and the memory that `fleet-telemetry` uses for each
      connection; the deployment PR records the container memory at the
      bound. `ingest` holds two descriptors for each connection (2048), and
@@ -194,13 +198,23 @@ The service `telemetry` runs one image with two processes.
      exists only with feature `all`, and `zeromq` 0.7 pulls `socket2`
      without features, so `ingest` declares it directly. This is a safe
      API; first-party code needs no `unsafe`. The ingest PR tests that an
-     accepted socket has these values.
+     accepted socket has these values. When the operating system rejects
+     an option, the connection stays open (PR #18): the history comes
+     first, and the dead-peer bound of that connection then depends on the
+     operating system defaults. The `gate_connection_closed` event of that
+     connection has `socket_options` `failed`; deployment check 5 below
+     looks for it.
 
   After rule 1, the gate never closes or evicts a connection by itself.
   Only the peer, the dead-peer bound (about 150 s idle, about 925 to
   1,045 s with unacknowledged data), `fleet-telemetry`, a closed gate, or
   the shutdown close it. A quiet, authenticated vehicle therefore keeps
-  its connection.
+  its connection. When `fleet-telemetry` ends its side, the gate forwards
+  the remaining bytes and the end of the stream to the client, waits at
+  most 5 s for the client to end its side, and then closes the whole
+  connection (PR #18). So a client cannot keep a slot after
+  `fleet-telemetry` closes; the 5 s start after the last bytes are written
+  to the client socket.
 
   Comparison with the present deployment: today `fleet-telemetry` accepts
   connections without a count limit and without a handshake timeout, and
@@ -683,6 +697,28 @@ the PR changes the design and updates this ADR.
   the gate refuses connection 1025 and records `gate_full`.
 - The `dispatch_total` metric name and labels on the real binary, and that
   the shortfall check reports zero in normal use.
+- Linux runtime of `ingest` (PR #18 tested on macOS only; `STACK.md` §13).
+  Before the first deployment that starts `ingest`:
+  1. `cargo nextest run --workspace --locked` passes one time on
+     linux/amd64, in a build stage of the image or a Linux VM. If this is
+     not possible, the PR records why, and checks 2 to 6 are the only
+     evidence.
+  2. `ingest` is PID 1. On a redeploy, the log of the old deployment shows
+     `shutdown_started` with reason `SIGTERM`, `gate_stopped`,
+     `child_killed` with `exit_signal` 9, the `stopped` event, and
+     `shutdown_complete` within `drainingSeconds`, and no
+     `task_stop_timeout`.
+  3. After at least three child exits and restarts, the process table of
+     the container has no zombie (`ps` state `Z`).
+  4. After a forced end of PID 1 (a watchdog exit or SIGKILL of `ingest`),
+     the container ends, Railway restarts it, a new `started` event
+     follows, and no `fleet-telemetry` process survives without `ingest`.
+  5. No `gate_connection_closed` event of a normal connection has
+     `socket_options` `failed`, and the idle dead-peer case above closes in
+     about 150 s. If the Railway proxy terminates TCP, `ss -tio` in the
+     container shows the keep-alive timers, or check 1 covers them.
+  6. `fleet-telemetry` starts with an empty environment, and
+     `/proc/<child pid>/fd` has no listener of `ingest`.
 - The false-positive rate of `unknown_fields` on real vehicle payloads.
   For each `raw.unprocessed_record` row with reason `unknown_fields` in the
   first week, decode the stored payload and confirm that it holds a field
