@@ -126,6 +126,10 @@ mise run verify
 `mise run verify` is the single local gate. [STACK.md](STACK.md) section 3
 lists the tasks and what each one checks.
 
+The GitHub Actions workflow `.github/workflows/ci.yml` also runs
+`mise run ci` on linux/amd64 for each pull request and each push to
+`main`. It does not replace the local gate.
+
 ## Contributing
 
 This is a personal project. Work follows the contracts in this repository:

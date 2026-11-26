@@ -22,9 +22,6 @@ run = [
   # global mise config. Keep this list equal to [tools].
   "mise install cargo-nextest cargo-deny github:Boshen/cargo-shear cargo:sqlx-cli gitleaks osv-scanner jq crane",
   "rustup toolchain install",
-  # mise sets RUSTUP_TOOLCHAIN, and rustup then ignores the `targets` of
-  # rust-toolchain.toml. Add the Linux target of `lint` explicitly.
-  "rustup target add x86_64-unknown-linux-gnu",
   "rustup show active-toolchain",
   "cargo fetch --locked",
   "echo 'setup: no test services are needed. The tests use no network and no database.'",
@@ -35,29 +32,42 @@ description = "Format the Rust code"
 run = "cargo fmt --all"
 
 [tasks.lint]
-description = "Run Clippy with warnings as errors, for the host and for the Linux production target"
-run = [
-  "cargo clippy --workspace --all-targets --locked -- -D warnings",
-  # Compile-time evidence for linux/amd64 only: Clippy type-checks the code
-  # for the target and links nothing, so no Linux linker is needed. Build
-  # scripts and proc macros run on the host. It does not run the tests on
-  # Linux (STACK.md §13).
-  "cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gnu -- -D warnings",
-]
+description = "Run Clippy with warnings as errors for the host"
+# The host is the platform that runs the command. The `ci` task runs on
+# linux/amd64, the production platform (STACK.md §3).
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 
 [tasks.build]
 description = "Build the release binary with the locked dependencies"
 run = "cargo build --workspace --release --locked"
 
 [tasks.test]
-description = "Run the tests and the doctests"
+description = "Run all tests and the doctests"
 run = [
   "cargo nextest run --workspace --locked",
-  "cargo test --doc --workspace --locked",
+  { task = "doctest" },
 ]
 
-[tasks.verify]
-description = "Run every required local check; stops at the first failure"
+[tasks.test-without-database]
+description = "Run the tests that need no database, and the doctests (for CI)"
+# CI has no database (STACK.md §3). Only the `ci` task uses this task;
+# `verify` uses `test`, which runs all tests. No database test exists yet,
+# so this task runs all tests. The change that adds the database tests
+# adds the filter that excludes them to the nextest command below. Without
+# that filter, the database tests fail in CI, and the run is red.
+run = [
+  "cargo nextest run --workspace --locked",
+  { task = "doctest" },
+]
+
+[tasks.doctest]
+description = "Run the doctests"
+hide = true
+run = "cargo test --doc --workspace --locked"
+
+[tasks.checks]
+description = "Run the static checks that verify and ci share"
+hide = true
 run = [
   "cargo fmt --all --check",
   { task = "lint" },
@@ -67,8 +77,24 @@ run = [
   "jq empty config/server_config.json config/telemetry_config.json",
   "sh -n entrypoint.sh",
   "! git ls-files | grep -E '^(\\.env|secrets/|\\.bin/)'",
+]
+
+[tasks.verify]
+description = "Run every required local check; stops at the first failure"
+run = [
+  { task = "checks" },
   { task = "build" },
   { task = "test" },
+]
+
+[tasks.ci]
+description = "Run the checks of the GitHub Actions workflow; stops at the first failure"
+# The same checks as `verify`, but the tests that need a database do not
+# run (STACK.md §3). `ci` does not replace the local `verify`.
+run = [
+  { task = "checks" },
+  { task = "build" },
+  { task = "test-without-database" },
 ]
 
 [tasks.deps]
