@@ -34,6 +34,40 @@
 //!   records. A failed option is logged and the connection stays open: the
 //!   history comes first, and the dead-peer bound then depends on the
 //!   operating system defaults.
+//! - **`fleet-telemetry` closes.** When `fleet-telemetry` ends its side, the
+//!   gate forwards the remaining bytes and the end of the stream to the
+//!   client. Then it waits at most [`GateLimits::upstream_close_linger`]
+//!   (5 s) for the client to end its side, and closes the whole connection.
+//!   So the connection ends when `fleet-telemetry` closes it (ADR 0001), and
+//!   the client cannot keep the slot. The wait lets a live client receive
+//!   the last bytes and answer with its own end of the stream instead of a
+//!   reset. 5 s allows two TCP retransmissions after the initial
+//!   retransmission timeout of 1 s on a poor mobile link, the same reason
+//!   as the 10 s of rule 1.
+//! - **The client closes its side.** The gate forwards the end of the
+//!   stream to `fleet-telemetry` and keeps the other direction open.
+//!   `fleet-telemetry` then decides when the connection ends.
+//!
+//! Who can hold a slot, and for how long:
+//!
+//! - Any peer before the first byte from `fleet-telemetry`: at most 10 s
+//!   (rule 1). When `fleet-telemetry` ends its side without a byte just
+//!   before the 10 s, the close linger follows: at most 15 s.
+//! - A client after `fleet-telemetry` closed: at most 5 s after the gate
+//!   has written the last bytes to the client socket. The gate sees the
+//!   end of the stream only after it has forwarded the bytes before it. A
+//!   live client that stops reading can therefore delay that point without
+//!   a bound, when the unread bytes are more than the gate buffer of 8 KiB
+//!   and the kernel send buffer can hold.
+//! - A client that went away: the dead-peer bound of rule 3, about 150 s
+//!   when no data is unacknowledged, about 925 to 1,045 s with
+//!   unacknowledged data (Linux defaults, ADR 0001).
+//! - A live client after the first byte, for example inside the TLS
+//!   handshake or in a quiet session, and a client that closed only its
+//!   side: as long as `fleet-telemetry` keeps the connection. This is the
+//!   accepted risk of ADR 0001, lead decision 6.
+//! - Every connection ends at once when the gate closes or the process
+//!   stops.
 //!
 //! Bounds: each forwarded connection has two copy buffers of 8 KiB
 //! ([`GateLimits::buffer_size`]), so 1024 connections use 16 MiB of buffers.
@@ -63,7 +97,7 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use socket2::{SockRef, TcpKeepalive};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, copy_bidirectional_with_sizes};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf, copy_buf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot, watch};
 use tokio::task::{JoinError, JoinSet};
@@ -89,6 +123,9 @@ pub struct GateLimits {
     pub close_deadline: Duration,
     /// Longest time between two heartbeats of the acceptor.
     pub beat_interval: Duration,
+    /// Longest wait for the client to end its side after `fleet-telemetry`
+    /// ended its side.
+    pub upstream_close_linger: Duration,
 }
 
 /// The bounds of ADR 0001. The close deadline is part of the shutdown
@@ -100,6 +137,7 @@ pub const LIMITS: GateLimits = GateLimits {
     gate_full_interval: Duration::from_secs(60),
     close_deadline: Duration::from_millis(500),
     beat_interval: watchdog::BEAT_INTERVAL,
+    upstream_close_linger: Duration::from_secs(5),
 };
 
 /// TCP keep-alive of each accepted socket (ADR 0001, gate rule 3).
@@ -265,8 +303,11 @@ async fn serve_connection(
 /// How a forwarded connection ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum End {
-    /// Both directions reached their end.
+    /// The client ended its side, then `fleet-telemetry` ended its side.
     Finished,
+    /// `fleet-telemetry` ended its side first; the gate closed the
+    /// connection at the latest after the close linger.
+    UpstreamClosed,
     /// A read or a write failed.
     Failed,
     /// The connect to `fleet-telemetry` failed.
@@ -281,6 +322,7 @@ impl End {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Finished => "finished",
+            Self::UpstreamClosed => "upstream_closed",
             Self::Failed => "io_error",
             Self::UpstreamUnavailable => "upstream_unavailable",
             Self::NoFirstByte => "no_first_byte",
@@ -303,7 +345,7 @@ struct Report {
 /// `fleet-telemetry`. The function is generic so that the tests can use
 /// in-memory streams with a paused clock.
 async fn forward<C, U>(
-    mut client: C,
+    client: C,
     connect: impl Future<Output = io::Result<U>>,
     accepted_at: Instant,
     limits: &GateLimits,
@@ -331,30 +373,60 @@ where
                 Err(_elapsed) => break 'run (End::NoFirstByte, None, None),
             },
         };
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
         let (seen, mut first_seen) = oneshot::channel();
-        let mut upstream = FirstByte {
-            inner: upstream,
-            seen: Some(seen),
-            at: None,
-        };
+        // One buffer of `buffer_size` for each direction.
+        let mut client_read = BufReader::with_capacity(limits.buffer_size, client_read);
+        let mut upstream_read = BufReader::with_capacity(
+            limits.buffer_size,
+            FirstByte {
+                inner: upstream_read,
+                seen: Some(seen),
+                at: None,
+            },
+        );
         let (end, error) = {
-            let copy = copy_bidirectional_with_sizes(
-                &mut client,
-                &mut upstream,
-                limits.buffer_size,
-                limits.buffer_size,
-            );
-            let mut copy = pin!(copy);
+            // Each direction copies until its end of stream and then ends
+            // the stream of the other side.
+            let up = async {
+                copy_buf(&mut client_read, &mut upstream_write).await?;
+                upstream_write.shutdown().await
+            };
+            let down = async {
+                copy_buf(&mut upstream_read, &mut client_write).await?;
+                client_write.shutdown().await
+            };
+            let mut up = pin!(up);
+            let mut down = pin!(down);
             let mut no_first_byte = pin!(sleep_until(deadline));
+            let mut up_done = false;
             let mut waiting = true;
             loop {
                 // `biased`: the copy reads a byte that arrived in time
                 // before the deadline is checked.
                 tokio::select! {
                     biased;
-                    copied = &mut copy => break match copied {
-                        Ok(_) => (End::Finished, None),
-                        Err(error) => (End::Failed, Some(error.kind())),
+                    copied = &mut down => match copied {
+                        Ok(()) if up_done => break (End::Finished, None),
+                        Ok(()) => {
+                            // `fleet-telemetry` ended its side, and the
+                            // client has the last bytes and the end of the
+                            // stream. Give the client a short time to end
+                            // its side, then close the connection.
+                            tokio::select! {
+                                _ = timeout(limits.upstream_close_linger, &mut up) => {}
+                                () = &mut closed => {}
+                            }
+                            break (End::UpstreamClosed, None);
+                        }
+                        Err(error) => break (End::Failed, Some(error.kind())),
+                    },
+                    copied = &mut up, if !up_done => match copied {
+                        // The client ended its side. `fleet-telemetry`
+                        // decides when the connection ends.
+                        Ok(()) => up_done = true,
+                        Err(error) => break (End::Failed, Some(error.kind())),
                     },
                     _ = &mut first_seen, if waiting => waiting = false,
                     () = &mut closed => break (End::GateClosed, None),
@@ -362,7 +434,8 @@ where
                 }
             }
         };
-        let first_byte = upstream
+        let first_byte = upstream_read
+            .get_ref()
             .at
             .map(|at| at.saturating_duration_since(accepted_at));
         (end, error, first_byte)
@@ -400,36 +473,6 @@ impl<S: AsyncRead + Unpin> AsyncRead for FirstByte<S> {
             }
         }
         polled
-    }
-}
-
-impl<S: AsyncWrite + Unpin> AsyncWrite for FirstByte<S> {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
-    }
-
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[io::IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
     }
 }
 

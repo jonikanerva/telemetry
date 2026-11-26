@@ -153,7 +153,8 @@ async fn forwards_large_streams_in_both_directions_unchanged() {
 
 #[tokio::test]
 async fn forwards_a_half_close_from_the_client() {
-    let gate = TestGate::start_open().await;
+    let gate = TestGate::start(SHORT_LINGER, Watchdog::new().register(GATE_ACCEPTOR)).await;
+    gate.open();
     let mut client = gate.connect().await;
     let mut upstream = gate.accept_upstream().await;
 
@@ -162,6 +163,9 @@ async fn forwards_a_half_close_from_the_client() {
     // The end of the stream reaches the upstream while the other direction
     // stays open.
     assert_eq!(read_until_closed(&mut upstream).await, b"request");
+    // `fleet-telemetry` decides when the connection ends: the gate keeps
+    // the other direction open, also longer than the close linger.
+    tokio::time::sleep(SHORT_LINGER.upstream_close_linger * 2).await;
     let response = pattern(3, 1024 * 1024);
     upstream.write_all(&response).await.unwrap();
     drop(upstream);
@@ -169,19 +173,65 @@ async fn forwards_a_half_close_from_the_client() {
     gate.stop().await;
 }
 
+/// The production limits with a close linger of 0.5 s.
+const SHORT_LINGER: GateLimits = GateLimits {
+    upstream_close_linger: Duration::from_millis(500),
+    ..LIMITS
+};
+
 #[tokio::test]
-async fn forwards_a_half_close_from_the_upstream() {
+async fn fleet_telemetry_closing_its_side_ends_the_connection_after_the_linger() {
+    let gate = TestGate::start(SHORT_LINGER, Watchdog::new().register(GATE_ACCEPTOR)).await;
+    gate.open();
+    let mut client = gate.connect().await;
+    let mut upstream = gate.accept_upstream().await;
+
+    // `fleet-telemetry` sends its last bytes and ends its side, but keeps
+    // reading.
+    let response = pattern(4, 1024 * 1024);
+    upstream.write_all(&response).await.unwrap();
+    upstream.shutdown().await.unwrap();
+    // The client gets every byte and then the end of the stream.
+    let mut received = vec![0_u8; response.len()];
+    client.read_exact(&mut received).await.unwrap();
+    assert!(received == response, "the client got other bytes");
+    let mut more = [0_u8; 1];
+    let read = tokio::time::timeout(WAIT, client.read(&mut more)).await;
+    assert_eq!(read.unwrap().unwrap(), 0, "no end of the stream");
+    let end_seen = Instant::now();
+
+    // The client stays silent and keeps its side open. The gate closes the
+    // whole connection after the linger, so the upstream sees the close.
+    assert_eq!(read_until_closed(&mut upstream).await, b"");
+    let waited = end_seen.elapsed();
+    assert!(
+        waited >= SHORT_LINGER.upstream_close_linger / 2,
+        "{waited:?}"
+    );
+    assert!(waited < Duration::from_secs(3), "{waited:?}");
+    gate.stop().await;
+}
+
+#[tokio::test]
+async fn a_client_that_answers_the_close_of_fleet_telemetry_ends_at_once() {
+    // The production linger of 5 s: the end must come much sooner.
     let gate = TestGate::start_open().await;
     let mut client = gate.connect().await;
     let mut upstream = gate.accept_upstream().await;
 
-    upstream.write_all(b"greeting").await.unwrap();
+    upstream.write_all(b"last").await.unwrap();
     upstream.shutdown().await.unwrap();
-    assert_eq!(read_until_closed(&mut client).await, b"greeting");
-    let request = pattern(4, 1024 * 1024);
-    client.write_all(&request).await.unwrap();
+    assert_eq!(read_until_closed(&mut client).await, b"last");
+    let started = Instant::now();
+    client.write_all(b"bye").await.unwrap();
     drop(client);
-    assert!(read_until_closed(&mut upstream).await == request);
+    // The bytes of the client during the linger still reach the upstream.
+    assert_eq!(read_until_closed(&mut upstream).await, b"bye");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
     gate.stop().await;
 }
 
@@ -507,6 +557,55 @@ async fn rule_1_keeps_a_connection_whose_first_byte_comes_in_time() {
         assert_eq!(report.first_byte, Some(Duration::from_millis(9_999)));
         // The first byte at 9.999 s, then 60 s of an open connection.
         assert_eq!(report.duration, Duration::from_millis(69_999));
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_silent_client_keeps_the_slot_for_at_most_5_s_after_fleet_telemetry_closes() {
+    let (_readiness, gate) = open_gate();
+    let (mut client, mut upstream, task) = start_forward(gate);
+    bounded(async move {
+        upstream.write_all(b"last").await.unwrap();
+        upstream.shutdown().await.unwrap();
+        let mut received = Vec::new();
+        client.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, b"last");
+
+        // The client does not end its side.
+        let report = task.await.unwrap();
+        assert_eq!(report.end, End::UpstreamClosed);
+        assert_eq!(report.duration, Duration::from_secs(5));
+        assert_eq!(report.first_byte, Some(Duration::ZERO));
+        let mut rest = Vec::new();
+        assert_eq!(upstream.read_to_end(&mut rest).await.unwrap(), 0);
+        drop(client);
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_client_half_close_leaves_the_end_to_fleet_telemetry() {
+    let (_readiness, gate) = open_gate();
+    let (mut client, mut upstream, task) = start_forward(gate);
+    bounded(async move {
+        upstream.write_all(b"s").await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut received = Vec::new();
+        upstream.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, b"");
+
+        // Much longer than the close linger: the connection stays open.
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        assert!(!task.is_finished(), "the gate ended the connection");
+        upstream.write_all(b"answer").await.unwrap();
+        drop(upstream);
+        let report = task.await.unwrap();
+        assert_eq!(report.end, End::Finished);
+        assert_eq!(report.duration, Duration::from_secs(600));
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).await.unwrap();
+        assert_eq!(answer, b"sanswer");
     })
     .await;
 }
