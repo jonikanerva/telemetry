@@ -100,15 +100,40 @@ if [ "$other_sources" != "COPY --from=upstream /fleet-telemetry /fleet-telemetry
   echo "vuln: the only Dockerfile line with from= must copy /fleet-telemetry from the upstream image"
   status=1
 fi
+# The final stage must start from a base image: not from the upstream image
+# and not from another stage. The check compares names without letter case.
+final_base="$(awk '
+  toupper($1) == "FROM" {
+    base = ""
+    for (i = 2; i <= NF; i++) if ($i !~ /^--/) { base = tolower($i); break }
+    for (i = 2; i < NF; i++) if (toupper($i) == "AS") stages[tolower($(i + 1))] = 1
+    last = base
+  }
+  END { if (last in stages) print "stage:" last; else print last }
+' Dockerfile)"
+case "$final_base" in
+  ""|stage:*|*fleet-telemetry*)
+    echo "vuln: the final Dockerfile stage must start from a base image, not from the upstream image or another stage"
+    status=1
+    ;;
+esac
+# fleet-telemetry decodes its config with Go encoding/json, which matches
+# keys without letter case and keeps the last of two equal keys. jq is case
+# sensitive, so a key in another letter case or a duplicate key fails here.
 if ! jq -e '
-  ([(.records // {}) | .[][]] | all(. == "logger" or . == "zmq"))
+  def lower_keys: keys | all(test("^[a-z0-9_]+$"));
+  lower_keys
+  and ((.monitoring // {}) | lower_keys)
+  and ((.tls // {}) | lower_keys)
+  and ([(.records // {}) | .[][]] | all(. == "logger" or . == "zmq"))
   and ((.use_default_eng_ca // false) == false)
   and ((.tls.ca_file // "") == "")
   and ((.status_port // 0) == 0)
   and ((.monitoring.profiler_port // 0) == 0)
   and ((.monitoring.prometheus_metrics_host // "127.0.0.1") == "127.0.0.1")
-' config/server_config.json > /dev/null; then
-  echo "vuln: config/server_config.json breaks a premise of the ignore files (dispatchers, client CAs, or listeners)"
+' config/server_config.json > /dev/null ||
+  ! jq -n -e --stream '[inputs | select(length == 2) | .[0]] | length == (unique | length)' config/server_config.json > /dev/null; then
+  echo "vuln: config/server_config.json breaks a premise of the ignore files (key case, duplicate keys, dispatchers, client CAs, or listeners)"
   status=1
 fi
 cargo deny --locked check advisories || status=1
