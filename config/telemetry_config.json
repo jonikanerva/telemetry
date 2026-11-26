@@ -1,0 +1,34 @@
+{
+  "hostname": "telemetry.calmdonut.com",
+  "port": 57438,
+  "ca": "-----BEGIN CERTIFICATE-----\nMIICiTCCAi6gAwIBAgIUXZP3MWb8MKwBE1Qbawsp1sfA/Y4wCgYIKoZIzj0EAwIw\ngY8xCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlhMRYwFAYDVQQHEw1T\nYW4gRnJhbmNpc2NvMRkwFwYDVQQKExBDbG91ZEZsYXJlLCBJbmMuMTgwNgYDVQQL\nEy9DbG91ZEZsYXJlIE9yaWdpbiBTU0wgRUNDIENlcnRpZmljYXRlIEF1dGhvcml0\neTAeFw0xOTA4MjMyMTA4MDBaFw0yOTA4MTUxNzAwMDBaMIGPMQswCQYDVQQGEwJV\nUzETMBEGA1UECBMKQ2FsaWZvcm5pYTEWMBQGA1UEBxMNU2FuIEZyYW5jaXNjbzEZ\nMBcGA1UEChMQQ2xvdWRGbGFyZSwgSW5jLjE4MDYGA1UECxMvQ2xvdWRGbGFyZSBP\ncmlnaW4gU1NMIEVDQyBDZXJ0aWZpY2F0ZSBBdXRob3JpdHkwWTATBgcqhkjOPQIB\nBggqhkjOPQMBBwNCAASR+sGALuaGshnUbcxKry+0LEXZ4NY6JUAtSeA6g87K3jaA\nxpIg9G50PokpfWkhbarLfpcZu0UAoYy2su0EhN7wo2YwZDAOBgNVHQ8BAf8EBAMC\nAQYwEgYDVR0TAQH/BAgwBgEB/wIBAjAdBgNVHQ4EFgQUhTBdOypw1O3VkmcH/es5\ntBoOOKcwHwYDVR0jBBgwFoAUhTBdOypw1O3VkmcH/es5tBoOOKcwCgYIKoZIzj0E\nAwIDSQAwRgIhAKilfntP2ILGZjwajktkBtXE1pB4Y/fjAfLkIRUzrI15AiEA5UCL\nXYZZ9m2c3fKwIenMMojL1eqydsgqj/wK4p5kagQ=\n-----END CERTIFICATE-----\n",
+  "alert_types": [
+    "service"
+  ],
+  "fields": {
+    "Soc": {
+      "interval_seconds": 60
+    },
+    "Location": {
+      "interval_seconds": 10
+    },
+    "VehicleSpeed": {
+      "interval_seconds": 10
+    },
+    "Gear": {
+      "interval_seconds": 1
+    },
+    "DetailedChargeState": {
+      "interval_seconds": 60
+    },
+    "Odometer": {
+      "interval_seconds": 60
+    },
+    "InsideTemp": {
+      "interval_seconds": 300
+    },
+    "OutsideTemp": {
+      "interval_seconds": 300
+    }
+  }
+}
