@@ -23,7 +23,7 @@
 //! | Call | Class | What is stored | What the caller does |
 //! | ---- | ----- | -------------- | -------------------- |
 //! | [`Writer::write`] | `Ok` | Every record: rows, or `unprocessed_record` rows | Remove the records from the queue. |
-//! | [`Writer::write`] | [`FailureClass::NoAnswer`] | `records[..committed]` ([`WriteError::committed`]); after a break during a `COMMIT`, also up to one more transaction | Keep every record. Retry after 1 s, doubling to at most 5 minutes (ADR 0001). The records before `committed` become duplicates, or the caller removes them first. |
+//! | [`Writer::write`] | [`FailureClass::NoAnswer`] | `records[..committed]` ([`WriteError::committed`]); after a break or a passed 90 s deadline during a `COMMIT`, also up to one more transaction | Keep every record. Retry after 1 s, doubling to at most 5 minutes (ADR 0001). The records before `committed` become duplicates, or the caller removes them first. |
 //! | [`Writer::write`] | [`FailureClass::Answered`] | `records[..committed]` | Keep every record. Retry as above; after three equal codes in a row, retry once each 60 minutes (ADR 0001). |
 //! | [`Writer::write`] | [`FailureClass::Data`] | `records[..committed]` | A defect: the database refused even the `database_rejected` row of the record `records[committed]`, so its bytes cannot be stored. Log the code and the count, remove `records[..=committed]` from the queue, and write the rest. A retry would fail the same way without end. |
 //! | [`write_events`] | `Ok` | Every event, except the counted `rejected` ones | Remove the events; log a count of rejected events, which cannot be stored. |
@@ -49,8 +49,10 @@
 //! - `Data`: classes 22 and 23. `write` handles them by the split and
 //!   returns them only in the defect case of the table.
 //!
-//! [`WriteError::committed`] is exact for every failure except a
-//! connection that breaks during a `COMMIT`. The client then cannot know
+//! [`WriteError::committed`] is exact for every failure except two: a
+//! connection that breaks during a `COMMIT`, and the 90 s deadline of the
+//! attempt ([`RUN_CALL_DEADLINE`]) that passes during a `COMMIT`. In both
+//! cases the client sees `NoAnswer`. The client then cannot know
 //! whether the server committed, and the whole transaction can be stored:
 //! the records from `committed` to the end of that transaction, up to
 //! [`MAX_SIGNAL_ROWS_PER_TRANSACTION`] signal rows or

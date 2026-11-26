@@ -329,6 +329,7 @@ mod tests {
         let config = migrate_config(Some(&OsString::from(url))).unwrap();
         assert_eq!(config.database_url.expose(), url);
         assert!(!format!("{config:?}").contains("hunter2"));
+        assert!(!format!("{config:#?}").contains("hunter2"));
     }
 
     #[test]

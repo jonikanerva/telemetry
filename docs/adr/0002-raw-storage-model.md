@@ -279,10 +279,10 @@ runs all its transactions on it, and closes it before it returns; there
 is no pool (ADR 0001, "Delivery path", step 6). After the deadline the
 writer drops the connection, which closes the socket at once. A failed
 write tells the caller how many records at the start of the batch are
-stored. After a break during a
-`COMMIT`, the transaction whose `COMMIT` broke can be stored too (the
-records from that count to the end of that transaction), and the
-idempotent re-send covers it. The writer calls a progress hook of the
+stored. After a break during a `COMMIT`, or when the 90 s deadline
+passes during a `COMMIT`, the transaction of that `COMMIT` can be stored
+too (the records from that count to the end of that transaction), and
+the idempotent re-send covers it. The writer calls a progress hook of the
 caller after the connect, before each transaction attempt, so the
 longest wait without a beat is one attempt and the close (95 s), also
 during a long split. Queue items leave memory only after their rows

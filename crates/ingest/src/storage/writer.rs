@@ -105,9 +105,10 @@ impl WriteOutcome {
 ///
 /// The records `records[..committed]` are stored: their rows, or their
 /// `unprocessed_record` rows. The records `records[committed..]` have no
-/// known commit. When the connection breaks during a `COMMIT`, the client
-/// cannot know whether the server committed. The whole transaction can be
-/// committed: the records from `committed` to the end of its part, up to
+/// known commit. When the connection breaks during a `COMMIT`, or the
+/// 90 s deadline of the attempt ([`RUN_CALL_DEADLINE`]) passes during a
+/// `COMMIT`, the client cannot know whether the server committed. The
+/// whole transaction can be committed: the records from `committed` to the end of its part, up to
 /// one full transaction of [`MAX_SIGNAL_ROWS_PER_TRANSACTION`] signal rows
 /// or [`MAX_BYTES_PER_TRANSACTION`] bytes. The caller keeps
 /// `records[committed..]` and writes them again. Every insert is
@@ -1080,5 +1081,22 @@ mod tests {
         };
         let records: Vec<_> = (0..5).map(|_| record(&small)).collect();
         assert_eq!(chunks(&records), vec![0..1, 1..2, 2..3, 3..4, 4..5]);
+    }
+
+    #[test]
+    fn the_debug_text_of_a_writer_holds_no_connection_settings() {
+        // The derived `Debug` of `PgConnectOptions` prints the password,
+        // the user, and the host; the writer must show none of them.
+        let options = PgConnectOptions::new_without_pgpass()
+            .host("db-host.invalid")
+            .username("writer_user")
+            .password("hunter2-writer-password");
+        let writer = Writer::new(options);
+        for text in [format!("{writer:?}"), format!("{writer:#?}")] {
+            for secret in ["hunter2-writer-password", "writer_user", "db-host.invalid"] {
+                assert!(!text.contains(secret), "{secret} in {text}");
+            }
+            assert!(text.starts_with("Writer"), "{text}");
+        }
     }
 }

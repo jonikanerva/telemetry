@@ -120,3 +120,25 @@ pub async fn apply_roles(conn: &mut PgConnection, setup: &RoleSetup) -> Result<(
     })
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_debug_text_of_the_role_setup_holds_no_password() {
+        let setup = RoleSetup::production(
+            Some(SecretString::new(
+                "ingestSecret0123456789abcdefABCDEF".to_owned(),
+            )),
+            Some(SecretString::new(
+                "migratorSecret0123456789abcdefABCD".to_owned(),
+            )),
+        );
+        for text in [format!("{setup:?}"), format!("{setup:#?}")] {
+            assert!(!text.contains("ingestSecret"), "{text}");
+            assert!(!text.contains("migratorSecret"), "{text}");
+            assert!(text.contains("[redacted]"), "{text}");
+        }
+    }
+}
