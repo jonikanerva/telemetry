@@ -110,6 +110,196 @@ fn pattern(seed: u64, len: usize) -> Vec<u8> {
         .collect()
 }
 
+/// Copies from `source` without pause, and reads `target` without pause.
+/// Returns the time when the reader saw the end of the connection.
+fn flood(mut source: TcpStream, mut target: TcpStream) -> oneshot::Receiver<Instant> {
+    tokio::spawn(async move {
+        let block = vec![1_u8; 256 * 1024];
+        while source.write_all(&block).await.is_ok() {}
+    });
+    let (ended, end) = oneshot::channel();
+    tokio::spawn(async move {
+        let mut buffer = vec![0_u8; 256 * 1024];
+        while let Ok(read) = target.read(&mut buffer).await {
+            if read == 0 {
+                break;
+            }
+        }
+        ended.send(Instant::now()).ok();
+    });
+    end
+}
+
+/// The longest accepted time from a gate close to the end of a connection
+/// that carries a flow without pause. The close does not wait for the flow.
+const CLOSE_UNDER_FLOW: Duration = Duration::from_secs(1);
+
+/// Opens a connection with a first byte from the upstream, starts a flow
+/// in one direction, closes the gate, and returns the time to the end.
+async fn close_time_under_flow(to_upstream: bool) -> Duration {
+    let gate = TestGate::start_open().await;
+    let mut client = gate.connect().await;
+    let mut upstream = gate.accept_upstream().await;
+    upstream.write_all(b"x").await.unwrap();
+    let mut first = [0_u8; 1];
+    client.read_exact(&mut first).await.unwrap();
+    let end = if to_upstream {
+        flood(client, upstream)
+    } else {
+        flood(upstream, client)
+    };
+    // The flow runs for a while before the close.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let closed_at = Instant::now();
+    gate.readiness.set_child_running(false);
+    let ended = tokio::time::timeout(WAIT, end)
+        .await
+        .expect("the gate close did not end the connection")
+        .unwrap();
+    gate.stop().await;
+    ended.saturating_duration_since(closed_at)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gate_close_ends_a_connection_with_a_flow_to_fleet_telemetry() {
+    for _ in 0..2 {
+        let waited = close_time_under_flow(true).await;
+        assert!(waited < CLOSE_UNDER_FLOW, "{waited:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gate_close_ends_a_connection_with_a_flow_to_the_client() {
+    for _ in 0..2 {
+        let waited = close_time_under_flow(false).await;
+        assert!(waited < CLOSE_UNDER_FLOW, "{waited:?}");
+    }
+}
+
+/// An in-memory stream for the tests of a flow without pause. A flowing
+/// stream always has data to read; a silent stream never has data. Both
+/// take every byte that is written at once. So a copy from a flowing
+/// stream always has work and returns `Pending` only when the cooperative
+/// budget of its task runs out, the condition of review finding 1. The
+/// tests need no loopback socket, so they do not disturb other tests.
+struct Endless {
+    flowing: bool,
+}
+
+impl AsyncRead for Endless {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.flowing {
+            // Like a socket, each read uses the cooperative budget of the
+            // task.
+            let coop = std::task::ready!(tokio::task::coop::poll_proceed(cx));
+            let room = buf.initialize_unfilled().len();
+            buf.advance(room);
+            coop.made_progress();
+            Poll::Ready(Ok(()))
+        } else {
+            // Never ready: the copy task is aborted, not woken.
+            Poll::Pending
+        }
+    }
+}
+
+impl AsyncWrite for Endless {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let coop = std::task::ready!(tokio::task::coop::poll_proceed(cx));
+        coop.made_progress();
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Starts [`forward`] with a flow without pause from the client
+/// (`to_upstream`) or from the upstream, on the current thread.
+fn start_endless_flow(
+    gate: watch::Receiver<GateState>,
+    to_upstream: bool,
+    limits: GateLimits,
+) -> JoinHandle<Report> {
+    let epoch = gate.borrow().epoch();
+    let client = Endless {
+        flowing: to_upstream,
+    };
+    let upstream = Endless {
+        flowing: !to_upstream,
+    };
+    let accepted_at = Instant::now();
+    tokio::spawn(async move {
+        forward(
+            client,
+            async { Ok(upstream) },
+            accepted_at,
+            &limits,
+            gate,
+            epoch,
+        )
+        .await
+    })
+}
+
+async fn endless_flow_ends_at_a_gate_close(to_upstream: bool) {
+    let (readiness, gate) = open_gate();
+    let task = start_endless_flow(gate, to_upstream, LIMITS);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!task.is_finished());
+    let closed_at = Instant::now();
+    readiness.set_child_running(false);
+    let report = tokio::time::timeout(CLOSE_UNDER_FLOW, task)
+        .await
+        .expect("the gate close did not end the flow")
+        .unwrap();
+    assert_eq!(report.end, End::GateClosed);
+    assert!(closed_at.elapsed() < CLOSE_UNDER_FLOW);
+}
+
+#[tokio::test]
+async fn a_gate_close_ends_an_endless_flow_to_fleet_telemetry() {
+    endless_flow_ends_at_a_gate_close(true).await;
+}
+
+#[tokio::test]
+async fn a_gate_close_ends_an_endless_flow_to_the_client() {
+    endless_flow_ends_at_a_gate_close(false).await;
+}
+
+#[tokio::test]
+async fn rule_1_ends_a_client_flood_that_fleet_telemetry_never_answers() {
+    // The client sends without pause; the upstream takes every byte and
+    // never answers.
+    let limits = GateLimits {
+        first_byte_timeout: Duration::from_millis(200),
+        ..LIMITS
+    };
+    let (_readiness, gate) = open_gate();
+    let task = start_endless_flow(gate, true, limits);
+    let report = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("rule 1 did not end the flood")
+        .unwrap();
+    assert_eq!(report.end, End::NoFirstByte);
+    assert_eq!(report.first_byte, None);
+    assert!(report.duration >= Duration::from_millis(200));
+    assert!(report.duration < Duration::from_secs(1), "{report:?}");
+}
+
 #[tokio::test]
 async fn forwards_large_streams_in_both_directions_unchanged() {
     let gate = TestGate::start_open().await;
@@ -421,7 +611,8 @@ async fn accepted_sockets_get_keep_alive_and_no_delay() {
     let _client = TcpStream::connect(listener.local_addr().unwrap())
         .await
         .unwrap();
-    let (stream, _peer) = accept(&listener).await.unwrap();
+    let (stream, _peer) = listener.accept().await.unwrap();
+    set_client_options(&stream).unwrap();
 
     let socket = SockRef::from(&stream);
     assert!(socket.keepalive().unwrap());
@@ -435,6 +626,102 @@ async fn accepted_sockets_get_keep_alive_and_no_delay() {
     );
     assert_eq!(socket.tcp_keepalive_retries().unwrap(), 9);
     assert!(stream.nodelay().unwrap());
+}
+
+#[tokio::test]
+async fn the_socket_to_fleet_telemetry_gets_no_delay() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let stream = connect_upstream(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    assert!(stream.nodelay().unwrap());
+}
+
+#[tokio::test]
+async fn a_peer_that_reset_the_connection_is_not_an_options_failure() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (stream, _peer) = listener.accept().await.unwrap();
+    // A reset from the peer before the options are set.
+    client.set_zero_linger().unwrap();
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // macOS rejects the options on such a socket; Linux accepts them.
+    let outcome = SocketOptions::of(&stream);
+    assert!(
+        matches!(outcome, SocketOptions::Set | SocketOptions::PeerGone),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_closed_connection_gives_its_slot_back() {
+    // A bound of 2, and 6 connections one after the other: each closed
+    // connection must free its slot for the next one.
+    let limits = GateLimits {
+        max_connections: 2,
+        ..LIMITS
+    };
+    let gate = TestGate::start(limits, Watchdog::new().register(GATE_ACCEPTOR)).await;
+    gate.open();
+    let mut held = gate.connect().await;
+    let mut held_upstream = gate.accept_upstream().await;
+    for round in 0..6 {
+        // The gate frees the slot of the previous round a moment after
+        // its close, so a connect can be refused before that. Try again
+        // until the gate admits a connection; without a freed slot, no
+        // connection is ever admitted.
+        let admitted = tokio::time::timeout(WAIT, async {
+            loop {
+                let mut client = gate.connect().await;
+                client.write_all(b"admitted").await.ok();
+                let mut byte = [0_u8; 1];
+                let upstream = tokio::select! {
+                    accepted = gate.upstream.accept() => Some(accepted.unwrap().0),
+                    // Refused: the gate closed the connection.
+                    _ = client.read(&mut byte) => None,
+                };
+                if let Some(upstream) = upstream {
+                    break (client, upstream);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let (client, mut upstream) =
+            admitted.unwrap_or_else(|_| panic!("round {round}: no slot came back"));
+        let mut received = [0_u8; 8];
+        upstream.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"admitted", "round {round}");
+        drop(client);
+        drop(upstream);
+    }
+    held.write_all(b"still").await.unwrap();
+    let mut received = [0_u8; 5];
+    held_upstream.read_exact(&mut received).await.unwrap();
+    assert_eq!(&received, b"still");
+    gate.stop().await;
+}
+
+#[tokio::test]
+async fn a_panic_in_a_connection_task_is_logged() {
+    let (capture, _guard) = capture::install(ALLOWED_FIELDS);
+    let mut tasks = JoinSet::new();
+    tasks.spawn(async { panic!("test panic") });
+    log_task_failure(tasks.join_next().await.unwrap());
+    // A task that the stop aborts is not a failure.
+    tasks.spawn(std::future::pending::<()>());
+    tasks.abort_all();
+    log_task_failure(tasks.join_next().await.unwrap());
+    let text = capture.text();
+    assert_eq!(
+        text.matches("gate_connection_task_panicked").count(),
+        1,
+        "{text}"
+    );
+    assert!(!text.contains("test panic"), "{text}");
 }
 
 #[tokio::test]

@@ -45,6 +45,8 @@ use tracing_subscriber::registry::LookupSpan;
 /// - `duration_ms` and `first_byte_ms`: durations of a gate connection.
 /// - `peer_class`: a static class of a peer address, never the address
 ///   ([`crate::gate`]).
+/// - `socket_options` and `socket_options_error`: a static outcome of the
+///   socket options of a gate connection, and the `io::ErrorKind` name.
 /// - `child_line`: a line of the child after the VIN redaction. Only the
 ///   text of [`crate::child_output::RedactedLine`] goes into this field.
 /// - `stream` and `truncated`: the output stream of that line, and whether
@@ -68,6 +70,8 @@ pub const ALLOWED_FIELDS: &[&str] = &[
     "port",
     "reason",
     "signal",
+    "socket_options",
+    "socket_options_error",
     "stream",
     "task",
     "truncated",

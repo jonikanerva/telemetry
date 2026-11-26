@@ -26,14 +26,18 @@
 //!   gate it records the count that is not recorded yet, so that no refusal
 //!   is lost; that last event can come sooner than 60 s after the one
 //!   before.
-//! - **Rule 3, TCP keep-alive.** Each accepted socket gets keep-alive with
+//! - **Rule 3, TCP keep-alive.** Each admitted socket gets keep-alive with
 //!   an idle time of 15 s, an interval of 15 s, and 9 probes, the values
-//!   that Go sets for `fleet-telemetry` today. Each accepted socket and each
+//!   that Go sets for `fleet-telemetry` today. Each admitted socket and each
 //!   socket to `fleet-telemetry` also gets `TCP_NODELAY`, which Go sets on
 //!   its sockets by default, so that the gate does not delay small TLS
-//!   records. A failed option is logged and the connection stays open: the
-//!   history comes first, and the dead-peer bound then depends on the
-//!   operating system defaults.
+//!   records. The gate sets the options only after the admission, so a
+//!   closed gate and a refused connection cost no system call. A failed
+//!   option keeps the connection open: the history comes first, and the
+//!   dead-peer bound of that connection then depends on the operating
+//!   system defaults. The field `socket_options` of the connection event
+//!   shows `failed` for such a connection, or `peer_gone` when the peer had
+//!   ended the connection before the options were set (no fault).
 //! - **`fleet-telemetry` closes.** When `fleet-telemetry` ends its side, the
 //!   gate forwards the remaining bytes and the end of the stream to the
 //!   client. Then it waits at most [`GateLimits::upstream_close_linger`]
@@ -67,7 +71,10 @@
 //!   side: as long as `fleet-telemetry` keeps the connection. This is the
 //!   accepted risk of ADR 0001, lead decision 6.
 //! - Every connection ends at once when the gate closes or the process
-//!   stops.
+//!   stops. The bytes move in a task of their own, and the connection task
+//!   only watches the gate state, the deadlines, and the end of the copy;
+//!   it aborts the copy task. So a copy that always has data cannot delay
+//!   the gate close, rule 1, or the close linger.
 //!
 //! Bounds: each forwarded connection has two copy buffers of 8 KiB
 //! ([`GateLimits::buffer_size`]), so 1024 connections use 16 MiB of buffers.
@@ -184,7 +191,7 @@ pub async fn run(
                     sink.record(IngestEvent::now(EventKind::GateFull(window)));
                 }
             }
-            accepted = accept(&listener) => match accepted {
+            accepted = listener.accept() => match accepted {
                 Ok((stream, peer)) => {
                     let accepted_at = Instant::now();
                     let state = *gate.borrow();
@@ -241,21 +248,58 @@ pub async fn run(
     heartbeat.retire();
 }
 
-/// Accepts one connection and sets the socket options of gate rule 3.
+/// Sets the socket options of gate rule 3 on an admitted client socket:
+/// TCP keep-alive and `TCP_NODELAY`.
 ///
 /// # Errors
 ///
-/// Returns the error of `accept`. A failed socket option is logged, and the
-/// connection is returned.
-pub async fn accept(listener: &TcpListener) -> io::Result<(TcpStream, SocketAddr)> {
-    let (stream, peer) = listener.accept().await?;
-    let options = SockRef::from(&stream)
-        .set_tcp_keepalive(&KEEPALIVE)
-        .and_then(|()| stream.set_nodelay(true));
-    if let Err(error) = options {
-        warn!(error = %error, "gate_socket_options_failed");
+/// Returns the error of the operating system.
+pub fn set_client_options(stream: &TcpStream) -> io::Result<()> {
+    SockRef::from(stream).set_tcp_keepalive(&KEEPALIVE)?;
+    stream.set_nodelay(true)
+}
+
+/// The outcome of [`set_client_options`] for the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SocketOptions {
+    Set,
+    /// The peer was gone already, for example after a reset. This is not a
+    /// fault of the configuration, and the connection ends by itself.
+    PeerGone,
+    Failed(io::ErrorKind),
+}
+
+impl SocketOptions {
+    fn of(stream: &TcpStream) -> Self {
+        match set_client_options(stream) {
+            Ok(()) => Self::Set,
+            Err(_) if stream.peer_addr().is_err() => Self::PeerGone,
+            Err(error) => Self::Failed(error.kind()),
+        }
     }
-    Ok((stream, peer))
+
+    /// The value of the log field `socket_options`; none when set.
+    const fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Set => None,
+            Self::PeerGone => Some("peer_gone"),
+            Self::Failed(_) => Some("failed"),
+        }
+    }
+}
+
+/// Connects to `fleet-telemetry` and sets `TCP_NODELAY` on the socket. A
+/// failed option is logged, and the connection is returned.
+///
+/// # Errors
+///
+/// Returns the error of the connect.
+pub async fn connect_upstream(address: SocketAddr) -> io::Result<TcpStream> {
+    let stream = TcpStream::connect(address).await?;
+    if let Err(error) = stream.set_nodelay(true) {
+        warn!(error = %error, "gate_upstream_socket_options_failed");
+    }
+    Ok(stream)
 }
 
 /// What the acceptor gives to a forwarded connection.
@@ -273,16 +317,12 @@ async fn serve_connection(
     gate: watch::Receiver<GateState>,
     limits: GateLimits,
 ) {
-    let connect = async move {
-        let stream = TcpStream::connect(upstream).await?;
-        if let Err(error) = stream.set_nodelay(true) {
-            warn!(error = %error, "gate_socket_options_failed");
-        }
-        Ok(stream)
-    };
+    // Only an admitted connection gets the options, so refused connections
+    // and a closed gate cost no system call and no log line.
+    let options = SocketOptions::of(&client);
     let report = forward(
         client,
-        connect,
+        connect_upstream(upstream),
         admission.accepted_at,
         &limits,
         gate,
@@ -296,6 +336,11 @@ async fn serve_connection(
         duration_ms = millis(report.duration),
         first_byte_ms = report.first_byte.map(millis),
         peer_class = peer_class(peer.ip()),
+        socket_options = options.label(),
+        socket_options_error = match options {
+            SocketOptions::Failed(kind) => Some(tracing::field::debug(kind)),
+            SocketOptions::Set | SocketOptions::PeerGone => None,
+        },
         "gate_connection_closed"
     );
 }
@@ -344,6 +389,13 @@ struct Report {
 /// Forwards one connection until it ends. `connect` opens the connection to
 /// `fleet-telemetry`. The function is generic so that the tests can use
 /// in-memory streams with a paused clock.
+///
+/// The bytes move in a task of their own ([`copy_both`]). This task only
+/// watches the controls: the gate close, the first-byte deadline of rule 1,
+/// and the close linger. When a control ends the connection, it aborts the
+/// copy task, and the abort drops both sockets. A copy direction that
+/// always has data uses the cooperative budget of its own task only, so it
+/// cannot delay a control.
 async fn forward<C, U>(
     client: C,
     connect: impl Future<Output = io::Result<U>>,
@@ -353,8 +405,8 @@ async fn forward<C, U>(
     epoch: u64,
 ) -> Report
 where
-    C: AsyncRead + AsyncWrite + Unpin,
-    U: AsyncRead + AsyncWrite + Unpin,
+    C: AsyncRead + AsyncWrite + Send + 'static,
+    U: AsyncRead + AsyncWrite + Send + 'static,
 {
     let deadline = accepted_at + limits.first_byte_timeout;
     // A dropped sender also ends the wait: the process stops.
@@ -363,9 +415,8 @@ where
     };
     let mut closed = pin!(closed);
 
-    let (end, error, first_byte) = 'run: {
+    let (end, error, first_byte_at) = 'run: {
         let upstream = tokio::select! {
-            biased;
             () = &mut closed => break 'run (End::GateClosed, None, None),
             connected = timeout_at(deadline, connect) => match connected {
                 Ok(Ok(upstream)) => upstream,
@@ -373,87 +424,149 @@ where
                 Err(_elapsed) => break 'run (End::NoFirstByte, None, None),
             },
         };
-        let (client_read, mut client_write) = tokio::io::split(client);
-        let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
         let (seen, mut first_seen) = oneshot::channel();
-        // One buffer of `buffer_size` for each direction.
-        let mut client_read = BufReader::with_capacity(limits.buffer_size, client_read);
-        let mut upstream_read = BufReader::with_capacity(
+        let (upstream_ended, mut upstream_end) = oneshot::channel();
+        let mut copy = tokio::spawn(copy_both(
+            client,
+            upstream,
             limits.buffer_size,
-            FirstByte {
-                inner: upstream_read,
-                seen: Some(seen),
-                at: None,
-            },
-        );
-        let (end, error) = {
-            // Each direction copies until its end of stream and then ends
-            // the stream of the other side.
-            let up = async {
-                copy_buf(&mut client_read, &mut upstream_write).await?;
-                upstream_write.shutdown().await
-            };
-            let down = async {
-                copy_buf(&mut upstream_read, &mut client_write).await?;
-                client_write.shutdown().await
-            };
-            let mut up = pin!(up);
-            let mut down = pin!(down);
-            let mut no_first_byte = pin!(sleep_until(deadline));
-            let mut up_done = false;
-            let mut waiting = true;
-            loop {
-                // `biased`: the copy reads a byte that arrived in time
-                // before the deadline is checked.
-                tokio::select! {
-                    biased;
-                    copied = &mut down => match copied {
-                        Ok(()) if up_done => break (End::Finished, None),
-                        Ok(()) => {
-                            // `fleet-telemetry` ended its side, and the
-                            // client has the last bytes and the end of the
-                            // stream. Give the client a short time to end
-                            // its side, then close the connection.
-                            tokio::select! {
-                                _ = timeout(limits.upstream_close_linger, &mut up) => {}
-                                () = &mut closed => {}
-                            }
-                            break (End::UpstreamClosed, None);
-                        }
-                        Err(error) => break (End::Failed, Some(error.kind())),
-                    },
-                    copied = &mut up, if !up_done => match copied {
-                        // The client ended its side. `fleet-telemetry`
-                        // decides when the connection ends.
-                        Ok(()) => up_done = true,
-                        Err(error) => break (End::Failed, Some(error.kind())),
-                    },
-                    _ = &mut first_seen, if waiting => waiting = false,
-                    () = &mut closed => break (End::GateClosed, None),
-                    () = &mut no_first_byte, if waiting => break (End::NoFirstByte, None),
+            seen,
+            upstream_ended,
+        ));
+        let mut no_first_byte = pin!(sleep_until(deadline));
+        let mut linger = pin!(sleep_until(deadline));
+        let mut first_byte_at = None;
+        let mut waiting = true;
+        let mut lingering = false;
+        let mut copy_done = false;
+        let (end, error) = loop {
+            tokio::select! {
+                () = &mut closed => break (End::GateClosed, None),
+                copied = &mut copy => {
+                    copy_done = true;
+                    break match copied {
+                        Ok(Ok(end)) => (end, None),
+                        Ok(Err(kind)) => (End::Failed, Some(kind)),
+                        // A panic of the copy task.
+                        Err(_join) => (End::Failed, None),
+                    };
                 }
+                at = &mut first_seen, if waiting => {
+                    waiting = false;
+                    first_byte_at = at.ok();
+                }
+                () = &mut no_first_byte, if waiting => {
+                    // The copy task notes the time of the first byte when it
+                    // reads it, so a byte that came in time keeps the
+                    // connection also when this task sees it late.
+                    match first_seen.try_recv() {
+                        Ok(at) if at <= deadline => {
+                            waiting = false;
+                            first_byte_at = Some(at);
+                        }
+                        _ => break (End::NoFirstByte, None),
+                    }
+                }
+                ended = &mut upstream_end, if !lingering => {
+                    lingering = true;
+                    if ended.is_ok() {
+                        // `fleet-telemetry` ended its side, and the client
+                        // has the last bytes and the end of the stream. Give
+                        // the client a short time to end its side.
+                        linger.as_mut().reset(Instant::now() + limits.upstream_close_linger);
+                    } else {
+                        // The copy task ended without that signal; its
+                        // result follows.
+                        linger.as_mut().reset(Instant::now() + NEVER);
+                    }
+                }
+                () = &mut linger, if lingering => break (End::UpstreamClosed, None),
             }
         };
-        let first_byte = upstream_read
-            .get_ref()
-            .at
-            .map(|at| at.saturating_duration_since(accepted_at));
-        (end, error, first_byte)
+        if !copy_done {
+            copy.abort();
+            // The task drops both sockets when it ends.
+            copy.await.ok();
+        }
+        if waiting {
+            first_byte_at = first_seen.try_recv().ok();
+        }
+        (end, error, first_byte_at)
     };
     Report {
         end,
         error,
-        first_byte,
+        first_byte: first_byte_at.map(|at| at.saturating_duration_since(accepted_at)),
         duration: accepted_at.elapsed(),
     }
 }
 
-/// The stream to `fleet-telemetry`. It notes the time of the first byte
+/// A time far in the future for a timer that must not fire.
+const NEVER: Duration = Duration::from_hours(24 * 365);
+
+/// Copies both directions until both end, or until the caller aborts the
+/// task. Each direction ends the stream of the other side at its own end.
+/// `upstream_ended` gets a signal when `fleet-telemetry` ends its side
+/// before the client. One buffer of `buffer_size` for each direction.
+///
+/// Returns [`End::UpstreamClosed`] when `fleet-telemetry` ended first, and
+/// [`End::Finished`] when the client ended first.
+async fn copy_both<C, U>(
+    client: C,
+    upstream: U,
+    buffer_size: usize,
+    seen: oneshot::Sender<Instant>,
+    upstream_ended: oneshot::Sender<()>,
+) -> Result<End, io::ErrorKind>
+where
+    C: AsyncRead + AsyncWrite,
+    U: AsyncRead + AsyncWrite,
+{
+    let (client_read, mut client_write) = tokio::io::split(client);
+    let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
+    let mut client_read = BufReader::with_capacity(buffer_size, client_read);
+    let mut upstream_read = BufReader::with_capacity(
+        buffer_size,
+        FirstByte {
+            inner: upstream_read,
+            seen: Some(seen),
+        },
+    );
+    let up = async {
+        copy_buf(&mut client_read, &mut upstream_write).await?;
+        upstream_write.shutdown().await
+    };
+    let down = async {
+        copy_buf(&mut upstream_read, &mut client_write).await?;
+        client_write.shutdown().await
+    };
+    let mut up = pin!(up);
+    let mut down = pin!(down);
+    tokio::select! {
+        copied = &mut up => {
+            // The client ended its side. `fleet-telemetry` decides when the
+            // connection ends.
+            copied.map_err(|error| error.kind())?;
+            down.await.map_err(|error| error.kind())?;
+            Ok(End::Finished)
+        }
+        copied = &mut down => {
+            copied.map_err(|error| error.kind())?;
+            upstream_ended.send(()).ok();
+            // The remaining bytes of the client still go to
+            // `fleet-telemetry`; the caller ends this wait after the linger.
+            // An error here comes from the closed side and changes nothing.
+            up.await.ok();
+            Ok(End::UpstreamClosed)
+        }
+    }
+}
+
+/// The stream to `fleet-telemetry`. It sends the time of the first byte
 /// that it reads.
 struct FirstByte<S> {
     inner: S,
-    seen: Option<oneshot::Sender<()>>,
-    at: Option<Instant>,
+    seen: Option<oneshot::Sender<Instant>>,
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for FirstByte<S> {
@@ -465,12 +578,11 @@ impl<S: AsyncRead + Unpin> AsyncRead for FirstByte<S> {
         let this = self.get_mut();
         let before = buf.filled().len();
         let polled = Pin::new(&mut this.inner).poll_read(cx, buf);
-        if this.at.is_none() && matches!(polled, Poll::Ready(Ok(()))) && buf.filled().len() > before
+        if matches!(polled, Poll::Ready(Ok(())))
+            && buf.filled().len() > before
+            && let Some(seen) = this.seen.take()
         {
-            this.at = Some(Instant::now());
-            if let Some(seen) = this.seen.take() {
-                seen.send(()).ok();
-            }
+            seen.send(Instant::now()).ok();
         }
         polled
     }
