@@ -34,7 +34,12 @@
 //! `os.StartProcess`), and `entrypoint.sh` ends with `exec`, so no such
 //! process exists in the deployment. Reaping any process with
 //! `waitpid(-1)` would need `unsafe` code or another crate, and it would
-//! race with the wait of Tokio.
+//! race with the wait of Tokio. The lead decided for no general reaping (PR
+//! #18). Evidence limit: the search covered the first-party Go source of
+//! the tag (commit `6689adb`), not its Go dependencies, and was not checked
+//! on a running container. A process that a dependency starts and leaves
+//! behind would stay a zombie; it uses a process table entry and nothing
+//! else.
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
