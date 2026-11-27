@@ -339,13 +339,13 @@ impl Ingest {
         status
     }
 
-    /// Checks the complete log output: no line holds one of `secrets`, and
-    /// no first-party event has a field that the allowlist redacted. The
-    /// failure names the secret by its index only.
+    /// Checks the complete log output: no line holds one of `secrets`
+    /// ([`line_holds`]), and no first-party event has a field that the
+    /// allowlist redacted. The failure names the secret by its index only.
     pub fn assert_log_holds_none_of(&self, secrets: &[&str]) {
         assert_ne!(self.raw.len(), 0);
         for (index, secret) in secrets.iter().enumerate() {
-            let found = self.raw.iter().position(|line| line.contains(secret));
+            let found = self.raw.iter().position(|line| line_holds(line, secret));
             assert_eq!(found, None, "the log holds secret number {index}");
         }
         for event in &self.events {
@@ -366,6 +366,67 @@ impl Ingest {
             }
         }
     }
+}
+
+/// Whether the raw log line `line` holds `secret` in a field name or a
+/// value, at any depth, except in the timestamp that the formatter writes.
+///
+/// The search runs over the raw text, so it also sees escaped text and
+/// numbers as written. Only the value of the top-level `"timestamp"` pair is
+/// blanked first, and only when it is a valid instant: its fraction of a
+/// second can hold a numeric sentinel by chance. For example a line written
+/// at second 24 and millisecond 938 holds the longitude sentinel `24.938`
+/// (PR #25, flake protocol). A timestamp value that is not an instant stays
+/// in the search.
+pub fn line_holds(line: &str, secret: &str) -> bool {
+    let timestamp = serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|event| event["timestamp"].as_str().map(str::to_owned))
+        .filter(|value| value.parse::<jiff::Timestamp>().is_ok());
+    match timestamp {
+        Some(value) => {
+            let pair = format!("\"timestamp\":\"{value}\"");
+            line.replacen(&pair, "\"timestamp\":\"\"", 1)
+                .contains(secret)
+        }
+        None => line.contains(secret),
+    }
+}
+
+#[test]
+fn a_sentinel_only_in_the_timestamp_is_not_a_leak() {
+    let sentinel = "24.938";
+    let line = r#"{"timestamp":"2026-11-27T03:30:24.938123456Z","level":"INFO","target":"ingest","message":"started"}"#;
+    // The search over the whole raw line, as before this change, finds it.
+    assert!(line.contains(sentinel));
+    assert!(!line_holds(line, sentinel));
+}
+
+#[test]
+fn a_sentinel_in_any_other_place_is_a_leak() {
+    let sentinel = "24.938";
+    let timestamp = r#""timestamp":"2026-11-27T03:30:24.938123456Z""#;
+    for rest in [
+        // A string value, a number, a nested value, an array, a field
+        // name, and an escaped string.
+        r#""message":"child_output","child_line":"lon 24.938""#,
+        r#""message":"x","count":24.938445"#,
+        r#""message":"x","span":{"inner":{"value":"24.938"}}"#,
+        r#""message":"x","items":[1,"a 24.938 b"]"#,
+        r#""message":"x","f24.938":1"#,
+        r#""message":"x","child_line":"\"24.938\"""#,
+    ] {
+        let line = format!("{{{timestamp},{rest}}}");
+        assert!(line_holds(&line, sentinel), "{line}");
+    }
+    // A timestamp value that is not a valid instant stays in the search.
+    let line = r#"{"timestamp":"lon 24.938","message":"x"}"#;
+    assert!(line_holds(line, sentinel));
+    // A second timestamp pair, not written by the formatter, stays too.
+    let line = r#"{"timestamp":"2026-11-27T03:30:24.938123456Z","span":{"timestamp":"2026-11-27T03:30:24.938123456Z"}}"#;
+    assert!(line_holds(line, sentinel));
+    // A line that is not JSON is searched as a whole.
+    assert!(line_holds("not json 24.938", sentinel));
 }
 
 impl Drop for Ingest {
