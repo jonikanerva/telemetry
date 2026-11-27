@@ -158,7 +158,13 @@ test('Back after a logout in another tab and a full page load shows no data', as
   await page.goto('/');
   await expect(page.getByText('Palvelu toimii.')).toBeVisible();
   // A full page load of another document, so Back is a cross-document
-  // navigation that a back-forward cache can serve from memory.
+  // navigation. This test proves the result of that Back when the browser
+  // loads the page again: the route check asks the server. It does not
+  // prove the `pageshow` reload of a page from the back-forward cache: the
+  // test passed also without the listener, so the cache is probably not
+  // active under Playwright. The listener has unit tests
+  // (web/src/page-show.test.ts); the cache path in a real browser is a
+  // post-release check (docs/web-release.md).
   await page.goto('/no-such-page');
   await expect(page.getByRole('heading', { level: 1, name: 'Sivua ei löydy' })).toBeVisible();
 
@@ -174,6 +180,24 @@ test('Back after a logout in another tab and a full page load shows no data', as
   await expect(page.getByRole('heading', { level: 1, name: 'Kirjaudu sisään' })).toBeVisible();
   await expect(page.getByText('Palvelu toimii.')).toHaveCount(0);
   await expect(page.getByText(/Istunto päättyy viimeistään/)).toHaveCount(0);
+});
+
+test('/logout opened directly claims no failure and goes to the page of the session state', async ({
+  page,
+  baseURL,
+}) => {
+  // Without a session: the login page.
+  await page.goto('/logout');
+  await expect(page.getByRole('heading', { level: 1, name: 'Kirjaudu sisään' })).toBeVisible();
+  await expect(page.getByText('Uloskirjautuminen ei onnistunut')).toHaveCount(0);
+
+  // With a session: the application, and the session stays.
+  await loginByApi(page, baseURL ?? '');
+  await page.goto('/logout');
+  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByText('Uloskirjautuminen ei onnistunut')).toHaveCount(0);
+  expect(await serverSessionStatus(page.request)).toBe(200);
 });
 
 test('a wrong password shows an announced error and clears the field', async ({ page }) => {
