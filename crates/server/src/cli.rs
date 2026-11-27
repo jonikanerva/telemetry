@@ -13,6 +13,10 @@ pub enum Command {
     /// Write the `OpenAPI` document to the path. Reads no environment, no
     /// database, and no SPA file.
     ExportOpenapi(PathBuf),
+    /// Read a password from standard input and write its Argon2id hash in
+    /// the PHC string form to standard output, for `WEB_PASSWORD_HASH`.
+    /// Reads no environment.
+    HashPassword,
     /// Serve the same router as [`Command::Serve`] plus the test-only
     /// routes on `127.0.0.1:$PORT`. Only a build with the feature
     /// `test-server` has this command.
@@ -24,7 +28,9 @@ pub enum Command {
 ///
 /// The error text does not repeat the arguments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("expected one command: serve, export-openapi <path>, or serve-test (feature test-server)")]
+#[error(
+    "expected one command: serve, export-openapi <path>, hash-password, or serve-test (feature test-server)"
+)]
 pub struct UsageError;
 
 /// Parses the arguments that follow the program name.
@@ -45,6 +51,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
     let mut args = args.into_iter();
     let command = match args.next().as_deref().and_then(OsStr::to_str) {
         Some("serve") => Command::Serve,
+        Some("hash-password") => Command::HashPassword,
         #[cfg(feature = "test-server")]
         Some("serve-test") => Command::ServeTest,
         Some("export-openapi") => match args.next() {
@@ -88,6 +95,14 @@ mod tests {
     fn rejects_export_openapi_without_a_path() {
         assert_eq!(parse(args(&["export-openapi"])), Err(UsageError));
         assert_eq!(parse(args(&["export-openapi", ""])), Err(UsageError));
+    }
+
+    #[test]
+    fn parses_hash_password_without_arguments() {
+        assert_eq!(parse(args(&["hash-password"])), Ok(Command::HashPassword));
+        // The password never comes from the command line, where the
+        // process list shows it.
+        assert_eq!(parse(args(&["hash-password", "secret"])), Err(UsageError));
     }
 
     #[test]

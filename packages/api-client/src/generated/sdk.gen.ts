@@ -4,8 +4,8 @@ import * as z from 'zod';
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client/index.js';
-import type { GetHealthData, GetHealthErrors, GetHealthResponses } from './types.gen.js';
-import { zGetHealthResponse } from './zod.gen.js';
+import type { GetHealthData, GetHealthErrors, GetHealthResponses, GetSessionData, GetSessionErrors, GetSessionResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses } from './types.gen.js';
+import { zGetHealthResponse, zGetSessionResponse, zLoginBody, zLoginResponse, zLogoutResponse } from './zod.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -20,6 +20,58 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
      */
     meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
+
+/**
+ * Logs out: ends the session of the request and removes the cookie.
+ *
+ * The response is 204 also without a session, so a repeated logout and a
+ * logout after an expiry give the same result.
+ */
+export const logout = <ThrowOnError extends boolean = false>(options?: Options<LogoutData, ThrowOnError>): RequestResult<LogoutResponses, LogoutErrors, ThrowOnError> => (options?.client ?? client).delete<LogoutResponses, LogoutErrors, ThrowOnError>({
+    requestValidator: async (data) => await z.object({
+        body: z.never().optional(),
+        path: z.never().optional(),
+        query: z.never().optional()
+    }).parseAsync(data),
+    responseTransformer: async (data) => await zLogoutResponse.parseAsync(data),
+    url: '/api/v1/session',
+    ...options
+});
+
+/**
+ * Returns the session of the request.
+ */
+export const getSession = <ThrowOnError extends boolean = false>(options?: Options<GetSessionData, ThrowOnError>): RequestResult<GetSessionResponses, GetSessionErrors, ThrowOnError> => (options?.client ?? client).get<GetSessionResponses, GetSessionErrors, ThrowOnError>({
+    requestValidator: async (data) => await z.object({
+        body: z.never().optional(),
+        path: z.never().optional(),
+        query: z.never().optional()
+    }).parseAsync(data),
+    responseTransformer: async (data) => await zGetSessionResponse.parseAsync(data),
+    url: '/api/v1/session',
+    ...options
+});
+
+/**
+ * Logs in with the password and starts a new session.
+ *
+ * The response sets the session cookie. A session cookie of the request
+ * ends first, so a login never keeps a token that the client chose.
+ */
+export const login = <ThrowOnError extends boolean = false>(options: Options<LoginData, ThrowOnError>): RequestResult<LoginResponses, LoginErrors, ThrowOnError> => (options.client ?? client).post<LoginResponses, LoginErrors, ThrowOnError>({
+    requestValidator: async (data) => await z.object({
+        body: zLoginBody,
+        path: z.never().optional(),
+        query: z.never().optional()
+    }).parseAsync(data),
+    responseTransformer: async (data) => await zLoginResponse.parseAsync(data),
+    url: '/api/v1/session',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 /**
  * Returns the state and the version of the server.

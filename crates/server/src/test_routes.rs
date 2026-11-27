@@ -28,11 +28,13 @@ pub const E4_SET_COOKIE: &str = "__Host-e4=1; Path=/; Secure; HttpOnly; SameSite
 
 const E4_PAIR: &str = "__Host-e4=1";
 
-/// The test-only routes.
+/// The test-only routes, with those of the session API
+/// (`crate::auth::test_routes`).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/test-only/e4/cookie/set", get(set_cookie))
         .route("/test-only/e4/cookie/check", get(check_cookie))
+        .merge(crate::auth::test_routes::router())
 }
 
 async fn set_cookie() -> Response {

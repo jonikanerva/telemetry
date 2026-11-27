@@ -16,6 +16,21 @@ export const zHealth = z.object({
 });
 
 /**
+ * An instant on the wire: RFC 3339 UTC with `Z`, microsecond precision.
+ *
+ * The value holds no sub-microsecond part, so the text form always has
+ * 0 to 6 fractional digits.
+ */
+export const zInstant = z.iso.datetime().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/);
+
+/**
+ * The body of `POST /api/v1/session`.
+ */
+export const zLoginRequest = z.object({
+    password: z.string().min(1).max(1024)
+});
+
+/**
  * The application code of a problem. The set is closed: a new code is a
  * contract change.
  */
@@ -47,6 +62,31 @@ export const zProblem = z.object({
     title: z.string(),
     type: z.string()
 });
+
+/**
+ * The response body of a valid session.
+ */
+export const zSession = z.object({
+    expires_at: zInstant,
+    idle_expires_at: zInstant
+});
+
+/**
+ * The session ended. The response removes the session cookie.
+ */
+export const zLogoutResponse = z.void();
+
+/**
+ * The request has a valid session.
+ */
+export const zGetSessionResponse = zSession;
+
+export const zLoginBody = zLoginRequest;
+
+/**
+ * The password is correct. The response sets the session cookie.
+ */
+export const zLoginResponse = zSession;
 
 /**
  * The server answers requests.

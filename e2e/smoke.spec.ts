@@ -1,13 +1,20 @@
 // The smoke journey of the scaffold: the start page, its states, the
 // accessibility check in both color schemes, the content security policy,
-// and the problem response of an unknown API path.
+// and the problem response of an unknown API path. The start page needs a
+// session (ADR 0012), so these tests log in through the API first.
 import process from 'node:process';
 
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
+import { loginByApi, resetAuth } from './auth-support.js';
 import { SERVER_VERSION, WCAG_AA_TAGS, cspViolations, recordCspViolations, recordForeignRequests } from './support.js';
+
+test.beforeEach(async ({ page, request, baseURL }) => {
+  await resetAuth(request);
+  await loginByApi(page, baseURL ?? '');
+});
 
 async function expectNoAxeViolations(page: Page): Promise<void> {
   for (const colorScheme of ['light', 'dark'] as const) {

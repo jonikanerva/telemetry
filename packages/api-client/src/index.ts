@@ -10,7 +10,12 @@
 //   cancelled request has no result; TanStack Query discards it.
 // - No HTTP response arrived (DNS, TLS, connection, CORS): `network`.
 // - A 2xx response with a body that is not valid JSON or does not match
-//   the success schema: `invalid_response`.
+//   the success schema: `invalid_response`. The generated client returns
+//   `{}` without validation for a 204 and for any 2xx with
+//   `Content-Length: 0`, so the facade validates every success body again
+//   with the success schema. An empty body never becomes data.
+// - An operation without a response body (logout) succeeds only with the
+//   declared status 204. Any other 2xx status is `invalid_response`.
 // - A non-2xx response with a valid Problem body whose `status` equals the
 //   HTTP status: `problem`.
 // - Any other non-2xx response: `invalid_response`. This includes a
@@ -22,11 +27,16 @@
 import './zod-config.js';
 import { createClient, createConfig } from './generated/client/index.js';
 import type { Client } from './generated/client/index.js';
-import { getHealth as generatedGetHealth } from './generated/sdk.gen.js';
-import type { Health, ProblemCode } from './generated/types.gen.js';
-import { zProblem } from './generated/zod.gen.js';
+import {
+  getHealth as generatedGetHealth,
+  getSession as generatedGetSession,
+  login as generatedLogin,
+  logout as generatedLogout,
+} from './generated/sdk.gen.js';
+import type { Health, ProblemCode, Session } from './generated/types.gen.js';
+import { zHealth, zProblem, zSession } from './generated/zod.gen.js';
 
-export type { Health, ProblemCode };
+export type { Health, ProblemCode, Session };
 
 /** A validated problem body: the output type of the generated schema. */
 export type Problem = ReturnType<typeof zProblem.parse>;
@@ -77,14 +87,32 @@ export type RequestOptions = {
 
 export type ApiClient = {
   readonly getHealth: (options?: RequestOptions) => Promise<ApiResult<Health>>;
+  /** GET /api/v1/session: the session of the request. */
+  readonly getSession: (options?: RequestOptions) => Promise<ApiResult<Session>>;
+  /** POST /api/v1/session: a login. The session cookie is HttpOnly; the page never sees it. */
+  readonly login: (password: string, options?: RequestOptions) => Promise<ApiResult<Session>>;
+  /** DELETE /api/v1/session: a logout. Success means status 204. */
+  readonly logout: (options?: RequestOptions) => Promise<ApiResult<undefined>>;
 };
 
 // The result shape of a generated SDK function with `throwOnError: false`.
-type GeneratedOutcome<T> = {
-  readonly data?: T | undefined;
+type GeneratedOutcome = {
+  readonly data?: unknown;
   readonly error?: unknown;
   readonly response?: Response | undefined;
 };
+
+// The success rule of one operation: a JSON body that matches the schema,
+// or no body with status 204.
+type Success<T> =
+  | { readonly kind: 'json'; readonly schema: { readonly safeParse: (value: unknown) => Parsed<T> } }
+  | { readonly kind: 'no_content'; readonly value: T };
+
+type Parsed<T> = { readonly success: true; readonly data: T } | { readonly success: false };
+
+const healthBody: Success<Health> = { kind: 'json', schema: zHealth };
+const sessionBody: Success<Session> = { kind: 'json', schema: zSession };
+const noContent: Success<undefined> = { kind: 'no_content', value: undefined };
 
 export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -107,7 +135,8 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   // Request after a garbage collection.
   async function run<T>(
     caller: AbortSignal | undefined,
-    call: (signal: AbortSignal) => Promise<GeneratedOutcome<T>>,
+    success: Success<T>,
+    call: (signal: AbortSignal) => Promise<GeneratedOutcome>,
   ): Promise<ApiResult<T>> {
     if (caller?.aborted === true) {
       throw caller.reason;
@@ -134,7 +163,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       stop('timeout');
     }, timeoutMs);
     caller?.addEventListener('abort', onCallerAbort, { once: true });
-    let outcome: GeneratedOutcome<T> | undefined;
+    let outcome: GeneratedOutcome | undefined;
     try {
       outcome = await Promise.race([call(controller.signal), aborted]);
     } finally {
@@ -152,18 +181,47 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       return { ok: false, error: { kind: 'network' } };
     }
     if (response.ok) {
-      if (outcome.error === undefined && outcome.data !== undefined) {
-        return { ok: true, data: outcome.data };
-      }
-      return { ok: false, error: { kind: 'invalid_response', status: response.status } };
+      return outcome.error === undefined
+        ? decodeSuccess(success, response.status, outcome.data)
+        : { ok: false, error: { kind: 'invalid_response', status: response.status } };
     }
     return { ok: false, error: classifyErrorBody(response.status, outcome.error) };
   }
 
   return {
     getHealth: async (request = {}) =>
-      run<Health>(request.signal, async (signal) => generatedGetHealth({ client, signal })),
+      run(request.signal, healthBody, async (signal) => generatedGetHealth({ client, signal })),
+    getSession: async (request = {}) =>
+      run(request.signal, sessionBody, async (signal) => generatedGetSession({ client, signal })),
+    login: async (password, request = {}) =>
+      run(request.signal, sessionBody, async (signal) => generatedLogin({ client, signal, body: { password } })),
+    logout: async (request = {}) =>
+      run(request.signal, noContent, async (signal) => generatedLogout({ client, signal })),
   };
+}
+
+function decodeSuccess<T>(success: Success<T>, status: number, data: unknown): ApiResult<T> {
+  switch (success.kind) {
+    case 'json': {
+      // A 204 or an empty body gives `{}` from the generated client, so
+      // the status must also be one with a body.
+      const parsed = status === 204 ? { success: false as const } : success.schema.safeParse(data);
+      return parsed.success
+        ? { ok: true, data: parsed.data }
+        : { ok: false, error: { kind: 'invalid_response', status } };
+    }
+    case 'no_content':
+      return status === 204
+        ? { ok: true, data: success.value }
+        : { ok: false, error: { kind: 'invalid_response', status } };
+    default:
+      return unknownSuccess(success, status);
+  }
+}
+
+// The fallback of the exhaustive switch over the success rules.
+function unknownSuccess(_success: never, status: number): ApiResult<never> {
+  return { ok: false, error: { kind: 'invalid_response', status } };
 }
 
 function classifyErrorBody(status: number, body: unknown): ApiError {
@@ -213,6 +271,15 @@ function isRetryableProblem(code: ProblemCode): boolean {
     default:
       return unknownValue(code);
   }
+}
+
+/**
+ * Whether the failure means that the request has no valid session: only
+ * the problem code `unauthenticated`. A wrong password at login
+ * (`invalid_credentials`) is not a session loss.
+ */
+export function isUnauthenticated(error: ApiError): boolean {
+  return error.kind === 'problem' && error.problem.code === 'unauthenticated';
 }
 
 // The fallback of an exhaustive switch. The type is `never` at compile

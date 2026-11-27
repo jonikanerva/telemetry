@@ -1,5 +1,6 @@
 // All Finnish text of the user interface. Components take their text from
-// this object and contain no literal user-visible strings.
+// this object and contain no literal user-visible strings. A text with a
+// value is a function of that value.
 export const fi = {
   appName: 'Telemetria',
   skipToContent: 'Siirry sisältöön',
@@ -17,4 +18,20 @@ export const fi = {
   unavailableBody: 'Palvelu ei vastannut oikein. Yritä myöhemmin uudelleen.',
   reloadBanner: 'Sovelluksesta on uusi versio.',
   reloadButton: 'Lataa sivu uudelleen',
+  retry: 'Yritä uudelleen',
+  loginTitle: 'Kirjaudu sisään',
+  loginPasswordLabel: 'Salasana',
+  loginSubmit: 'Kirjaudu sisään',
+  loginSubmitting: 'Kirjaudutaan…',
+  loginInvalidCredentials: 'Salasana on väärä.',
+  loginThrottled: (seconds: number): string =>
+    `Liian monta kirjautumisyritystä. Yritä uudelleen ${String(seconds)} sekunnin kuluttua.`,
+  loginThrottledNoTime: 'Liian monta kirjautumisyritystä. Yritä hetken kuluttua uudelleen.',
+  loginUnavailable: 'Kirjautuminen ei onnistunut. Palvelu ei vastannut. Yritä hetken kuluttua uudelleen.',
+  logout: 'Kirjaudu ulos',
+  logoutPending: 'Kirjaudutaan ulos…',
+  logoutFailedTitle: 'Uloskirjautuminen ei onnistunut',
+  logoutFailedBody: 'Palvelin ei vahvistanut uloskirjautumista. Istunto voi olla yhä voimassa tällä laitteella.',
+  logoutRetry: 'Yritä uloskirjautumista uudelleen',
+  sessionEnds: (end: string): string => `Istunto päättyy viimeistään ${end}`,
 } as const;

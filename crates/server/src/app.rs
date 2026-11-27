@@ -183,7 +183,21 @@ pub(crate) fn build(
     static_files: &StaticFiles,
     extra: Router<AppState>,
 ) -> Router {
-    let (api, _document) = openapi::documented_router().split_for_parts();
+    build_with_api(state, static_files, extra, openapi::documented_router())
+}
+
+/// Builds the router with the documented routes `api`. [`build`] passes
+/// the routes of the contract; the tests of the session guard pass the
+/// same assembly with a counting route at the battery mount point.
+pub(crate) fn build_with_api(
+    state: AppState,
+    static_files: &StaticFiles,
+    extra: Router<AppState>,
+    api: utoipa_axum::router::OpenApiRouter<AppState>,
+) -> Router {
+    let (api, _document) = api.split_for_parts();
+    // The session guard runs before every documented API handler.
+    let api = auth::protect(api, state.auth.clone());
     let index: Arc<str> = Arc::from(static_files.render_index(state.version()));
     let assets = ServeDir::new(static_files.assets_dir())
         .precompressed_gzip()

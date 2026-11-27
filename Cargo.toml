@@ -35,6 +35,10 @@ tower = { version = "0.5.3", default-features = false }
 tower-http = { version = "0.7.1", default-features = false }
 utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
 utoipa-axum = { version = "0.3.0", default-features = false }
+# Password hash of the web login (ADR 0003). The server crate selects the
+# features.
+argon2 = { version = "0.6.0", default-features = false }
+subtle = { version = "2.6.1", default-features = false }
 # TLS of the test server only (crates/server feature `test-server`). The
 # server crate selects the features. The release build does not build them.
 rustls = { version = "0.23.46", default-features = false }
@@ -63,3 +67,13 @@ print_stderr = "deny"
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
 let_underscore_must_use = "deny"
+
+# Argon2 without optimisation needs about 2 s for one login at the
+# parameters of `hash-password`, which makes the debug test server of the
+# browser tests too slow. The setting changes only the speed of the debug
+# and test builds; the release build is already optimised.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

@@ -44,14 +44,25 @@ struct ApiDoc;
 /// The routes of the contract: `/health` and the API under [`API_BASE`].
 #[must_use]
 pub fn documented_router() -> OpenApiRouter<AppState> {
+    documented_router_with(battery::router())
+}
+
+/// The routes of the contract with `slice` in the place of the battery
+/// router, under [`API_BASE`]. The tests of the session guard mount a
+/// counting route here, at the same mount point as the battery API.
+pub(crate) fn documented_router_with(slice: OpenApiRouter<AppState>) -> OpenApiRouter<AppState> {
     let mut document = ApiDoc::openapi();
     // utoipa fills the licence and the contact from the package metadata,
     // which has none; an empty licence object is not useful.
     document.info.license = None;
     document.info.contact = None;
-    OpenApiRouter::with_openapi(document)
+    let mut router = OpenApiRouter::with_openapi(document)
         .routes(routes!(health::health))
-        .nest(API_BASE, auth::router().merge(battery::router()))
+        .nest(API_BASE, auth::router().merge(slice));
+    // The guard answers before any handler; its answers go into the
+    // document for every API operation (`auth::responses`).
+    auth::responses::declare_guard_responses(router.get_openapi_mut());
+    router
 }
 
 /// The `OpenAPI` document as pretty JSON with a trailing newline.
