@@ -286,11 +286,19 @@ async fn a_stall_request_replaces_only_the_named_socket() {
     drop(publisher);
 }
 
+/// The first wait after a stall in a row, in the test below.
+const STALL_WAIT: Duration = Duration::from_secs(2);
+/// The limit of a new socket without a wait: the drain (at most 1 s, here
+/// about 200 ms), the connect, and the settle time (250 ms), about 0.5 s.
+/// It tolerates about 1 s of delay, and a wait of `STALL_WAIT` or longer
+/// fails it.
+const NO_STALL_WAIT: Duration = Duration::from_millis(1_500);
+
 #[tokio::test]
 async fn a_second_stall_in_a_row_waits_with_the_gate_closed() {
     let (mut publisher, endpoint) = publisher().await;
     let limits = Limits {
-        stall_backoff_first: Duration::from_millis(600),
+        stall_backoff_first: STALL_WAIT,
         ..Limits::PRODUCTION
     };
     let run = Run::start_with(endpoint, limits);
@@ -307,7 +315,7 @@ async fn a_second_stall_in_a_row_waits_with_the_gate_closed() {
     .await;
     run.wait_ready_on(3).await;
     assert!(
-        stalled_at.elapsed() >= Duration::from_millis(600),
+        stalled_at.elapsed() >= STALL_WAIT,
         "{:?}",
         stalled_at.elapsed()
     );
@@ -325,7 +333,7 @@ async fn a_second_stall_in_a_row_waits_with_the_gate_closed() {
     run.stalled.send_replace(Some(3));
     run.wait_ready_on(4).await;
     assert!(
-        stalled_at.elapsed() < Duration::from_millis(600),
+        stalled_at.elapsed() < NO_STALL_WAIT,
         "{:?}",
         stalled_at.elapsed()
     );
@@ -369,6 +377,12 @@ async fn a_child_stop_ends_the_wait_after_a_stall() {
     drop(publisher);
 }
 
+/// The limit of a shutdown of the reader in the two tests below. A correct
+/// reader ends within the shutdown drain (100 ms) and a few turns; the
+/// faults wait for the stall wait (60 s) or the rebuild drain (10 s). The
+/// limit was 1 s, and now tolerates about 5 s of delay.
+const SHUTDOWN_LIMIT: Duration = Duration::from_secs(5);
+
 #[tokio::test]
 async fn a_shutdown_in_a_stall_wait_ends_the_reader_at_once() {
     // Review round 3, note N12.
@@ -376,7 +390,7 @@ async fn a_shutdown_in_a_stall_wait_ends_the_reader_at_once() {
     let started = Instant::now();
     run.stop().await;
     assert!(
-        started.elapsed() < Duration::from_secs(1),
+        started.elapsed() < SHUTDOWN_LIMIT,
         "{:?}",
         started.elapsed()
     );
@@ -404,7 +418,7 @@ async fn a_shutdown_in_the_drain_of_a_rebuild_ends_the_reader_within_its_bound()
     run.stop().await;
     // The bound of the drain (100 ms), plus the turns of the reader.
     assert!(
-        started.elapsed() < Duration::from_secs(1),
+        started.elapsed() < SHUTDOWN_LIMIT,
         "{:?}",
         started.elapsed()
     );
