@@ -182,13 +182,15 @@ the product uses in any environment, for example databases, caches, message
 brokers, search engines, object storage, container base images, and build or
 deployment platforms, including managed services. Record each infrastructure
 component and its version in each environment in `STACK.md`. A pin records a
-verified state; it does not freeze that state. Before each delivery task, or
-once before an authorised batch, run the dependency freshness check in
-`STACK.md` on the current `main`. Deliver due updates first in a dedicated
-`chore/deps-<topic>` PR. That PR follows the full acceptance and release path.
-Merge it before the task branch starts. A dependency update task is itself
-that deps PR; it does not start another one. Run the vulnerability check in
-`STACK.md` at the same points. The vulnerability check covers every pinned
+verified state; it does not freeze that state. Run the dependency freshness
+check in `STACK.md` on the current `main` at the start of a delivery task
+when the last recorded run is older than 7 days, and in each dependency PR.
+Deliver due updates first in a dedicated `chore/deps-<topic>` PR. That PR
+follows the full acceptance and release path. Merge it before the task
+branch starts. A dependency update task is itself that deps PR; it does not
+start another one. Run the vulnerability check in `STACK.md` on a daily
+schedule in CI and for each PR that changes an input of the check, not
+before every delivery task. The vulnerability check covers every pinned
 surface: dependencies, toolchains, runtimes, container images, and
 infrastructure. It reads version-matched advisory databases that also list
 known malicious package versions. News feeds and other free text are not check
@@ -268,13 +270,20 @@ Apply this boundary by impact, not file type. A typo, clarifying documentation,
 or another low-impact change does not require a separate reviewer unless the
 owner or local rules require it. Required automated checks still apply.
 
-When independent review is required, the reviewer must run the full
-`$VERIFY_CMD` and required tests on the PR head integrated with the current
-base in an isolated checkout before PASS. Record both input revisions and
-the tested integration commit or tree. A missing or failed independent run
-is FAIL; the implementer's report cannot replace it. Reuse of other evidence
-under P6 does not waive this run. This does not add a reviewer to low-impact
-changes that do not otherwise require independent review.
+The reviewer's own verification run is required only for a change to the data
+path (ingest, gate, queue, writer), the database schema or roles, security (secrets,
+access, TLS, privileges, the vulnerability tooling), or the release path
+(image, entrypoint, Railway settings, CI gates). For such a change, the
+reviewer must run the full `$VERIFY_CMD` and required tests on the PR head
+integrated with the current base in an isolated checkout before PASS.
+Record both input revisions and the tested integration commit or tree. A
+missing or failed independent run is FAIL; the implementer's report cannot
+replace it. Reuse of other evidence under P6 does not waive this run.
+Other material changes still need independent review in a separate context,
+but the reviewer may rely on the implementer's recorded local `verify`
+evidence and the CI result for the reviewed head. This does not add a
+reviewer to low-impact changes that do not otherwise require independent
+review.
 
 Verify the integrated result. The lead owns acceptance and release even when
 other agents approve parts. Continue within the agreed goal and authority.
