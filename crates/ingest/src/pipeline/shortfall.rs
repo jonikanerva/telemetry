@@ -878,13 +878,18 @@ mod tests {
             .await
             .unwrap();
         let port = listener.local_addr().unwrap().port();
+        // The time of each accept, taken in the server: at or after the
+        // start of the read in the loop.
+        let accepts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server = Arc::clone(&accepts);
         tokio::spawn(async move {
             let mut held = Vec::new();
             while let Ok((stream, _)) = listener.accept().await {
+                server.lock().unwrap().push(std::time::Instant::now());
                 held.push(stream);
             }
         });
-        let deadline = Duration::from_secs(1);
+        let deadline = Duration::from_secs(2);
         let shortfall = Shortfall {
             port,
             period: Duration::from_millis(50),
@@ -905,10 +910,18 @@ mod tests {
         let requested = std::time::Instant::now();
         request.send(()).unwrap();
         task.await.unwrap();
-        // The final read alone: 1 s. After the periodic read: about 1.85 s.
+        // One-directional: the final read starts after the request and
+        // waits for its whole deadline.
         let elapsed = requested.elapsed();
         assert!(elapsed >= deadline, "{elapsed:?}");
-        assert!(elapsed < Duration::from_millis(1_600), "{elapsed:?}");
+        // The final read starts at the request, about 150 ms after the
+        // periodic read. A final read that waits for the periodic read
+        // starts at the earliest one deadline (2 s) after it. The limit
+        // lies halfway: it tolerates about 850 ms of delay on each side.
+        let accepts = accepts.lock().unwrap().clone();
+        assert_eq!(accepts.len(), 2, "{accepts:?}");
+        let between = accepts[1] - accepts[0];
+        assert!(between < deadline / 2, "{between:?}");
     }
 
     fn test_conditions() -> Arc<Conditions> {
@@ -1174,18 +1187,31 @@ mod tests {
 /// dispatches each millisecond while the gate is open (review round 4 of
 /// PR #22, note N14). The times are scaled by 1/37.5 for `P` and `G` and
 /// by 1/7.5 for `D`; the assertions use the formulas of ADR 0001, "SUB
-/// socket", "Detection bound", with these times and a margin for the
-/// scheduling of the test machine.
+/// socket", "Detection bound", with these times.
+///
+/// No time in these tests comes from a wake-up of a test task. Each time is
+/// taken where the event happens: a gate change in the event sink, which
+/// [`Readiness`] calls while it changes the state, and a read in the
+/// scripted server, at the accept and just before the response. A paused
+/// clock is not used: the read is a real TCP exchange, and a paused runtime
+/// moves its clock while it waits for loopback I/O, so it would need a seam
+/// in `metrics::read`.
+///
+/// Each time assertion is either one-directional (scheduling delay can only
+/// make the measured value larger, or only smaller, than the bound needs)
+/// or a threshold that names the delay it tolerates. The mutations of
+/// review round 4 (Z1 to Z4) fail a count or a one-directional assertion,
+/// or a threshold with at least 230 ms of distance on each side.
 #[cfg(test)]
 mod loop_tests {
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Instant;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::sleep;
 
     use super::*;
-    use crate::events::recording::RecordingSink;
     use crate::pipeline::conditions::Database;
     use crate::readiness::Readiness;
 
@@ -1199,10 +1225,15 @@ mod loop_tests {
     const R: Duration = Duration::from_millis(40);
     /// A slow answer inside the deadline.
     const SLOW: Duration = Duration::from_millis(70);
-    /// The scheduling margin of the assertions.
-    const MARGIN: Duration = Duration::from_millis(60);
+    /// The scheduling delay of the read loop that the loss assertions
+    /// tolerate. It was 60 ms before; an extra read period (`P`, 400 ms)
+    /// still fails them, and the index of the deciding read is asserted
+    /// exactly.
+    const LOST_MARGIN: Duration = Duration::from_millis(200);
     /// The read at which the stall starts, just after its snapshot.
     const STALL_AT: usize = 1;
+    /// The longest wait of a test for an event.
+    const WAIT: Duration = Duration::from_secs(20);
 
     /// The answer of one scripted read.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1214,21 +1245,50 @@ mod loop_tests {
 
     use Answer::{Fail as F, Fast as S, Slow as W};
 
-    /// The child, the reader counts, and the gate of one run.
+    /// One read as the scripted server saw it.
+    #[derive(Debug, Clone, Copy)]
+    struct Read {
+        /// The accept of the connection: at or after the start of the read
+        /// in the loop.
+        accepted: Instant,
+        answer: Answer,
+        /// Just before the server writes the response: at or before the
+        /// loop receives it. `None` for a failed read.
+        responded: Option<Instant>,
+    }
+
+    /// The gate changes, timed in the sink. [`Readiness`] records each
+    /// change while it changes the state, so the time is the time of the
+    /// change, not of a wake-up of the test.
+    #[derive(Debug, Default)]
+    struct GateLog(Mutex<Vec<(Instant, bool)>>);
+
+    impl EventSink for GateLog {
+        fn record(&self, event: IngestEvent) {
+            let open = match event.kind {
+                EventKind::GateOpened => true,
+                EventKind::GateClosed { .. } => false,
+                _ => return,
+            };
+            self.0.lock().unwrap().push((Instant::now(), open));
+        }
+    }
+
+    /// The child, the reader counts, the gate, and the reads of one run.
     struct World {
         readiness: Arc<Readiness>,
         conditions: Arc<Conditions>,
         received: Arc<Received>,
         dispatched: AtomicU64,
         stalled: AtomicBool,
-        stall_started: std::sync::Mutex<Option<Instant>>,
-        accepted: AtomicUsize,
-        fails_open: AtomicU32,
+        reads: Mutex<Vec<Read>>,
+        gate: Arc<GateLog>,
     }
 
     impl World {
         fn new() -> Arc<Self> {
-            let sink: Arc<dyn EventSink> = Arc::new(RecordingSink::default());
+            let gate = Arc::new(GateLog::default());
+            let sink: Arc<dyn EventSink> = Arc::clone(&gate) as Arc<dyn EventSink>;
             let readiness = Arc::new(Readiness::new(Arc::clone(&sink)));
             readiness.set_child_running(true);
             let conditions = Arc::new(Conditions::new(Arc::clone(&readiness), sink));
@@ -1242,14 +1302,30 @@ mod loop_tests {
                 received,
                 dispatched: AtomicU64::new(0),
                 stalled: AtomicBool::new(false),
-                stall_started: std::sync::Mutex::new(None),
-                accepted: AtomicUsize::new(0),
-                fails_open: AtomicU32::new(0),
+                reads: Mutex::new(Vec::new()),
+                gate,
             })
         }
 
         fn open(&self) -> bool {
             self.readiness.state().is_open()
+        }
+
+        fn reads(&self) -> Vec<Read> {
+            self.reads.lock().unwrap().clone()
+        }
+
+        fn gate_changes(&self) -> Vec<(Instant, bool)> {
+            self.gate.0.lock().unwrap().clone()
+        }
+
+        /// Whether the gate was open at `at`, from the gate log.
+        fn open_at(&self, at: Instant) -> bool {
+            self.gate_changes()
+                .iter()
+                .take_while(|(time, _)| *time <= at)
+                .last()
+                .is_some_and(|(_, open)| *open)
         }
 
         /// A metrics server that answers the reads after `stall_at` with
@@ -1262,7 +1338,9 @@ mod loop_tests {
             let world = Arc::clone(self);
             tokio::spawn(async move {
                 while let Ok((mut stream, _)) = listener.accept().await {
-                    let index = world.accepted.fetch_add(1, Ordering::SeqCst);
+                    let accepted = Instant::now();
+                    let mut reads = world.reads.lock().unwrap();
+                    let index = reads.len();
                     let answer = match index.cmp(&stall_at) {
                         std::cmp::Ordering::Equal => {
                             // The worst phase: the last record arrives just
@@ -1270,7 +1348,6 @@ mod loop_tests {
                             world.dispatched.fetch_add(1, Ordering::SeqCst);
                             world.received.count(b"tesla_telemetry_V");
                             world.stalled.store(true, Ordering::SeqCst);
-                            *world.stall_started.lock().unwrap() = Some(Instant::now());
                             S
                         }
                         std::cmp::Ordering::Greater => {
@@ -1278,9 +1355,12 @@ mod loop_tests {
                         }
                         std::cmp::Ordering::Less => S,
                     };
-                    if answer == F && world.open() {
-                        world.fails_open.fetch_add(1, Ordering::SeqCst);
-                    }
+                    reads.push(Read {
+                        accepted,
+                        answer,
+                        responded: None,
+                    });
+                    drop(reads);
                     let world = Arc::clone(&world);
                     tokio::spawn(async move {
                         let mut request = [0_u8; 1024];
@@ -1300,6 +1380,7 @@ mod loop_tests {
                             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
                             body.len()
                         );
+                        world.reads.lock().unwrap()[index].responded = Some(Instant::now());
                         let _written = stream.write_all(response.as_bytes()).await;
                     });
                 }
@@ -1321,11 +1402,22 @@ mod loop_tests {
                 unreadable_after: 2,
                 retry: R,
                 received: Arc::clone(&self.received),
-                sink: Arc::new(RecordingSink::default()),
+                sink: Arc::new(crate::events::recording::RecordingSink::default()),
                 stalled,
                 conditions: Arc::clone(&self.conditions),
             }
         }
+    }
+
+    /// Waits until `done` holds, at most [`WAIT`].
+    async fn wait_for(what: &str, done: impl Fn() -> bool) {
+        tokio::time::timeout(WAIT, async {
+            while !done() {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{what}"));
     }
 
     /// What one run shows.
@@ -1334,30 +1426,36 @@ mod loop_tests {
         /// The time with the gate open from the start of the stall to the
         /// decision.
         lost: Duration,
-        /// The reads that failed while the gate was open.
+        /// The reads after the start of the stall that failed while the
+        /// gate was open.
         fails_open: u32,
-        /// The openings of the gate in that time.
+        /// The openings of the gate from the start of the stall to the
+        /// decision, the open gate at the start included.
         openings: u32,
+        /// The index of the read that decided the stall.
+        decided_by: usize,
     }
 
-    /// Runs the loop until the stall rule decides, at most 20 s.
+    /// Runs the loop until the stall rule decides, at most [`WAIT`].
+    ///
+    /// - The stall starts at the accept of read [`STALL_AT`]: the server
+    ///   counts the last record there, after the snapshot of the loop.
+    /// - The decision is due one grace after the deciding read got its
+    ///   response; the loop decides at or after the server time of the
+    ///   response plus `G`. The deciding read is the last read whose
+    ///   response plus `G` lies before the stall request reached the test;
+    ///   the next read starts more than `P - G` later, so a late wake-up of
+    ///   the test does not change it.
+    /// - `lost` and `openings` come from the gate log. `fails_open` reads
+    ///   the gate log at the accept of each failed read; a failed read can
+    ///   close the gate only at its deadline, so an accept up to `D` late
+    ///   still counts right.
     async fn run(script: Vec<Answer>) -> Option<Outcome> {
         let world = World::new();
         let port = world.serve(script, STALL_AT).await;
         let (stalled, mut requests) = watch::channel(None);
         let (final_read, final_requests) = oneshot::channel::<()>();
         let task = tokio::spawn(world.shortfall(port, stalled).run(final_requests));
-        let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut gate = world.readiness.subscribe();
-        let recorder = {
-            let changes = Arc::clone(&changes);
-            tokio::spawn(async move {
-                while gate.changed().await.is_ok() {
-                    let open = gate.borrow_and_update().is_open();
-                    changes.lock().unwrap().push((Instant::now(), open));
-                }
-            })
-        };
         // The child: one record each millisecond while the gate is open.
         let child = {
             let world = Arc::clone(&world);
@@ -1373,37 +1471,46 @@ mod loop_tests {
                 }
             })
         };
-        // The reader clears condition 2 at once at a stall request.
-        let decided = tokio::time::timeout(Duration::from_secs(20), async {
+        // The reader clears condition 2 at a stall request.
+        let seen = tokio::time::timeout(WAIT, async {
             while requests.changed().await.is_ok() {
                 if requests.borrow_and_update().is_some() {
+                    let seen = Instant::now();
                     world.conditions.set_stalled();
-                    return Instant::now();
+                    return Some(seen);
                 }
             }
-            Instant::now()
+            None
         })
         .await
-        .ok();
+        .ok()
+        .flatten();
         child.abort();
         drop(final_read);
         task.await.unwrap();
-        recorder.abort();
-        let decided = decided?;
-        let start = world.stall_started.lock().unwrap().unwrap();
+        let seen = seen?;
+        let reads = world.reads();
+        let start = reads[STALL_AT].accepted;
+        let (decided_by, decided) = reads
+            .iter()
+            .enumerate()
+            .filter_map(|(index, read)| Some((index, read.responded? + G)))
+            .rfind(|(index, due)| *index > STALL_AT && *due <= seen)?;
+        let changes = world.gate_changes();
+        let mut open_since = world.open_at(start).then_some(start);
+        let mut openings = u32::from(open_since.is_some());
         let mut lost = Duration::ZERO;
-        let mut openings = 1;
-        let mut open_since = Some(start);
-        for &(at, open) in changes.lock().unwrap().iter() {
-            if at < start || at > decided {
-                continue;
-            }
+        for &(at, open) in changes.iter().filter(|(at, _)| *at > start) {
             match (open, open_since) {
-                (true, None) => {
-                    open_since = Some(at);
+                // An opening up to the stall request counts, also one that
+                // the loop recorded after the server time of the decision.
+                (true, None) if at <= seen => {
                     openings += 1;
+                    if at < decided {
+                        open_since = Some(at);
+                    }
                 }
-                (false, Some(since)) => {
+                (false, Some(since)) if at <= decided => {
                     lost += at - since;
                     open_since = None;
                 }
@@ -1411,12 +1518,19 @@ mod loop_tests {
             }
         }
         if let Some(since) = open_since {
-            lost += decided - since;
+            lost += decided.saturating_duration_since(since);
         }
+        let fails_open = reads
+            .iter()
+            .skip(STALL_AT + 1)
+            .filter(|read| read.answer == F && read.accepted <= decided)
+            .filter(|read| world.open_at(read.accepted))
+            .count();
         Some(Outcome {
             lost,
-            fails_open: world.fails_open.load(Ordering::SeqCst),
+            fails_open: u32::try_from(fails_open).unwrap(),
             openings,
+            decided_by,
         })
     }
 
@@ -1427,23 +1541,29 @@ mod loop_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_loop_meets_the_bound_with_zero_one_and_two_failed_reads() {
-        // The gate stays open: (2 + f) P + D + G, f failed reads.
+        // The gate stays open: (2 + f) P + D + G, f failed reads. The
+        // decision comes at the second successful read after the stall
+        // (read 1); a failed read keeps the last point of the rule.
         let cases = [
-            (vec![], 0, bound(2, 1)),
-            (vec![S, W], 0, bound(2, 1)),
-            (vec![F], 1, bound(3, 1)),
-            (vec![F, S, W], 1, bound(3, 1)),
-            (vec![F, S, F], 2, bound(4, 1)),
-            (vec![F, S, F, W], 2, bound(4, 1)),
+            (vec![], 0, 3, bound(2, 1)),
+            (vec![S, W], 0, 3, bound(2, 1)),
+            (vec![F], 1, 4, bound(3, 1)),
+            (vec![F, S, W], 1, 4, bound(3, 1)),
+            (vec![F, S, F], 2, 5, bound(4, 1)),
+            (vec![F, S, F, W], 2, 5, bound(4, 1)),
         ];
-        for (script, failed, limit) in cases {
+        for (script, failed, decided_by, limit) in cases {
             let outcome = run(script.clone())
                 .await
                 .unwrap_or_else(|| panic!("{script:?}"));
             eprintln!("LOOP {script:?} {outcome:?}");
+            assert_eq!(outcome.decided_by, decided_by, "{script:?}: {outcome:?}");
             assert_eq!(outcome.fails_open, failed, "{script:?}: {outcome:?}");
             assert_eq!(outcome.openings, 1, "{script:?}: {outcome:?}");
-            assert!(outcome.lost < limit + MARGIN, "{script:?}: {outcome:?}");
+            assert!(
+                outcome.lost < limit + LOST_MARGIN,
+                "{script:?}: {outcome:?}"
+            );
         }
     }
 
@@ -1454,20 +1574,21 @@ mod loop_tests {
         // with the gate open. Up to four failed reads with the gate open,
         // up to three openings, and less than 4P + 2D + G in total.
         let cases = [
-            (vec![F, S, F, F, S], 3, 2),
-            (vec![F, F, S, F, S], 3, 2),
-            (vec![F, F, S, F, W], 3, 2),
-            (vec![F, F, S, F, F, S], 4, 3),
+            (vec![F, S, F, F, S], 3, 2, 6),
+            (vec![F, F, S, F, S], 3, 2, 6),
+            (vec![F, F, S, F, W], 3, 2, 6),
+            (vec![F, F, S, F, F, S], 4, 3, 7),
         ];
-        for (script, failed, openings) in cases {
+        for (script, failed, openings, decided_by) in cases {
             let outcome = run(script.clone())
                 .await
                 .unwrap_or_else(|| panic!("{script:?}"));
             eprintln!("LOOP {script:?} {outcome:?}");
+            assert_eq!(outcome.decided_by, decided_by, "{script:?}: {outcome:?}");
             assert_eq!(outcome.fails_open, failed, "{script:?}: {outcome:?}");
             assert_eq!(outcome.openings, openings, "{script:?}: {outcome:?}");
             assert!(
-                outcome.lost < bound(4, 2) + MARGIN,
+                outcome.lost < bound(4, 2) + LOST_MARGIN,
                 "{script:?}: {outcome:?}"
             );
         }
@@ -1487,7 +1608,7 @@ mod loop_tests {
                     .unwrap_or_else(|| panic!("{script:?}"));
                 eprintln!("PATTERN {script:?} {outcome:?}");
                 assert!(
-                    outcome.lost < bound(4, 2) + MARGIN,
+                    outcome.lost < bound(4, 2) + LOST_MARGIN,
                     "{script:?}: {outcome:?}"
                 );
                 assert!(outcome.fails_open <= 4, "{script:?}: {outcome:?}");
@@ -1505,56 +1626,117 @@ mod loop_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn after_unreadable_metrics_the_reads_come_each_retry_period() {
-        // No stall. Two failed reads close the gate; the next read comes
-        // one retry period (here 40 ms) later, not one read period
-        // (400 ms), and its answer opens the gate.
+    async fn the_reads_keep_their_schedule() {
+        // Mutation Z4 of review round 4: the next read is due one period
+        // after the start of the last read, not after its end. All reads
+        // succeed, and each takes one grace (100 ms).
+        const PERIOD: Duration = Duration::from_millis(200);
+        const GRACE: Duration = Duration::from_millis(100);
+        const READS: u32 = 6;
         let world = World::new();
-        let port = world.serve(vec![F, F], 0).await;
+        let port = world.serve(Vec::new(), usize::MAX).await;
         let (stalled, _requests) = watch::channel(None);
+        let shortfall = Shortfall {
+            period: PERIOD,
+            grace: GRACE,
+            ..world.shortfall(port, stalled)
+        };
         let (final_read, final_requests) = oneshot::channel::<()>();
-        let task = tokio::spawn(world.shortfall(port, stalled).run(final_requests));
-        let mut gate = world.readiness.subscribe();
-        tokio::time::timeout(Duration::from_secs(5), gate.changed())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(!gate.borrow_and_update().is_open());
-        let closed = Instant::now();
-        tokio::time::timeout(Duration::from_secs(5), gate.changed())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(gate.borrow_and_update().is_open());
-        let reopened = closed.elapsed();
-        assert!(reopened >= R, "{reopened:?}");
-        assert!(reopened < R + MARGIN * 2, "{reopened:?}");
+        let task = tokio::spawn(shortfall.run(final_requests));
+        wait_for("the reads", || world.reads().len() >= READS as usize).await;
         drop(final_read);
         task.await.unwrap();
+        let reads = world.reads();
+        let span = reads[READS as usize - 1].accepted - reads[0].accepted;
+        // On schedule: (READS - 1) periods, plus the accept delay of the
+        // last read minus that of the first; the delays do not add up. With
+        // the drift, each period also has the grace: 500 ms more. The limit
+        // lies halfway, so it tolerates 250 ms of accept delay.
+        let periods = READS - 1;
+        assert!(span < PERIOD * periods + GRACE * periods / 2, "{span:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn after_unreadable_metrics_the_reads_come_each_retry_period() {
+        // No stall. Two failed reads close the gate; the next read comes
+        // one retry period (40 ms) after the close, not on the schedule of
+        // the read period (here 600 ms, so 500 ms after the close). Its
+        // answer opens the gate again.
+        const PERIOD: Duration = Duration::from_millis(600);
+        let world = World::new();
+        // Read 0 is fast, reads 1 and 2 fail, read 3 is the retry.
+        let port = world.serve(vec![F, F], 0).await;
+        let (stalled, _requests) = watch::channel(None);
+        let shortfall = Shortfall {
+            period: PERIOD,
+            ..world.shortfall(port, stalled)
+        };
+        let (final_read, final_requests) = oneshot::channel::<()>();
+        let task = tokio::spawn(shortfall.run(final_requests));
+        wait_for("the reopened gate", || {
+            world
+                .gate_changes()
+                .iter()
+                .filter(|(_, open)| *open)
+                .count()
+                >= 2
+        })
+        .await;
+        drop(final_read);
+        task.await.unwrap();
+        let changes = world.gate_changes();
+        let closed = changes
+            .iter()
+            .find(|(_, open)| !open)
+            .map(|(at, _)| *at)
+            .unwrap();
+        let reads = world.reads();
+        assert_eq!(reads[3].answer, S);
+        let gap = reads[3].accepted - closed;
+        // One-directional: the loop closes the gate before it starts the
+        // retry wait, and the accept follows the start of the read.
+        assert!(gap >= R, "{gap:?}");
+        // Threshold halfway between 40 ms and 500 ms: it tolerates 230 ms
+        // of delay on each side.
+        assert!(gap < (R + PERIOD.saturating_sub(D)) / 2, "{gap:?}");
+        let reopened = changes.iter().rev().find(|(_, open)| *open).unwrap().0;
+        assert!(reopened > reads[3].accepted);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_shutdown_during_the_grace_ends_the_loop_at_once() {
+        // Mutation Z3 of review round 4: the request of the final read ends
+        // the grace of a periodic read at once.
+        const GRACE: Duration = Duration::from_millis(900);
         let world = World::new();
         let port = world.serve(Vec::new(), usize::MAX).await;
         let (stalled, _requests) = watch::channel(None);
         let shortfall = Shortfall {
             period: Duration::from_secs(1),
-            grace: Duration::from_millis(900),
+            grace: GRACE,
             ..world.shortfall(port, stalled)
         };
         let (final_read, final_requests) = oneshot::channel();
         let task = tokio::spawn(shortfall.run(final_requests));
-        // The first read at 1 s; its grace lasts until about 1.9 s.
-        sleep(Duration::from_millis(1_150)).await;
-        assert_eq!(world.accepted.load(Ordering::SeqCst), 1);
-        let requested = Instant::now();
+        // The first read at 1 s; its grace starts at its response.
+        wait_for("the first response", || {
+            world
+                .reads()
+                .first()
+                .is_some_and(|read| read.responded.is_some())
+        })
+        .await;
+        sleep(Duration::from_millis(100)).await;
         final_read.send(()).unwrap();
-        task.await.unwrap();
-        // The final read follows at once; without the stop in the grace,
-        // the task would wait for the rest of the grace first.
-        let elapsed = requested.elapsed();
-        assert!(elapsed < Duration::from_millis(400), "{elapsed:?}");
-        assert_eq!(world.accepted.load(Ordering::SeqCst), 2);
+        tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
+        let reads = world.reads();
+        assert_eq!(reads.len(), 2, "{reads:?}");
+        let responded = reads[0].responded.unwrap();
+        // One-directional for the fault: without the stop in the grace, the
+        // final read starts at the earliest one grace after the response.
+        // The test sends the request 100 ms after it, so a correct loop
+        // has 800 ms of tolerance.
+        let after = reads[1].accepted - responded;
+        assert!(after < GRACE, "{after:?}");
     }
 }

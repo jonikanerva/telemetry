@@ -13,9 +13,15 @@
 //!   in the module `railway`) agree with the image, the code, the shutdown
 //!   budget, and the settings table of STACK.md §15. Each input that the
 //!   image build copies has a watch path and an entry in `.dockerignore`.
-//! - `ingest/entrypoint.sh` writes the TLS files with mode 0600 and starts
-//!   `ingest run` without the TLS variables. The test runs a copy of the
-//!   script with temporary paths in place of the image paths.
+//! - The image has no `USER` line, so the container starts as root.
+//!   `ingest/entrypoint.sh` writes the TLS files with mode 0600, gives them
+//!   to user 10001, and starts `ingest run` through `setpriv` as user 10001
+//!   without the TLS variables (issue #29). The test runs a copy of the
+//!   script with temporary paths in place of the image paths, and with
+//!   stubs for `setpriv` and `chown` in `PATH`: the development machine and
+//!   CI run the test as a user without root, and macOS has no `setpriv`.
+//!   The stubs record their arguments and environment. The CI job
+//!   `image-check` runs the real programs in the image.
 //!
 //! The `cfg(test)` attribute marks the helper functions as test code for
 //! Clippy, so that they may use `unwrap` and `panic` like the tests do.
@@ -37,6 +43,26 @@ use serde_json::{Value, json};
 /// The paths in the image that the entrypoint test replaces.
 const TLS_DIR: &str = "/etc/fleet-telemetry/tls";
 const INGEST_BINARY: &str = "/usr/local/bin/ingest";
+/// The user and group of `ingest` and `fleet-telemetry`. The TLS directory
+/// of the image, the `chown` of the TLS files, and the `setpriv` line of
+/// the entrypoint use the same number.
+const INGEST_ID: u32 = 10001;
+
+/// The options of `setpriv` in the last line of the entrypoint (issue #29):
+/// user and group 10001, no supplementary groups, no inheritable
+/// capabilities, an empty capability bounding set, and `no_new_privs`.
+fn setpriv_options() -> Vec<String> {
+    vec![
+        "--reuid".to_owned(),
+        INGEST_ID.to_string(),
+        "--regid".to_owned(),
+        INGEST_ID.to_string(),
+        "--clear-groups".to_owned(),
+        "--inh-caps=-all".to_owned(),
+        "--bounding-set=-all".to_owned(),
+        "--no-new-privs".to_owned(),
+    ]
+}
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -204,13 +230,21 @@ fn the_image_copies_the_files_to_the_paths_of_the_settings() {
         ),
         format!("COPY --from=build /build/target/release/ingest {INGEST_BINARY}"),
         "COPY ingest/entrypoint.sh /entrypoint.sh".to_owned(),
-        format!("RUN chmod 0755 /entrypoint.sh && install -d -m 0700 -o 10001 -g 10001 {TLS_DIR}"),
-        "USER 10001:10001".to_owned(),
+        format!(
+            "RUN chmod 0755 /entrypoint.sh && install -d -m 0700 -o {INGEST_ID} -g {INGEST_ID} {TLS_DIR}"
+        ),
         format!("EXPOSE {}", env["INGEST_GATE_PORT"]),
         r#"CMD ["/entrypoint.sh"]"#.to_owned(),
     ] {
         assert!(stage.contains(&expected), "missing: {expected}\n{stage:#?}");
     }
+    // No stage names a user, so the container starts as root, and the init
+    // of Railway and its environment belong to root (issue #29). The
+    // entrypoint drops to user 10001 before it starts ingest.
+    assert!(
+        instructions().iter().all(|line| !line.starts_with("USER ")),
+        "the Dockerfile has a USER line"
+    );
     // The image holds a release build: only a debug build reads the
     // `INGEST_TEST_*` overrides (`src/main.rs`). The build stage builds with
     // `--release --locked` and no other profile, and the final stage copies
@@ -230,7 +264,15 @@ fn the_image_copies_the_files_to_the_paths_of_the_settings() {
         assert_eq!(config["tls"][key], path.as_str());
         assert!(entrypoint.contains(&format!("> {path}\n")), "{path}");
     }
-    assert!(entrypoint.ends_with(&format!("\nexec {INGEST_BINARY} run\n")));
+    // The last line starts ingest run through setpriv, never as root.
+    assert!(
+        entrypoint.ends_with(&format!(
+            "\nexec setpriv {} {INGEST_BINARY} run\n",
+            setpriv_options().join(" ")
+        )),
+        "the last line of the entrypoint is not the setpriv line"
+    );
+    assert_eq!(entrypoint.matches(INGEST_BINARY).count(), 1);
 }
 
 /// The Railway service settings that the lead applies by hand. Railway
@@ -498,25 +540,69 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// A copy of the entrypoint with temporary paths, and a fake `ingest` that
-/// writes its arguments, its environment, and its open-file limits.
-fn entrypoint_copy(dir: &Path) -> PathBuf {
+/// The stub programs of the entrypoint test. A stub writes its arguments
+/// (one on each line) and its environment to files named after the stub.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stub {
+    Setpriv,
+    Chown,
+}
+
+impl Stub {
+    fn name(self) -> &'static str {
+        match self {
+            Stub::Setpriv => "setpriv",
+            Stub::Chown => "chown",
+        }
+    }
+}
+
+/// A copy of the entrypoint with temporary paths, a fake `ingest` that
+/// writes its arguments, its environment, and its open-file limits, and a
+/// directory `bin` with the stubs of `setpriv` and `chown` for `PATH`.
+///
+/// The `setpriv` stub skips its options and replaces itself with the rest
+/// of its arguments (`exec`), like `setpriv`. The `chown` stub changes no
+/// owner. A stub named in `failing` exits with 1 after it wrote its files.
+fn entrypoint_copy(dir: &Path, failing: Option<Stub>) -> PathBuf {
     let tls = dir.join("tls");
     fs::create_dir(&tls).unwrap();
     fs::set_permissions(&tls, fs::Permissions::from_mode(0o700)).unwrap();
+    let out = dir.display();
     let fake = dir.join("fake-ingest");
     fs::write(
         &fake,
         format!(
             "#!/bin/sh\necho \"$@\" > {out}/args\nenv > {out}/env\n\
-             ulimit -S -n > {out}/soft\nulimit -H -n > {out}/hard\n",
-            out = dir.display()
+             ulimit -S -n > {out}/soft\nulimit -H -n > {out}/hard\n"
         ),
     )
     .unwrap();
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = dir.join("bin");
+    fs::create_dir(&bin).unwrap();
+    for stub in [Stub::Setpriv, Stub::Chown] {
+        let name = stub.name();
+        let rest = if failing == Some(stub) {
+            "exit 1\n".to_owned()
+        } else if stub == Stub::Setpriv {
+            format!("shift {}\nexec \"$@\"\n", setpriv_options().len())
+        } else {
+            String::new()
+        };
+        let path = bin.join(name);
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {out}/{name}-args\nenv > {out}/{name}-env\n{rest}"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let original = read("ingest/entrypoint.sh");
-    assert_eq!(original.matches(TLS_DIR).count(), 2);
+    // rm, the two writes, and chown name the files of the directory.
+    assert_eq!(original.matches(TLS_DIR).count(), 6);
     assert_eq!(original.matches(INGEST_BINARY).count(), 1);
     let script = dir.join("entrypoint.sh");
     fs::write(
@@ -532,14 +618,17 @@ fn entrypoint_copy(dir: &Path) -> PathBuf {
 const CERT: &str = "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----";
 const KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIGHfakekey\n-----END PRIVATE KEY-----";
 
-#[test]
-fn the_entrypoint_writes_private_tls_files_and_starts_ingest_without_them() {
-    let dir = scratch("writes");
-    let script = entrypoint_copy(&dir);
-    let output = Command::new("/bin/sh")
-        .arg(&script)
+/// `PATH` for the copy: the stubs first.
+fn stub_path(dir: &Path) -> String {
+    format!("{}:/bin:/usr/bin", dir.join("bin").display())
+}
+
+/// Runs the copy with the variables of a Railway start.
+fn run_entrypoint(dir: &Path, script: &Path) -> std::process::Output {
+    Command::new("/bin/sh")
+        .arg(script)
         .env_clear()
-        .env("PATH", "/bin:/usr/bin")
+        .env("PATH", stub_path(dir))
         .env("TLS_CERT", CERT)
         .env("TLS_KEY", KEY)
         .env("DATABASE_URL", "postgresql://u:p@db.invalid/neondb")
@@ -548,31 +637,87 @@ fn the_entrypoint_writes_private_tls_files_and_starts_ingest_without_them() {
             "postgresql://telemetry_migrator:migrator-secret@db.invalid/neondb",
         )
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+/// Fails when an environment holds a TLS variable, the key, or the
+/// migrator URL.
+fn assert_no_secret_in(env: &str, what: &str) {
+    for secret in [
+        "TLS_",
+        "PRIVATE KEY",
+        "MIGRATION_DATABASE_URL",
+        "migrator-secret",
+    ] {
+        assert!(!env.contains(secret), "{what} holds {secret:?}:\n{env}");
+    }
+}
+
+#[test]
+fn the_entrypoint_writes_private_tls_files_and_starts_ingest_without_them() {
+    let dir = scratch("writes");
+    let script = entrypoint_copy(&dir, None);
+    let output = run_entrypoint(&dir, &script);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"");
     // Each file holds the variable and a final newline, with mode 0600.
+    let tls = dir.join("tls");
     for (file, content) in [("tls.crt", CERT), ("tls.key", KEY)] {
-        let path = dir.join("tls").join(file);
+        let path = tls.join(file);
         assert_eq!(fs::read_to_string(&path).unwrap(), format!("{content}\n"));
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{file}");
     }
-    // `exec` replaced the shell with ingest: the arguments are `run`, and
-    // the environment has the other variables but no TLS variable.
+    // chown gives both files to user and group 10001. In the image, root
+    // runs it; here the stub records the arguments.
+    assert_eq!(
+        fs::read_to_string(dir.join("chown-args")).unwrap(),
+        format!(
+            "{INGEST_ID}:{INGEST_ID}\n{}\n{}\n",
+            tls.join("tls.crt").display(),
+            tls.join("tls.key").display()
+        )
+    );
+    // `exec setpriv` with the exact options, then ingest run. The setpriv
+    // stub replaced itself with ingest, so the arguments of ingest are
+    // `run`.
+    let mut setpriv = setpriv_options();
+    setpriv.push(dir.join("fake-ingest").display().to_string());
+    setpriv.push("run".to_owned());
+    assert_eq!(
+        fs::read_to_string(dir.join("setpriv-args")).unwrap(),
+        format!("{}\n", setpriv.join("\n"))
+    );
     assert_eq!(fs::read_to_string(dir.join("args")).unwrap(), "run\n");
-    let env = fs::read_to_string(dir.join("env")).unwrap();
+    // The key is never a process argument.
+    for file in ["chown-args", "setpriv-args", "args"] {
+        let args = fs::read_to_string(dir.join(file)).unwrap();
+        assert!(
+            !args.contains("PRIVATE KEY") && !args.contains("fakekey"),
+            "{file}"
+        );
+    }
     // `ingest run` needs only DATABASE_URL. fleet-telemetry runs as the
-    // same user and can read /proc/1/environ, so the migrator URL must not
-    // reach it.
+    // same user and can read the environment of ingest, so the TLS
+    // variables and the migrator URL must not reach it. chown and setpriv
+    // run after the unset, so they do not get them either.
+    let env = fs::read_to_string(dir.join("env")).unwrap();
     assert!(
         env.lines().any(|line| line.starts_with("DATABASE_URL=")),
         "{env}"
     );
-    assert!(!env.contains("TLS_"), "{env}");
-    assert!(!env.contains("MIGRATION_DATABASE_URL"), "{env}");
-    assert!(!env.contains("migrator-secret"), "{env}");
-    assert!(!env.contains("PRIVATE KEY"), "{env}");
+    assert_no_secret_in(&env, "the environment of ingest");
+    for stub in [Stub::Chown, Stub::Setpriv] {
+        let file = format!("{}-env", stub.name());
+        let stub_env = fs::read_to_string(dir.join(&file)).unwrap();
+        assert!(
+            stub_env
+                .lines()
+                .any(|line| line.starts_with("DATABASE_URL=")),
+            "{file}: {stub_env}"
+        );
+        assert_no_secret_in(&stub_env, &file);
+    }
     // The soft open-file limit equals the hard limit.
     assert_eq!(
         fs::read_to_string(dir.join("soft")).unwrap(),
@@ -581,15 +726,64 @@ fn the_entrypoint_writes_private_tls_files_and_starts_ingest_without_them() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A container that starts again can keep the files of the earlier start.
+/// A process of user 10001 can replace them with symbolic links, because
+/// the directory belongs to that user. The root shell must not write
+/// through such a link: it removes the link and creates a new file.
+#[test]
+fn the_entrypoint_replaces_old_files_and_does_not_write_through_a_link() {
+    let dir = scratch("link");
+    let script = entrypoint_copy(&dir, None);
+    let victim = dir.join("victim");
+    fs::write(&victim, "unchanged\n").unwrap();
+    let tls = dir.join("tls");
+    std::os::unix::fs::symlink(&victim, tls.join("tls.key")).unwrap();
+    fs::write(tls.join("tls.crt"), "old certificate\n").unwrap();
+    let output = run_entrypoint(&dir, &script);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "unchanged\n");
+    for (file, content) in [("tls.crt", CERT), ("tls.key", KEY)] {
+        let path = tls.join(file);
+        let meta = fs::symlink_metadata(&path).unwrap();
+        assert!(meta.file_type().is_file(), "{file} is not a regular file");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600, "{file}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), format!("{content}\n"));
+    }
+    assert_eq!(fs::read_to_string(dir.join("args")).unwrap(), "run\n");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Fail closed (issue #29): when chown or setpriv fails, ingest does not
+/// start, and the script exits with an error. In the image, the container
+/// then stops.
+#[test]
+fn the_entrypoint_stops_when_chown_or_setpriv_fails() {
+    for stub in [Stub::Chown, Stub::Setpriv] {
+        let name = stub.name();
+        let dir = scratch(&format!("failing-{name}"));
+        let script = entrypoint_copy(&dir, Some(stub));
+        let output = run_entrypoint(&dir, &script);
+        assert!(!output.status.success(), "{name}: {output:?}");
+        // The failing stub ran, and ingest did not start.
+        assert!(dir.join(format!("{name}-args")).exists(), "{name}");
+        assert!(!dir.join("args").exists(), "{name}");
+        // After a failed chown, setpriv does not run either.
+        if stub == Stub::Chown {
+            assert!(!dir.join("setpriv-args").exists());
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 #[test]
 fn the_entrypoint_stops_without_a_tls_variable_and_does_not_show_the_other() {
     for (missing, present, value) in [("TLS_KEY", "TLS_CERT", CERT), ("TLS_CERT", "TLS_KEY", KEY)] {
         let dir = scratch(&format!("missing-{missing}"));
-        let script = entrypoint_copy(&dir);
+        let script = entrypoint_copy(&dir, None);
         let output = Command::new("/bin/sh")
             .arg(&script)
             .env_clear()
-            .env("PATH", "/bin:/usr/bin")
+            .env("PATH", stub_path(&dir))
             .env(present, value)
             .env(missing, "")
             .output()
@@ -598,8 +792,10 @@ fn the_entrypoint_stops_without_a_tls_variable_and_does_not_show_the_other() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(missing), "{stderr}");
         assert!(!stderr.contains("fake"), "{stderr}");
-        // ingest did not start, and no key file exists.
+        // ingest did not start, no program ran, and no key file exists.
         assert!(!dir.join("args").exists());
+        assert!(!dir.join("chown-args").exists());
+        assert!(!dir.join("setpriv-args").exists());
         assert!(!dir.join("tls").join("tls.key").exists());
         fs::remove_dir_all(&dir).unwrap();
     }

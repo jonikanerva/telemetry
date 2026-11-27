@@ -61,6 +61,10 @@ run() {
 D=ingest/Dockerfile
 E=ingest/entrypoint.sh
 C=ingest/server_config.json
+# The options of the setpriv line, the last line of the entrypoint. The sed
+# patterns below use | as the delimiter.
+OPTS='--reuid 10001 --regid 10001 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs'
+X="exec setpriv $OPTS /usr/local/bin/ingest run"
 # jq edits keep the file valid JSON.
 jqedit() { printf "jq '%s' $C > c.tmp && mv c.tmp $C" "$1"; }
 # Insert one line (from the variable L, without escape processing) before
@@ -84,7 +88,12 @@ repeat_zmq() {
 }
 
 run "baseline" 0 "true"
-run "Dockerfile: USER root" 1 "sed -i.bak 's/^USER 10001:10001$/USER root/' $D"
+# The image has no USER line, so the container starts as root (issue
+# #29). The cases add one in place of the earlier USER line.
+run "Dockerfile: USER root added" 1 "sed -i.bak 's/^EXPOSE 4443$/USER root\\
+EXPOSE 4443/' $D"
+run "Dockerfile: USER 10001:10001 added back" 1 "sed -i.bak 's/^EXPOSE 4443$/USER 10001:10001\\
+EXPOSE 4443/' $D"
 run "Dockerfile: extra COPY . ." 1 "printf 'COPY . .\n' >> $D"
 run "Dockerfile: builder tag with another Rust version" 1 "sed -i.bak 's/^FROM rust:1.100.0-slim-trixie/FROM rust:1.99.0-slim-trixie/' $D"
 run "Dockerfile: builder tag on another Debian release" 1 "sed -i.bak 's/^FROM rust:1.100.0-slim-trixie/FROM rust:1.100.0-slim-bookworm/' $D"
@@ -94,10 +103,10 @@ run "Dockerfile: other child config path" 1 "sed -i.bak 's|^ENV INGEST_CHILD_CON
 run "Dockerfile: parser directive" 1 "{ printf '# syntax=docker/dockerfile:1\n'; cat $D; } > d.tmp && mv d.tmp $D"
 run "Dockerfile: byte outside ASCII" 1 "printf '# caf\303\251\n' >> $D"
 run "Dockerfile: ENTRYPOINT in place of CMD" 1 "sed -i.bak 's/^CMD /ENTRYPOINT /' $D"
-run "entrypoint: starts the server itself" 1 "sed -i.bak 's|^exec /usr/local/bin/ingest run$|exec /fleet-telemetry -config /etc/fleet-telemetry/config.json|' $E"
+run "entrypoint: starts the server itself" 1 "sed -i.bak 's|^$X\$|exec setpriv $OPTS /fleet-telemetry -config /etc/fleet-telemetry/config.json|' $E"
 run "entrypoint: a second exec" 1 "printf 'exec /usr/local/bin/ingest migrate\n' >> $E"
-run "entrypoint: ingest with another argument" 1 "sed -i.bak 's|^exec /usr/local/bin/ingest run$|exec /usr/local/bin/ingest run -config /x|' $E"
-run "entrypoint: starts the server in the background" 1 "sed -i.bak 's|^exec /usr/local/bin/ingest run$|/fleet-telemetry \\& exec /usr/local/bin/ingest run|' $E"
+run "entrypoint: ingest with another argument" 1 "sed -i.bak 's|^$X\$|$X -config /x|' $E"
+run "entrypoint: starts the server in the background" 1 "sed -i.bak 's|^$X\$|/fleet-telemetry \\& $X|' $E"
 # Bypasses of the earlier denylist (review round 1 of PR #23, R26b, R28,
 # R29) and other changes that the line allowlist must reject.
 run "entrypoint: server through PATH before exec (R26b)" 1 "before_exec 'PATH=/:\$PATH fleet-telemetry &'"
@@ -112,7 +121,26 @@ run "entrypoint: carriage return" 1 "exec_with_cr"
 # Review round 2 of PR #23, note 1: the byte rule and the exact line
 # comparison each need a case that only they catch.
 run "entrypoint: byte outside ASCII in a comment line" 1 "printf '# caf\303\251\n' >> $E"
-run "entrypoint: trailing space on the exec line" 1 "sed -i.bak 's|^exec /usr/local/bin/ingest run\$|exec /usr/local/bin/ingest run |' $E"
+run "entrypoint: trailing space on the exec line" 1 "sed -i.bak 's|^$X\$|$X |' $E"
+# The drop to user 10001 (issue #29): each argument of setpriv, the chown
+# of the TLS files, the order of unset and the first program, and the
+# defence against a link from an earlier start.
+run "entrypoint: ingest as root without setpriv" 1 "sed -i.bak 's|^$X\$|exec /usr/local/bin/ingest run|' $E"
+run "entrypoint: setpriv with user 0" 1 "sed -i.bak 's|--reuid 10001|--reuid 0|' $E"
+run "entrypoint: setpriv with group 0" 1 "sed -i.bak 's|--regid 10001|--regid 0|' $E"
+run "entrypoint: setpriv without --clear-groups" 1 "sed -i.bak 's| --clear-groups||' $E"
+run "entrypoint: setpriv keeps the groups (--keep-groups)" 1 "sed -i.bak 's|--clear-groups|--keep-groups|' $E"
+run "entrypoint: setpriv without --inh-caps=-all" 1 "sed -i.bak 's| --inh-caps=-all||' $E"
+run "entrypoint: setpriv without --bounding-set=-all" 1 "sed -i.bak 's| --bounding-set=-all||' $E"
+run "entrypoint: setpriv without --no-new-privs" 1 "sed -i.bak 's| --no-new-privs||' $E"
+run "entrypoint: setpriv without exec" 1 "sed -i.bak 's|^exec setpriv |setpriv |' $E"
+run "entrypoint: no chown of the TLS files" 1 "sed -i.bak '/^chown /d' $E"
+run "entrypoint: chown to root" 1 "sed -i.bak 's|^chown 10001:10001 |chown 0:0 |' $E"
+run "entrypoint: chown of the key file only" 1 "sed -i.bak 's|^chown 10001:10001 /etc/fleet-telemetry/tls/tls.crt |chown 10001:10001 |' $E"
+run "entrypoint: unset after the first program" 1 "sed -i.bak '/^unset /d' $E && sed -i.bak 's|^umask 077\$|unset TLS_CERT TLS_KEY MIGRATION_DATABASE_URL\\
+umask 077|' $E"
+run "entrypoint: no rm of an earlier file" 1 "sed -i.bak '/^rm -f /d' $E"
+run "entrypoint: no noclobber" 1 "sed -i.bak '/^set -C\$/d' $E"
 run "config: zmq.addr on all interfaces" 1 "$(jqedit '.zmq.addr = "tcp://0.0.0.0:5284"')"
 run "config: zmq.addr with a wildcard" 1 "$(jqedit '.zmq.addr = "tcp://*:5284"')"
 run "config: zmq.addr with localhost" 1 "$(jqedit '.zmq.addr = "tcp://localhost:5284"')"

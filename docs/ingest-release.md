@@ -122,6 +122,23 @@ Railway builds the image. Watch the deployment:
 
 If the healthcheck fails, Railway keeps the old deployment.
 
+A start that fails closed (issue #29): the container starts as root, and
+`ingest/entrypoint.sh` stops at the first failed command. If the write or
+the `chown` of the TLS files fails, or if `setpriv` cannot drop to user
+10001, the container stops before `ingest` starts. `/health` then never
+answers, and the healthcheck of the new deployment fails. The old
+deployment stays active and keeps the vehicle connection. Source: the
+healthcheck documentation ("Only then will the new deployment be made
+active and the previous deployment inactive",
+<https://docs.railway.com/deployments/healthchecks>). Documented, not
+observed. Not documented: whether the restart policy starts the stopped
+container again while the healthcheck of the new deployment still runs.
+Assumption: each such start fails in the same way, and the deployment
+fails when the healthcheck timeout ends. The deploy log shows the error
+line of the entrypoint or of `setpriv` (for example `setpriv: ...`). It
+holds no secret: the script prints no variable. Fix the cause in a new
+PR.
+
 Address family of the healthcheck (ADR 0001, "To verify at first
 deployment"): `/health` binds `0.0.0.0:PORT`, IPv4 only. The Railway
 guide says: "Your web server should bind to the host `0.0.0.0` and
@@ -148,8 +165,9 @@ Notes on `railway ssh` (observed at the first release):
 
 - On Railway, PID 1 is an init that Railway adds
   (`/run/podman-init -- /entrypoint.sh`), and `ingest` is PID 2 (ADR 0001,
-  "Process tree on Railway"). Do not read `/proc/1/...` for `ingest`; find
-  its PID first:
+  "Process tree on Railway"). Since issue #29 the init runs as root and
+  `ingest` as user 10001 (assumption until the checks of section 3.1). Do
+  not read `/proc/1/...` for `ingest`; find its PID first:
   `railway ssh -- sh -c 'for d in /proc/[0-9]*; do case "$(tr "\0" " " < "$d/cmdline" 2>/dev/null)" in "/usr/local/bin/ingest run ") echo "${d#/proc/}";; esac; done'`.
   The commands below write `<ingest pid>` for that PID.
 - The session runs as UID 0, but it cannot read `/proc/<pid>/environ` of a
@@ -167,7 +185,11 @@ Notes on `railway ssh` (observed at the first release):
 | Check (ADR 0001) | Command | Expected |
 | ---------------- | ------- | -------- |
 | TLS on the public port | `openssl s_client -connect telemetry.calmdonut.com:57438 -CAfile <Origin CA ECC root> -verify_return_error < /dev/null` | `verify return:1` for the chain. The server can end with an alert, because it asks for a client certificate. |
-| Process tree through the image `CMD` | `railway ssh -- sh -c 'for p in /proc/[0-9]*; do printf "%s " "${p#/proc/}"; tr "\0" " " < "$p/cmdline"; echo; done'`, then `railway ssh -- grep -e ^Uid -e ^PPid /proc/<ingest pid>/status /proc/1/status` | PID 1 is the init of Railway (`/run/podman-init -- /entrypoint.sh`); `/usr/local/bin/ingest run` has `PPid` 1 and `Uid` 10001; `fleet-telemetry` has the PID of `ingest` as `PPid`. Record the `Uid` of PID 1. At the release of 27 November 2026 it was 10001: then every process of UID 10001, also the child, can read the full service environment in `/proc/1/environ` (ADR 0001, "Process tree on Railway"; STACK.md section 15, accepted risks). A change of this value changes that risk. |
+| Process tree through the image `CMD` | `railway ssh -- sh -c 'for p in /proc/[0-9]*; do printf "%s " "${p#/proc/}"; tr "\0" " " < "$p/cmdline"; echo; done'`, then `railway ssh -- grep -e ^Uid -e ^PPid /proc/<ingest pid>/status /proc/1/status` | PID 1 is the init of Railway (`/run/podman-init -- /entrypoint.sh`); `/usr/local/bin/ingest run` has `PPid` 1 and `Uid` 10001; `fleet-telemetry` has the PID of `ingest` as `PPid`. Record the `Uid` of PID 1. At the release of 27 November 2026 it was 10001: then every process of UID 10001, also the child, could read the full service environment in `/proc/1/environ` (ADR 0001, "Process tree on Railway"; STACK.md section 15, accepted risks). Since issue #29 it must be 0 (next row). |
+| Init as root (issue #29) | `railway ssh -- grep ^Uid /proc/1/status` | `Uid: 0 0 0 0`. Any other value means that the init of Railway does not follow the image: the environment of the init stays readable by UID 10001. Report it to the owner (STACK.md section 15, accepted risks). |
+| UID 10001 cannot read the environment of the init (issue #29) | `railway ssh -- setpriv --reuid 10001 --regid 10001 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs sh -c 'cat /proc/<ingest pid>/environ > /dev/null 2>&1; echo "control=$?"; cat /proc/1/environ > /dev/null 2>&1; echo "init=$?"'` | `control=0`: the positive control, a process of UID 10001 reads the environment of `ingest`. `init=1`: the same process cannot read `/proc/1/environ`. The command prints exit codes only, never an environment. A probe with the same `setpriv` arguments gave exit code 0 in the production container on 27 November 2026. If `setpriv` fails in the session, record that; the CI job `image-check` (check 10) is then the evidence. |
+| Credentials of `ingest` and `fleet-telemetry` (issue #29) | `railway ssh -- grep -e ^Uid -e ^Gid -e ^Groups -e ^Cap -e ^NoNewPrivs /proc/<ingest pid>/status /proc/<child pid>/status` (the child PID: next row) | For both processes: `Uid` and `Gid` 10001 four times, `Groups` empty, `CapInh`, `CapPrm`, `CapEff`, `CapBnd`, and `CapAmb` all `0000000000000000`, and `NoNewPrivs` 1. |
+| Shutdown of the old deployment (Linux check 2) | The release of a new image is a redeploy. Use the command of the row "Shutdown on a redeploy" in section 3.2 with the ID of the old deployment. | The expected result of that row. It also shows that the init of Railway forwards SIGTERM to `ingest`, which no longer runs as the user of the init. |
 | Open-file limit | `railway ssh -- grep "open files" /proc/<ingest pid>/limits` | Soft limit equals hard limit. Both are at least 4096: 2048 descriptors for 1024 gate connections, plus the descriptors of the child and a margin. Record the values. |
 | Child environment and descriptors (Linux check 6) | The child PID: `railway ssh -- sh -c 'for d in /proc/[0-9]*; do case "$(tr "\0" " " < "$d/cmdline" 2>/dev/null)" in "/fleet-telemetry -config "*) echo "${d#/proc/}";; esac; done'`. Then `railway ssh -- sh -c 'grep PPid /proc/<pid>/status; ls -l /proc/<pid>/fd'` and `railway ssh -- cat /proc/net/tcp` | `PPid` is the PID of `ingest`. No `socket:[<inode>]` of the child is a listening socket (state `0A`) of `ingest`: the gate port 4443 (hex `115B`) or the `PORT` of STACK.md section 15 (in hex). If the session cannot read `/proc/<pid>/fd` ("Permission denied"), record that; the CI job `image-check` is then the evidence. The environments of the child (empty) and of `ingest` (`DATABASE_URL`, no `TLS_CERT`, `TLS_KEY`, or `MIGRATION_DATABASE_URL`) come from the CI job `image-check`, because the session cannot read them (notes above). |
 | TLS files | `railway ssh -- stat -c "%a %u %n" /etc/fleet-telemetry/tls /etc/fleet-telemetry/tls/tls.crt /etc/fleet-telemetry/tls/tls.key` | `700 10001`, `600 10001`, `600 10001`. |
@@ -226,7 +248,11 @@ it; later, a redeploy rebuilds it from the old commit.
 
 - **To an earlier deployment of the ADR 0001 image.** Roll back. The
   migration of this release only adds the schema `raw`, so an earlier
-  image of the same schema version works.
+  image of the same schema version works. An image before issue #29
+  starts as user 10001: its init again holds the service variables where
+  UID 10001 can read them (STACK.md section 15, accepted risks). The
+  pre-deploy command stays the same for both images, so no setting
+  changes for this rollback.
 - **To the image before ADR 0001** (the first release failed after it went
   live). That image has no `/usr/local/bin/ingest` and no `/health`.
   First clear the pre-deploy command and the healthcheck path, then roll

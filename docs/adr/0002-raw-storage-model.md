@@ -397,7 +397,13 @@ cannot create objects in `raw` or `public`.
   0. So the child and `ingest` can read both URLs in `/proc/1/environ`
   (the kernel rule for the same UID; not read directly). `STACK.md` §15
   (accepted risks) names the exposure; ADR 0001, "Process tree on
-  Railway", lists the options for the owner.
+  Railway", lists the options for the owner. Update (issue #29, owner
+  decision option 1): the container starts as root, so the init and its
+  environment belong to root, and the entrypoint starts `ingest` as UID
+  10001 without capabilities. Then neither the child nor `ingest` can
+  read `/proc/1/environ`; the post-release check confirms the `Uid` of
+  PID 1 on Railway. The child can still read `DATABASE_URL` in the
+  environment of `ingest`.
 - Accepted risk: the pre-deploy command needs the migrator URL, and Railway
   gives the same variables to the running container [R]. Update (issue
   #14): `ingest/entrypoint.sh` unsets `MIGRATION_DATABASE_URL` before it
@@ -408,6 +414,9 @@ cannot create objects in `raw` or `public`.
   compromised `ingest` or `fleet-telemetry` process can read it and
   change or drop tables in `raw` (previous entry). It cannot
   touch roles or other schemas. Neon keeps 6 hours of restore history [N1].
+  Update (issue #29): the init runs as root, so that read is closed (the
+  previous entry). The pre-deploy command now runs as root in its own
+  short-lived container (`STACK.md` §15).
   Reassessment: when Railway can give a variable to the pre-deploy command
   only, when the migration step can run outside the service, or when a
   security finding affects the running container.

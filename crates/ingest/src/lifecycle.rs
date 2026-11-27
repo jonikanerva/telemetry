@@ -4,10 +4,13 @@
 //! Start of the `run` command:
 //!
 //! 1. Install the SIGTERM and SIGINT handlers. A failure stops the start.
-//!    PID 1 of a container gets a signal from outside the container only
-//!    when it has a handler for it, so these handlers are also what makes
-//!    SIGTERM reach `ingest` as PID 1. Other signals, except SIGKILL, have
-//!    no effect on PID 1.
+//!    Under Docker without an init, `ingest` is PID 1. PID 1 of a container
+//!    gets a signal from outside the container only when it has a handler
+//!    for it, so these handlers are also what makes SIGTERM reach `ingest`
+//!    there. Other signals, except SIGKILL, have no effect on PID 1. On
+//!    Railway, an init is PID 1 and `ingest` is PID 2: the init forwards
+//!    SIGTERM, and that kernel rule does not apply to `ingest` (ADR 0001,
+//!    "Process tree on Railway").
 //! 2. Make the run ID (random bytes of the operating system) and the
 //!    connection settings of the database. A failure stops the start. No
 //!    connection opens yet.
