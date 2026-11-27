@@ -285,6 +285,17 @@ a demonstrated need, threat model, independent security review, and end-to-end
 evidence; it is not the default fix for adapter lag. Until the authentication
 trial passes, report that capability as unvalidated.
 
+**Project note (owner decision, 27 November 2026; ADR 0003):** this project
+has no accounts and no OIDC provider. One password protects the web
+application: a Railway service variable holds an Argon2id hash, a login
+gives a session cookie with an expiry and a logout, and the server slows
+down repeated login attempts globally. The login, the session, and the
+throttle are a first-party session system. The requirements above for
+such a system apply with the first web PR: a threat model, an independent
+security review, and end-to-end evidence. The cookie, CSRF, rotation,
+fixation, expiry, revocation, and logout rules above also apply. ADR 0003
+records the demonstrated need.
+
 ---
 
 ## 3. Build & verify commands
@@ -1159,6 +1170,16 @@ Owner decisions of 26 November 2026 (lead authority):
   month.
 - The lead may create Neon branches of project `telemetry` as isolated test
   databases, and an application role with limited privileges.
+
+Owner decisions of 27 November 2026 (lead authority):
+
+- Codex: the repository has no `AGENTS.md`. Claude Code is the only agent
+  with a contract in the repository. The lead may ask Codex for a
+  read-only second review of a single security-critical PR. The task text
+  of the lead states the rules of that review. Codex gets no secret and no
+  production data. The review sends the code of the PR to OpenAI; the
+  repository is public. The Codex review is a second review. It does not
+  replace the independent review that `CLAUDE.md` requires.
 
 Lead decisions of 26 November 2026, within delegated authority (ADR 0001,
 section "Lead decisions"):

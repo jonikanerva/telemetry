@@ -56,8 +56,22 @@ Views, in priority order:
 1. Battery: charge level over time, capacity trend, and loss while parked.
 2. Consumption: Wh/km against temperature and speed.
 3. Charging sessions, with cost where a price source is available.
-4. Drives, with the route on a map.
+4. Drives, with the route as a line.
 5. Live dashboard: the current values while the car is awake.
+
+Charging cost (owner decision, 27 November 2026): the price source is the
+owner's `spot-price` service, for charging at home. The cost of a session
+is the energy of each interval times the price of that interval, plus the
+fixed parts from configuration: transfer, taxes, and margin. At other
+places the cost is unknown. The view shows an unknown cost as unknown,
+never as zero. The product does not use the Tesla charging history,
+because it spends the shared Tesla credit.
+
+Drive route (owner decision, 27 November 2026): at first the drive view
+has no background map. The view draws the route as a line on an empty
+background, with the start, the end, the distance, and the duration. No
+map tile provider gets a request. The owner selects a map provider when
+the drive view is built (Open Questions).
 
 States that every view handles: loading, data, no data yet, a gap in the
 data, the car is asleep, the data is stale, and the service is unavailable.
@@ -105,10 +119,31 @@ a public URL without access control, or a monthly cost.
 | Tesla OAuth access token         | Sends the telemetry config to Tesla   | Owner's computer only, `.env`         | About 8 hours                                 |
 | Database credentials of `telemetry_ingest` and `telemetry_migrator` | Let the ingest service write records and apply migrations | Railway service variables | Kept while the product is in use; rotate after a suspected leak |
 | Operational records (`raw.ingest_event`): starts, stops, gate changes, child exits, drops, shortfalls | Make gaps and restarts visible | Neon Postgres | No expiry (owner decision, 27 November 2026) |
+| Argon2id hash of the web password | Checks the owner's password at login | Railway service variables of the web service; the owner creates the hash on the owner's computer | Until the owner changes the password |
+| Login sessions of the web application | Keep the owner signed in after a login | Session cookie in the owner's browser; where the server keeps session data is a technical choice of the first web PR | Session expiry or logout |
+| Time range of a charge at home | Read the electricity price for the charging cost | The owner's `spot-price` service; the request holds no location and no VIN | Not checked yet (the owner's service) |
 
 - Forbidden data flows: location, VIN, or signal data to any party other
   than Neon and Railway without owner approval. No secret in the repository,
-  in an image, or in the browser bundle.
+  in an image, or in the browser bundle. Owner-approved flow (27 November
+  2026): the request to the owner's `spot-price` service holds a time range
+  only, with no location and no VIN.
+- Access control (owner decision, 27 November 2026; ADR 0003): one
+  password protects the web application. The owner uses a long random
+  password from a password manager. There is no second factor. The
+  application stores no password, only a hash. A login gives a session
+  with an expiry, and the owner can log out. The server slows down
+  repeated login attempts. The login page is reachable from the internet.
+  Cloudflare Access was the earlier proposal. It is not used now, because
+  it needs a payment method on the Cloudflare account, also for the free
+  plan. It can go in front of the application later without an
+  application change.
+- Agent review (owner decision, 27 November 2026): the repository has no
+  `AGENTS.md`. Claude Code is the only agent with a contract in the
+  repository. The lead may ask Codex for a read-only second review of a
+  single security-critical PR. The task text of the lead states the rules of that
+  review. The review sends the code of the PR to OpenAI. The repository is
+  public. Codex gets no secret and no production data.
 - Telemetry and diagnostics: none to external services. Application logs
   must not contain the VIN, location, or signal values.
 - The ingest service no longer writes records to the Railway log.
@@ -125,16 +160,32 @@ a public URL without access control, or a monthly cost.
 
 Owner decisions:
 
-- Access control for the web application. Proposal: Cloudflare Access.
 - Map provider for the drive view. A tile provider sees the viewed locations.
+  Interim decision of 27 November 2026: no background map (Product Shape).
+  The owner selects a provider when the drive view is built. Candidates: a
+  self-hosted map file (Protomaps, PMTiles) or a hosted tile service based
+  on OpenStreetMap.
 - Retention period for raw signals. The owner decides it in the web
   phase, with the measured growth. If the first week of data shows that
   the 1 GB of Neon fills before the web phase, the lead reports it to the
   owner at once.
-- Price source for charging cost. Candidate: the owner's `spot-price` service.
-- Whether Codex also works in this repository (`AGENTS.md`).
+
+Decided by the owner on 27 November 2026:
+
+- Access control for the web application: one password (Persistence and
+  Privacy Posture; ADR 0003).
+- Price source for charging cost: the owner's `spot-price` service, for
+  charging at home (Product Shape).
+- Codex in this repository: no `AGENTS.md`; on the lead's request, a
+  read-only second review of a single security-critical PR (Persistence
+  and Privacy Posture).
 
 Delegated technical choices, recorded as ADRs when significant:
 
 - How signals move from the ingest service to the application without loss
   during an application deployment.
+- The interface of the `spot-price` service, and whether it keeps a price
+  history. Not checked yet. The lead checks both when the charging view is
+  built, and reports to the owner if the history is missing.
+- Where the server keeps the session data of the web application
+  (ADR 0003).
