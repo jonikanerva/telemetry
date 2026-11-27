@@ -133,6 +133,7 @@ run = [
   # The JS dependencies, also the development tools (STACK.md §3, §14).
   "pnpm audit --prod=false",
   "cargo shear",
+  "scripts/gitleaks-guard.sh",
   "gitleaks git --redact --no-banner .",
   "jq empty ingest/server_config.json config/telemetry_config.json contract/openapi.json",
   "sh -n ingest/entrypoint.sh",
