@@ -941,8 +941,10 @@ the files agree; the CI job `image-check` checks the running container
   entrypoint; a shell builtin (`printf`) writes the key, so no process
   argument holds it; `umask 077` gives mode 0600; `unset` before the `exec`
   keeps the key out of the environment of `ingest`
-  (`/proc/<pid of ingest>/environ`; on Railway the init keeps the full
-  environment, see "Process tree on Railway"),
+  (`/proc/<pid of ingest>/environ`). Update (release of 27 November 2026):
+  this protects only under Docker without an init. On Railway the init
+  (PID 1, UID 10001) keeps the full environment, and a process of UID
+  10001 can read it (section "Process tree on Railway"),
   and `ingest` starts the child with an empty environment. In Rust, the
   removal of a variable (`std::env::remove_var`) is `unsafe` in edition
   2024, which the workspace forbids, and the raise of the limit needs
@@ -954,7 +956,10 @@ the files agree; the CI job `image-check` checks the running container
   files, into `/etc/fleet-telemetry/tls/` (mode 0700, owner 10001).
   Upstream runs `fleet-telemetry` as a non-root user too
   (`gcr.io/distroless/cc-debian12:nonroot`). A numeric user needs no
-  `useradd` step.
+  `useradd` step. Update (release of 27 November 2026): on Railway the
+  init also runs as 10001, so its environment is readable by `ingest`
+  and the child; option 1 of the proposal in "Process tree on Railway"
+  would replace this decision.
 - **Fixed settings in the image.** The `ENV` lines of the Dockerfile set
   the ports and the child paths. The Railway service variables hold only
   `PORT` (8080) and the secrets. So the settings change with the code,
@@ -1062,15 +1067,72 @@ What changes, and what does not:
   10001 (not tested; the same session cannot read the environment of
   that process). Cost: the queue since the last flush is lost (the
   crash line of "Delivery guarantee").
-- **Environment of PID 1.** The init started with every service variable,
-  also `TLS_KEY` and `MIGRATION_DATABASE_URL`. The entrypoint removes them
-  only in the process that becomes `ingest`, so `/proc/1/environ` of the
-  init still holds them. `fleet-telemetry` (UID 10001) can read that file
-  only when the init runs as UID 10001 too. Not observed: the release
-  record gives the UID of PID 2 only. To verify:
-  `railway ssh -- grep ^Uid /proc/1/status`. If the init runs as 10001,
-  the removal of `MIGRATION_DATABASE_URL` does not protect it on Railway
-  (`STACK.md` §15, accepted risks).
+- **Environment of PID 1.** The init started with every service variable:
+  `TLS_CERT`, `TLS_KEY`, `DATABASE_URL`, and `MIGRATION_DATABASE_URL`. The
+  entrypoint removes the TLS variables and the migrator URL only in the
+  process that becomes `ingest`, so `/proc/1/environ` of the init still
+  holds them. Observed by the lead on 27 November 2026 in the production
+  container: `/proc/1/status` of `/run/podman-init -- /entrypoint.sh`
+  shows `Uid: 10001 10001 10001 10001`, and `ptrace_scope` is 0. So the
+  init runs as the user of the image, the same user as `ingest` and
+  `fleet-telemetry`. The kernel lets a process read `/proc/<pid>/environ`
+  of another process of the same UID (a ptrace read check; Yama
+  `ptrace_scope` restricts only the attach mode, and it is 0 here, which
+  also allows the memory read). So `fleet-telemetry` and `ingest` can read
+  all four variables in `/proc/1/environ`. This follows from that kernel
+  rule; nobody read the file directly, because the `railway ssh` session
+  (UID 0) has no right to read it. Consequence: on Railway the `unset` in
+  the entrypoint gives no protection. It protects only under Docker
+  without an init (the CI job `image-check`). `STACK.md` §15 (accepted
+  risks) names the exposure; the options to close it follow.
+
+**Proposal for the owner: close the environment of PID 1 (not
+implemented).** Each option needs an owner decision; the lead does not
+choose. Assumption of options 1 and 2: the init runs as the user that the
+image names, as observed for 10001.
+
+1. **Start as root, drop in the entrypoint.** The image has no
+   `USER 10001`, so the init (PID 1) and its environment belong to UID 0.
+   The entrypoint writes the TLS files as root, sets their owner to
+   10001, removes the variables, and then replaces itself with
+   `setpriv --reuid=10001 --regid=10001 --clear-groups` and
+   `ingest run` (`exec`). `setpriv` comes from util-linux; the change must
+   confirm that the final image contains it. Then no process of UID 10001
+   can read `/proc/1/environ`. Costs and changes:
+   - It replaces the decision "Non-root user": the image starts as root,
+     and the drop happens in the entrypoint. A fault in the entrypoint
+     before the drop runs as root.
+   - The Dockerfile and entrypoint allowlists of `vuln`
+     (`scripts/vuln-premise-test.sh` and the `vuln` task) change with the
+     files.
+   - The `image-check` assertions change: PID 1 under Docker is then the
+     entrypoint as root until the `exec`, then `ingest` as 10001 through
+     `setpriv`; the check must show the UID of `ingest` and of the child,
+     and that UID 10001 cannot read `/proc/1/environ` on a container with
+     an init.
+   - File ownership: the TLS directory and files need an explicit owner
+     (10001) and mode, because root creates them.
+   - `ingest` (PID 2, UID 10001) still holds `DATABASE_URL` in its own
+     environment, so the child can still read it, unless `ingest` also
+     reads and clears it. In Rust, `std::env::remove_var` is `unsafe`
+     (forbidden in the workspace); the bounded fix of `STACK.md` §15 (a
+     0600 file that `ingest` reads and deletes) does not help while
+     `ptrace_scope` is 0, because the child can then read the memory of
+     `ingest`.
+2. **A separate UID for the child (the stronger variant).** `ingest`
+   starts `fleet-telemetry` as another user, for example 10002. A process
+   of another UID cannot read the environment or the memory of `ingest`
+   or of the init, whatever `ptrace_scope` is. Costs and changes: `ingest`
+   needs the capabilities `CAP_SETUID` and `CAP_SETGID` to start the child
+   as another user (a file capability on the binary, or a start as root
+   and a partial drop), and `ingest` then holds these capabilities while
+   it runs; the TLS files must be readable by the child user and not by
+   others; the child code in `crates/ingest/src/child.rs` changes, and the
+   tests and `image-check` change with it. Option 2 alone does not close
+   the environment of PID 1 against a fault in `ingest`; with option 1 it
+   closes both paths.
+3. **Keep the accepted risk.** No change. The exposure of `STACK.md` §15
+   stays until the owner decides.
 - **What `image-check` proves.** Under Docker without an init it shows the
   image, the entrypoint, the release build, the empty environment of the
   child, the descriptors, the shutdown order after SIGTERM to `ingest`, and
@@ -1315,7 +1377,7 @@ lead observation). "Pending" names what the point still needs.
 
 | Point | Status | Evidence or what it needs |
 | ----- | ------ | ------------------------- |
-| Railway runs the image `CMD` through the entrypoint | Closed, with a correction | Railway runs `CMD` under its init: PID 1 `/run/podman-init -- /entrypoint.sh`, PID 2 `/usr/local/bin/ingest run` (UID 10001), `fleet-telemetry` a child of PID 2. `ingest` is not PID 1 (section "Process tree on Railway"). |
+| Railway runs the image `CMD` through the entrypoint | Closed, with a correction | Railway runs `CMD` under its init: PID 1 `/run/podman-init -- /entrypoint.sh` (UID 10001), PID 2 `/usr/local/bin/ingest run` (UID 10001), `fleet-telemetry` a child of PID 2. `ingest` is not PID 1, and the init keeps every service variable where UID 10001 can read it (section "Process tree on Railway"). |
 | Healthcheck on `PORT` without an HTTP domain | Closed (first half) | The healthcheck on `/health` passed; deployment `SUCCESS` about 2 minutes after the merge. The old deployment kept on a failed healthcheck: documented, not observed. |
 | Pre-deploy command runs `ingest migrate` with the service variables | Closed (first half) | `migrated` with `applied` 1 and `embedded` 1 in the pre-deploy step. A failure that stops the deployment: documented, not observed. |
 | Settle time of 250 ms | Pending | Needs the first vehicle connection of a start without a `zmq_shortfall` event. |
@@ -1333,7 +1395,7 @@ lead observation). "Pending" names what the point still needs.
 | Linux check 3 (no zombie after child exits) | Partly closed | No zombie at the release; the three child exits on Railway are still to do. |
 | Linux check 4 (forced end) | Pending | Now possible on purpose: SIGKILL of PID 2 from a `railway ssh` session; it loses the queue since the last flush. Not tested: whether the session (UID 0, which cannot read the environment of UID 10001) may signal a process of UID 10001. |
 | Linux check 5 (socket options) | Partly closed | The TLS probe connection had `socket_options` `set`, `keepalive` `15/15/9`, `nodelay` `true`; the vehicle connections and the idle dead-peer case are still to record. |
-| Linux check 6 (child environment and descriptors) | Closed by CI only | `railway ssh` runs as UID 0 and gets "Permission denied" on `/proc/<pid>/environ` of UID 10001. The evidence is `image-check` (empty child environment, no listener of `ingest` in the child). |
+| Linux check 6 (child environment and descriptors) | Closed by CI only | `railway ssh` runs as UID 0 and gets "Permission denied" on `/proc/<pid>/environ` of UID 10001. The evidence is `image-check` under Docker (empty child environment, no listener of `ingest` in the child). The empty environment of the child does not keep the service variables from it on Railway: the child can read `/proc/1/environ` of the init (section "Process tree on Railway"). |
 | `unknown_fields` false positives, Neon compute | Pending (one week) | |
 
 - Railway runs the image `CMD` (through `ingest/entrypoint.sh` and `exec`)
