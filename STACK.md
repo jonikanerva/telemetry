@@ -137,7 +137,7 @@ reads the Rust version from `rust-toolchain.toml`
 | `test-ci` | CI only: `cargo nextest run --workspace --locked --no-fail-fast` against the PostgreSQL server of the runner, without the tests that need Neon (below), and `doctest`. |
 | `verify` | The static checks of task `checks` (format check, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, or `.bin/` path), then `sqlx-check`, `build`, and `test`. |
 | `ci`     | The CI job `ci`: `checks`, `sqlx-check`, `build`, and `test-ci` against the PostgreSQL server of the runner (`scripts/ci-postgres.sh`). It does not replace `verify`. |
-| `sqlx-check` | `scripts/sqlx-metadata.sh check`: `cargo sqlx prepare --workspace --check` against a new database on the Neon branch `test`, migrated with `migrations/`, then dropped. |
+| `sqlx-check` | `scripts/sqlx-metadata.sh check`: `cargo sqlx prepare --workspace --check` against a new database on the server of `TEST_DATABASE_URL` (the Neon branch `test` locally, the PostgreSQL server of the runner in CI), migrated with `migrations/`, then dropped. |
 | `sqlx-prepare` | `scripts/sqlx-metadata.sh prepare`: writes `.sqlx/` the same way after a change of a query or a migration. |
 | `deps`   | The dependency freshness check (below). |
 | `vuln`   | The vulnerability check (below). |
@@ -151,8 +151,9 @@ Gitleaks 8.30.1, osv-scanner 2.7.1, SQLx CLI 0.9.1 (features `postgres` and
 1.8.2, and crane 0.22.1.
 
 **Database tests.** `test`, `test-ci`, `verify`, and `sqlx-check` need
-`TEST_DATABASE_URL`, the URL of the role `neondb_owner` on the Neon branch
-`test` (§5); a missing URL is a failure, not a skipped check. Export it
+`TEST_DATABASE_URL`: locally the URL of the role `neondb_owner` on the Neon
+branch `test` (§5), in CI the URL that `scripts/ci-postgres.sh` sets. A
+missing URL is a failure, not a skipped check. Export it
 before the command (`set -a; . ./.env.test; set +a; mise run verify`, value
 in quotes); mise does not read the file. The query macros read `.sqlx/`
 (`SQLX_OFFLINE=true`), so `build` and `lint` never connect to a database;
