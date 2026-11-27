@@ -12,7 +12,7 @@ telemetry becomes a private history that the owner can explore.
 
 Collect the telemetry of one vehicle continuously. Turn it into a history of
 drives, charging sessions, and parked periods. Show that history as charts.
-Show a live dashboard while the car is awake.
+A live dashboard while the car is awake is optional.
 
 ## Audience and environment
 
@@ -31,6 +31,9 @@ Show a live dashboard while the car is awake.
 
 - **History first.** A lost hour of data cannot be collected again. Data
   collection must continue when the web application fails or deploys.
+  Accepted loss budget (owner decision, 27 November 2026): a crash, a
+  deploy, or a Neon outage can lose up to 15 minutes of queued data. Each
+  such loss stays visible as a gap.
 - **Keep the source meaning.** No data is not zero. A gap stays a gap. Store
   the value and unit that the vehicle sent. Convert units for display.
 - **Private by default.** The data shows where the owner is and when the
@@ -57,7 +60,8 @@ Views, in priority order:
 2. Consumption: Wh/km against temperature and speed.
 3. Charging sessions, with cost where a price source is available.
 4. Drives, with the route as a line.
-5. Live dashboard: the current values while the car is awake.
+5. Live dashboard: the current values while the car is awake. Optional, a
+   later view.
 
 Charging cost (owner decision, 27 November 2026): the price source is the
 owner's `spot-price` service, for charging at home. The cost of a session
@@ -101,9 +105,11 @@ a public URL without access control, or a monthly cost.
 ## Success Definition
 
 - The history of drives, charges, and parked periods has no gaps except when
-  the car was asleep or offline. Each gap is visible as a gap.
+  the car was asleep or offline, or a loss within the accepted budget of 15
+  minutes. Each gap is visible as a gap.
 - The owner can see battery, consumption, and charging trends over months.
-- The live dashboard shows new values within a few seconds while driving.
+- The views can be up to 15 minutes behind the vehicle (owner decision,
+  27 November 2026).
 - The monthly Tesla, Neon, and Railway usage stays inside the free allowances.
 - The car sleeps as it did before telemetry was enabled.
 
@@ -176,9 +182,6 @@ Decided by the owner on 27 November 2026:
   Privacy Posture; ADR 0003).
 - Price source for charging cost: the owner's `spot-price` service, for
   charging at home (Product Shape).
-- Codex in this repository: no `AGENTS.md`; on the lead's request, a
-  read-only second review of a single security-critical PR (Persistence
-  and Privacy Posture).
 
 Delegated technical choices, recorded as ADRs when significant:
 

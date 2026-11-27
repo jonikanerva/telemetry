@@ -383,8 +383,8 @@ Scope and gaps of `vuln`:
   when the gating advisory rate falls below one each month over 60 days.
 - The CI workflow (below) runs `vuln` in a separate job for each pull
   request and each push to `main`; no scheduled run exists yet. The job
-  does not change the points of DOCTRINE.md P7 above: the lead still runs
-  `mise run vuln` at these points. The result of the job:
+  and the scheduled `vuln` job of the CI workflow are the runs of
+  DOCTRINE.md P7. The result of the job:
   - A green `vuln` job is a merge condition of a PR that changes an input
     of the job: `Cargo.lock`, each `Cargo.toml`, `deny.toml`, the `vuln`
     task or the scanner pins in `[tools]` of `mise.toml` (cargo-deny,
@@ -912,18 +912,15 @@ protection is an owner decision.
 Assign each check to before merge or after release. Missing pre-merge evidence
 blocks merge; missing post-release evidence prevents claiming a successful
 release. A future production deployment is not required to approve its PR.
-For material changes, the independent reviewer MUST run full verification and
-required tests on the PR head integrated with the current base in an isolated
-checkout. Record head, base, and tested integration commit/tree. Missing or
-failed independent execution is FAIL, as P9 requires. This adds no mandatory
-review to low-impact changes that do not otherwise require one.
+DOCTRINE.md P9 states when the independent reviewer runs its own full
+verification and what it records.
 
 Retain commands, safe fixtures or reconstruction steps, expected outcomes and
 their original sources, versions, environments, and results. Challenge material
 assumptions and transformations beyond supplied examples. A test of a generated
 assumption is not proof of that assumption. Regression tests should detect the
 original failure. Investigate flakes rather than treating a rerun as an
-explanation. Apply P6 evidence reuse without waiving P9's independent run.
+explanation. Apply P6 evidence reuse without waiving an independent run that P9 requires.
 
 | Doctrine / applicability      | Required evidence                                                                                                                       | Environment / gap                                                                                 |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -936,7 +933,7 @@ explanation. Apply P6 evidence reuse without waiving P9's independent run.
 | P5–P7: browser                | Critical Playwright journeys, degraded/error states, keyboard and axe                                                                   | Record unsupported browsers and manual accessibility gaps                                         |
 | P7: release                   | Before merge: target build and recovery readiness; after release: identity, health, and smoke evidence                                  | Local build is not a verified deployment                                                          |
 | P6, P7: production platform   | Green `ci` job (`mise run ci` on linux/amd64, GitHub Actions, §3) for the PR, together with the local `mise run verify`; for a change of an image input, also a green `image-check` job | CI runs no database test; `image-check` runs the container without Railway (§13); CI is not branch protection |
-| P8–P9: material changes       | Current docs, significant decisions, independent integrated verification                                                                | Separate reviewer context; exact tested revisions                                                 |
+| P8–P9: material changes       | Current docs, significant decisions, independent review; independent integrated verification where P9 requires it                    | Separate reviewer context; exact tested revisions                                                 |
 
 ### Check configuration
 
