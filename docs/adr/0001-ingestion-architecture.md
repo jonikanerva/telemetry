@@ -780,8 +780,10 @@ sections above leave open. Each point has a test.
     ("Crates"); the two defences make the reader independent of the
     reconnect logic of the crate. Reassess when upstream fixes the lost
     disconnect notification, or when a second defect of this class shows
-    up. An upstream report is a possible follow-up for the lead; this
-    change opens none.
+    up. Owner decision of 27 November 2026: the stall detection stays as
+    it is (metrics period 15 s, loss bound below 63.5 s, `zeromq` 0.7.0).
+    Reassess after the one-week follow-up. No report of the reconnect
+    defect goes upstream without the owner.
 - **No answer for the cadence and gate condition 3.** SQLSTATE class `08`
   and `57P` (for example `57P01`, the server ended the session at a Neon
   compute restart) count as no answer. They are transient and need no
@@ -984,7 +986,9 @@ the files agree; the CI job `image-check` checks the running container
   `rust-toolchain.toml`: the file also names rustfmt and Clippy, which the
   slim image does not have, and rustup would download them during the
   build. The `vuln` allowlist ties the tag to the file instead. The
-  builder image is not scanned (`STACK.md` §13, proposed exception).
+  builder image is not scanned (`STACK.md` §13: an exception that the
+  independent reviewer approved and the owner accepted on 27 November
+  2026).
 - **Build inputs.** The `COPY` lines name each input: `Cargo.toml`,
   `Cargo.lock`, `.cargo/`, `crates/`, `db/` (`include_str!` of
   `db/roles.sql`), `migrations/` (`sqlx::migrate!`), and `.sqlx/`. A
@@ -1064,11 +1068,15 @@ What changes, and what does not:
   the gap "no general reaping" (`crates/ingest/src/child.rs`) does not
   apply on Railway. At the release, the container had no zombie.
 - **SIGTERM.** Railway sends SIGTERM to PID 1; by [P2] the init forwards
-  it to `ingest`, which runs the shutdown sequence. Not observed yet:
-  Linux check 2 at the first redeploy shows it (`shutdown_started` with
-  reason `SIGTERM` in the log of the old deployment). Without the
+  it to `ingest`, which runs the shutdown sequence. Without the
   forward, no `shutdown_started` line would appear, and SIGKILL would end
-  the container after `drainingSeconds`.
+  the container after `drainingSeconds`. Observed at the release of PR
+  #30 (27 November 2026, deployment
+  `dcda346d-1934-4054-a25b-5a32cc286c6d`): the previous deployment
+  logged `shutdown_started`, `gate_stopped`, `child_killed`, a final
+  `flushed`, and `shutdown_complete` within 2 s, with no
+  `task_stop_timeout`, `gate_connections_open`, or `flush_incomplete`. So
+  the init forwards SIGTERM (Linux check 2 on Railway).
 - **Other signals.** `ingest` is not PID 1 on Railway, so the kernel rule
   that protects PID 1 from signals without a handler does not apply to
   it. A signal that the init forwards and that `ingest` does not handle
@@ -1104,13 +1112,28 @@ What changes, and what does not:
   risks) names the exposure; the options to close it follow. Update: a
   probe in the production container on 27 November 2026 confirmed the
   read by a process of UID 10001 (exit code only). The owner chose
-  option 1 (below); issue #29 implements it.
+  option 1 (below); issue #29 implements it. Update (release of PR #30,
+  27 November 2026, merge `8080e2c`, deployment
+  `dcda346d-1934-4054-a25b-5a32cc286c6d`): the init follows the image
+  user. PID 1 `/run/podman-init -- /entrypoint.sh` now has
+  `Uid: 0 0 0 0`. `ingest` (PID 2) and `fleet-telemetry` (PID 15) have
+  `Uid` and `Gid` 10001, empty `Groups`, all capability sets 0, and
+  `NoNewPrivs: 1`. The TLS directory has mode 700 and the TLS files mode
+  600, owner 10001:10001. From UID 10001, the read of
+  `/proc/self/environ` exits with 0 and the read of `/proc/1/environ`
+  exits with 1. The container had no zombie, and the pre-deploy command
+  ran as root (`migrated` logged). So the exposure of this point is
+  closed on Railway.
 
 **Proposal for the owner: close the environment of PID 1.** Each option
 needs an owner decision; the lead does not choose. Assumption of options 1
 and 2: the init runs as the user that the image names, as observed for
 10001. Owner decision of 27 November 2026: option 1. Issue #29 implements
 it; the part "Decision of issue #29 (option 1)" below records the result.
+Owner decision of 27 November 2026 (decisions review after the first
+release): no option 2. The owner accepts the risk that `fleet-telemetry`
+can read `DATABASE_URL` in the environment of `ingest`; no separate user
+for the child and no `PR_SET_DUMPABLE` change (`STACK.md` §15, note N1).
 
 1. **Start as root, drop in the entrypoint.** The image has no
    `USER 10001`, so the init (PID 1) and its environment belong to UID 0.
@@ -1159,13 +1182,22 @@ it; the part "Decision of issue #29 (option 1)" below records the result.
 
 - `ingest/Dockerfile` has no `USER` line, so the container starts as
   root. The init of Railway and its environment then belong to UID 0
-  (assumption until the post-release check below).
+  (observed at the release of PR #30: `Uid: 0 0 0 0` for PID 1).
 - `ingest/entrypoint.sh` runs as root. It copies the TLS variables to
   shell variables that are not exported and removes `TLS_CERT`,
-  `TLS_KEY`, and `MIGRATION_DATABASE_URL` before it runs a program. It
-  removes old TLS files and writes the new ones with `umask 077` and
-  noclobber, so it never writes through a link that a process of UID
-  10001 left from an earlier start in the same container filesystem. It
+  `TLS_KEY`, and `MIGRATION_DATABASE_URL` before it runs a program.
+  Limit: if the container environment already holds a variable named
+  `cert` or `key`, the shell keeps that variable exported, and the key
+  reaches the environment of `ingest`. Issue #31 tracks the fix (`unset
+  cert key` before the copy); it has no schedule by owner decision. The
+  script removes old TLS files with `rm -f` and writes the new ones with
+  `umask 077` and noclobber (`set -C`). The noclobber of dash is not a
+  plain `O_EXCL` open: for an existing target that is not a regular file,
+  the write can succeed (a probe wrote through a symbolic link to a
+  FIFO). So the defence against a link that a process of UID 10001 left
+  from an earlier start in the same container filesystem rests on the
+  `rm -f` before the write, and on the premise that no process of UID
+  10001 runs while the root part of the entrypoint runs. It
   gives both files to 10001 (`chown`), raises the soft open-file limit,
   and replaces itself (`exec`) with `setpriv --reuid 10001 --regid 10001
   --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs
@@ -1174,11 +1206,14 @@ it; the part "Decision of issue #29 (option 1)" below records the result.
 - Fail closed: `set -eu` stops the script at the first failed command.
   No line starts `ingest` as root. If `setpriv` cannot drop the
   privileges, it exits with an error and does not start `ingest`. A start
-  as another user than root fails in `setpriv` (it needs root to clear
-  the groups and the bounding set), so the container stops.
+  as user 10001 fails in `setpriv` (it needs root to clear the groups
+  and the bounding set). A start as any other non-root UID fails
+  earlier, at `rm -f` or at the write of a TLS file. The container stops
+  in each case.
 - No explicit check that the script runs as root: a start as another
-  user cannot start `ingest` as root, and `setpriv` already stops it. The
-  CI job `image-check` proves this with a start as user 10001.
+  user cannot start `ingest` as root, because `rm -f`, the write, or
+  `setpriv` stops it. The CI job `image-check` proves this with a start
+  as user 10001.
 - What it closes: a process of UID 10001 (`ingest`, `fleet-telemetry`,
   or a process that they start) cannot read `/proc/1/environ`. The kernel
   allows that read only for the same UID or with `CAP_SYS_PTRACE`, and
@@ -1187,9 +1222,10 @@ it; the part "Decision of issue #29 (option 1)" below records the result.
   processes.
 - What stays: `DATABASE_URL` in the environment of `ingest`, which
   `fleet-telemetry` can read as the same user (`STACK.md` §15, note N1;
-  option 2 is a later owner decision). The entrypoint and the pre-deploy
-  command (`ingest migrate`, in its own short-lived container) run as
-  root.
+  the owner accepted this risk on 27 November 2026 and declined
+  option 2). The entrypoint and the pre-deploy command (`ingest
+  migrate`, in its own short-lived container) run as root; the owner
+  accepted the pre-deploy command as root on 27 November 2026.
 - Evidence before merge: the deployment test runs a copy of the
   entrypoint with stubs for `setpriv` and `chown` and checks their exact
   arguments, the file modes, the environments, the link defence, and the
@@ -1204,7 +1240,9 @@ it; the part "Decision of issue #29 (option 1)" below records the result.
   the `Uid` of PID 1 on Railway is 0, a process of UID 10001 cannot read
   `/proc/1/environ` (exit code only), and the capability sets of `ingest`
   are empty. tini is not the init of Railway, so `image-check` does not
-  replace these checks.
+  replace these checks. Result at the release of PR #30: all three
+  passed (section "Process tree on Railway", update of the point
+  "Environment of PID 1").
 - **What `image-check` proves.** Under Docker without an init it shows the
   image, the entrypoint, the release build, the empty environment of the
   child, the descriptors, the shutdown order after SIGTERM to `ingest`, and
@@ -1286,7 +1324,8 @@ it; the part "Decision of issue #29 (option 1)" below records the result.
 - Data reaches PostgreSQL up to 15 minutes late. The live dashboard of a
   later phase needs another path, for example a second ZMQ subscriber.
 - First-party code now sits on the public port, but it only copies bytes.
-- Accepted risk at the gate (lead decision 6): a live peer that stalls
+- Accepted risk at the gate (lead decision 6; the owner accepted it on
+  27 November 2026): a live peer that stalls
   inside the TLS handshake holds a connection until it closes it; a peer
   that goes away is closed within the dead-peer bound (about 150 s idle,
   about 925 to 1,045 s with unacknowledged data), as with upstream today.
@@ -1334,9 +1373,13 @@ authority.
    `ingest_event` gap makes the loss visible. Each interval below the
    5-minute scale-to-zero timeout keeps the compute awake whenever the car
    is awake. So the real choice is "always on while awake" or about 15
-   minutes. Reassessment: after 30 days of measured awake hours, lower the
-   interval (for example to 60 s) if the worst observed month stays below
-   60 CU-hours at the always-on rate.
+   minutes. Owner decision of 27 November 2026: the interval stays 900 s.
+   A value of 300 s or less keeps the compute active for the whole awake
+   time, because the compute suspends only after 5 minutes without
+   activity. Reassessment: after the one-week follow-up, with the measured
+   awake hours (the owner's condition; it replaces the earlier 30 days).
+   Lower the interval (for example to 60 s) only if the measured awake
+   hours keep a month below 60 CU-hours at the always-on rate.
 2. **Second database role `telemetry_migrator`** (ADR 0002). The owner
    authorised an application role with limited privileges. A separate
    least-privilege migration role serves the same intent and keeps
@@ -1347,11 +1390,13 @@ authority.
    the production endpoint `ep-young-dawn-bgyaj83l`. The response showed
    minimum 0.25, maximum 0.25, and `suspend_timeout_seconds` 0 (the plan
    default of 5 minutes). The `test` branch compute also has a fixed 0.25
-   CU.
+   CU. The owner confirmed on 27 November 2026: the production compute
+   stays fixed at 0.25 CU, and the storage keeps no connection pool.
 4. **`delivery_policy` is not adopted now.** Tesla documents neither the
    default nor the billing effect, so the 3 USD rule cannot be estimated.
-   The vehicle config stays as merged in PR #6. Reassessment: evidence from
-   the stored `is_resend` data or from Tesla documentation.
+   The vehicle config stays as merged in PR #6. Owner decision of
+   27 November 2026: `delivery_policy` stays unset. Reassessment: the
+   stored `is_resend` data of the first week, or Tesla documentation.
 5. **`jiff` and `jiff-sqlx` line 1.** No manifest exists yet, so no
    separate `chore/deps` PR is needed. `DOCTRINE.md` P7 requires the latest
    stable release. `STACK.md` §6 now names line 1. The first workspace PR
@@ -1365,7 +1410,8 @@ authority.
    timeout, `tcp_retries2` 15). The vehicle then relies on its own buffer
    (at least 2,500 s). This is the same class of exposure, and the same
    dead-peer bound, as upstream today. The decision adds no cost and the
-   lead can reverse it. The lead reports this risk to the owner.
+   lead can reverse it. Owner decision of 27 November 2026: the owner
+   accepts this risk, and the gate gets no handshake deadline.
    `TCP_USER_TIMEOUT` was considered and not adopted: it would shorten the
    second case, but it is Linux-only conditional code that cannot be
    tested on the development machine, and Go sets none either, so it goes
@@ -1427,7 +1473,13 @@ authority.
    documents a per-service scope for an existing service, the Dockerfile
    path, watch paths, pre-deploy timeout, draining and overlap time,
    restart policy, and TCP proxy (with the rule that keeps an existing
-   public port), and whether an apply starts a deployment.
+   public port), and whether an apply starts a deployment. Owner decision
+   of 27 November 2026 (decisions review): the December reassessment is a
+   separate task with a `railway config plan` dry run. Adopt IaC only if
+   the plan does not touch the TCP proxy port and starts no deployment.
+   A plan makes no change, so it cannot show by itself whether an apply
+   starts a deployment; that answer needs the documentation or another
+   proof without a deployment.
 
 ## To verify at first deployment
 
@@ -1449,11 +1501,13 @@ is PID 1; on Railway `ingest` is PID 2 under an init (section "Process
 tree on Railway").
 
 Status after the release of 27 November 2026 (release record on PR #23;
-lead observation). "Pending" names what the point still needs.
+lead observation), updated with the release of PR #30 on the same day
+(merge `8080e2c`, deployment `dcda346d-1934-4054-a25b-5a32cc286c6d`; lead
+observation). "Pending" names what the point still needs.
 
 | Point | Status | Evidence or what it needs |
 | ----- | ------ | ------------------------- |
-| Railway runs the image `CMD` through the entrypoint | Closed, with a correction | Railway runs `CMD` under its init: PID 1 `/run/podman-init -- /entrypoint.sh` (UID 10001), PID 2 `/usr/local/bin/ingest run` (UID 10001), `fleet-telemetry` a child of PID 2. `ingest` is not PID 1, and the init keeps every service variable where UID 10001 can read it (section "Process tree on Railway"). |
+| Railway runs the image `CMD` through the entrypoint | Closed, with a correction | Railway runs `CMD` under its init: PID 1 `/run/podman-init -- /entrypoint.sh` (UID 10001), PID 2 `/usr/local/bin/ingest run` (UID 10001), `fleet-telemetry` a child of PID 2. `ingest` is not PID 1, and the init keeps every service variable where UID 10001 can read it (section "Process tree on Railway"). Since the release of PR #30, PID 1 has UID 0, and UID 10001 cannot read its environment. |
 | Healthcheck on `PORT` without an HTTP domain | Closed (first half) | The healthcheck on `/health` passed; deployment `SUCCESS` about 2 minutes after the merge. The old deployment kept on a failed healthcheck: documented, not observed. |
 | Pre-deploy command runs `ingest migrate` with the service variables | Closed (first half) | `migrated` with `applied` 1 and `embedded` 1 in the pre-deploy step. A failure that stops the deployment: documented, not observed. |
 | Settle time of 250 ms | Pending | Needs the first vehicle connection of a start without a `zmq_shortfall` event. |
@@ -1467,13 +1521,13 @@ lead observation). "Pending" names what the point still needs.
 | `dispatch_total` on the real binary | Pending | The child has dispatched records; the metrics read of the runbook is still to record. |
 | No `test_overrides` line | Closed | No `test_overrides`, `task_stop_timeout`, or `gate_connections_open` line in the log of the new deployment. |
 | Linux check 1 | Closed | Green `ci` and `image-check` of the merged head (`3ec0d14`, run 45941109755). |
-| Linux check 2 (shutdown on a redeploy) | Pending (redeploy) | Also shows whether the init forwards SIGTERM to `ingest`. |
-| Linux check 3 (no zombie after child exits) | Partly closed | No zombie at the release; the three child exits on Railway are still to do. |
+| Linux check 2 (shutdown on a redeploy) | Closed (release of PR #30) | The init forwards SIGTERM to `ingest`. The previous deployment logged `shutdown_started`, `gate_stopped`, `child_killed`, a final `flushed`, and `shutdown_complete` within 2 s, with no `task_stop_timeout`, `gate_connections_open`, or `flush_incomplete`. |
+| Linux check 3 (no zombie after child exits) | Partly closed | No zombie at both releases; the three child exits on Railway are still to do. |
 | Linux check 4 (forced end) | Pending | Now possible on purpose: SIGKILL of PID 2 from a `railway ssh` session; it loses the queue since the last flush. Not tested: whether the session (UID 0, which cannot read the environment of UID 10001) may signal a process of UID 10001. |
 | Linux check 5 (socket options) | Partly closed | The TLS probe connection had `socket_options` `set`, `keepalive` `15/15/9`, `nodelay` `true`; the vehicle connections and the idle dead-peer case are still to record. |
-| Linux check 6 (child environment and descriptors) | Closed by CI only | `railway ssh` runs as UID 0 and gets "Permission denied" on `/proc/<pid>/environ` of UID 10001. The evidence is `image-check` under Docker (empty child environment, no listener of `ingest` in the child). The empty environment of the child does not keep the service variables from it on Railway: the child can read `/proc/1/environ` of the init (section "Process tree on Railway"). |
+| Linux check 6 (child environment and descriptors) | Closed by CI only | `railway ssh` runs as UID 0 and gets "Permission denied" on `/proc/<pid>/environ` of UID 10001. The evidence is `image-check` under Docker (empty child environment, no listener of `ingest` in the child). Until the release of PR #30, the empty environment of the child did not keep the service variables from it on Railway: the child could read `/proc/1/environ` of the init. Since that release, the init runs as UID 0, and UID 10001 cannot read that file (section "Process tree on Railway"). |
 | `unknown_fields` false positives, Neon compute | Pending (one week) | |
-| Init of Railway runs as root (issue #29) | Pending (release of issue #29) | `Uid` of PID 1 is 0; a process of UID 10001 cannot read `/proc/1/environ` (exit code only); `CapEff`, `CapPrm`, and `CapBnd` of `ingest` are 0 and `NoNewPrivs` is 1 (`docs/ingest-release.md`, section 3.1). |
+| Init of Railway runs as root (issue #29) | Closed (release of PR #30) | PID 1 `/run/podman-init -- /entrypoint.sh` has `Uid: 0 0 0 0`. `ingest` (PID 2) and `fleet-telemetry` (PID 15): `Uid` and `Gid` 10001, empty `Groups`, all capability sets 0, `NoNewPrivs: 1`. TLS directory 700 and files 600, owner 10001:10001. From UID 10001, the read of `/proc/self/environ` exits with 0 and the read of `/proc/1/environ` with 1 (exit codes only). The pre-deploy command ran as root (`migrated`). |
 
 - Railway runs the image `CMD` (through `ingest/entrypoint.sh` and `exec`)
   so that `ingest` is PID 1 in the container. Answered at the release: on

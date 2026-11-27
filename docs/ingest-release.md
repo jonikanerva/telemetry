@@ -158,7 +158,9 @@ deploy log, fix the cause in a new PR, and merge again.
 Record each result in the PR. A check that cannot run yet is "pending"
 with its reason. Section 3.1 runs at once; section 3.2 needs the vehicle
 awake; section 3.3 runs after one week. The first release (27 November
-2026) has its record on PR #23; ADR 0001, "To verify at first
+2026) has its record on PR #23. The release of PR #30 on the same day
+(deployment `dcda346d-1934-4054-a25b-5a32cc286c6d`) recorded the checks
+of issue #29 and Linux check 2. ADR 0001, "To verify at first
 deployment", has the status of each point.
 
 Notes on `railway ssh` (observed at the first release):
@@ -166,7 +168,7 @@ Notes on `railway ssh` (observed at the first release):
 - On Railway, PID 1 is an init that Railway adds
   (`/run/podman-init -- /entrypoint.sh`), and `ingest` is PID 2 (ADR 0001,
   "Process tree on Railway"). Since issue #29 the init runs as root and
-  `ingest` as user 10001 (assumption until the checks of section 3.1). Do
+  `ingest` as user 10001 (observed at the release of PR #30). Do
   not read `/proc/1/...` for `ingest`; find its PID first:
   `railway ssh -- sh -c 'for d in /proc/[0-9]*; do case "$(tr "\0" " " < "$d/cmdline" 2>/dev/null)" in "/usr/local/bin/ingest run ") echo "${d#/proc/}";; esac; done'`.
   The commands below write `<ingest pid>` for that PID.
@@ -178,7 +180,8 @@ Notes on `railway ssh` (observed at the first release):
   `railway ssh -- setpriv --reuid=10001 --regid=10001 --clear-groups sh -c 'tr "\0" "\n" < /proc/<ingest pid>/environ > /tmp/names; sed "s/=.*//" /tmp/names; rm /tmp/names'`
   (names only).
 - `railway ssh` uses the local SSH agent. It can ask the owner for other,
-  unrelated keys of the agent.
+  unrelated keys of the agent. The owner checks the SSH keys of the
+  Railway account personally (owner decision of 27 November 2026).
 
 ### 3.1 At once
 
@@ -186,13 +189,13 @@ Notes on `railway ssh` (observed at the first release):
 | ---------------- | ------- | -------- |
 | TLS on the public port | `openssl s_client -connect telemetry.calmdonut.com:57438 -CAfile <Origin CA ECC root> -verify_return_error < /dev/null` | `verify return:1` for the chain. The server can end with an alert, because it asks for a client certificate. |
 | Process tree through the image `CMD` | `railway ssh -- sh -c 'for p in /proc/[0-9]*; do printf "%s " "${p#/proc/}"; tr "\0" " " < "$p/cmdline"; echo; done'`, then `railway ssh -- grep -e ^Uid -e ^PPid /proc/<ingest pid>/status /proc/1/status` | PID 1 is the init of Railway (`/run/podman-init -- /entrypoint.sh`); `/usr/local/bin/ingest run` has `PPid` 1 and `Uid` 10001; `fleet-telemetry` has the PID of `ingest` as `PPid`. Record the `Uid` of PID 1. At the release of 27 November 2026 it was 10001: then every process of UID 10001, also the child, could read the full service environment in `/proc/1/environ` (ADR 0001, "Process tree on Railway"; STACK.md section 15, accepted risks). Since issue #29 it must be 0 (next row). |
-| Init as root (issue #29) | `railway ssh -- grep ^Uid /proc/1/status` | `Uid: 0 0 0 0`. Any other value means that the init of Railway does not follow the image: the environment of the init stays readable by UID 10001. Report it to the owner (STACK.md section 15, accepted risks). |
-| UID 10001 cannot read the environment of the init (issue #29) | `railway ssh -- setpriv --reuid 10001 --regid 10001 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs sh -c 'cat /proc/<ingest pid>/environ > /dev/null 2>&1; echo "control=$?"; cat /proc/1/environ > /dev/null 2>&1; echo "init=$?"'` | `control=0`: the positive control, a process of UID 10001 reads the environment of `ingest`. `init=1`: the same process cannot read `/proc/1/environ`. The command prints exit codes only, never an environment. A probe with the same `setpriv` arguments gave exit code 0 in the production container on 27 November 2026. If `setpriv` fails in the session, record that; the CI job `image-check` (check 10) is then the evidence. |
-| Credentials of `ingest` and `fleet-telemetry` (issue #29) | `railway ssh -- grep -e ^Uid -e ^Gid -e ^Groups -e ^Cap -e ^NoNewPrivs /proc/<ingest pid>/status /proc/<child pid>/status` (the child PID: next row) | For both processes: `Uid` and `Gid` 10001 four times, `Groups` empty, `CapInh`, `CapPrm`, `CapEff`, `CapBnd`, and `CapAmb` all `0000000000000000`, and `NoNewPrivs` 1. |
-| Shutdown of the old deployment (Linux check 2) | The release of a new image is a redeploy. Use the command of the row "Shutdown on a redeploy" in section 3.2 with the ID of the old deployment. | The expected result of that row. It also shows that the init of Railway forwards SIGTERM to `ingest`, which no longer runs as the user of the init. |
+| Init as root (issue #29) | `railway ssh -- grep ^Uid /proc/1/status` | `Uid: 0 0 0 0`. Any other value means that the init of Railway does not follow the image: the environment of the init stays readable by UID 10001. Report it to the owner (STACK.md section 15, accepted risks). Result at the release of PR #30: `Uid: 0 0 0 0` for `/run/podman-init -- /entrypoint.sh`. |
+| UID 10001 cannot read the environment of the init (issue #29) | `railway ssh -- setpriv --reuid 10001 --regid 10001 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs sh -c 'cat /proc/<ingest pid>/environ > /dev/null 2>&1; echo "control=$?"; cat /proc/1/environ > /dev/null 2>&1; echo "init=$?"'` | `control=0`: the positive control, a process of UID 10001 reads the environment of `ingest`. `init=1`: the same process cannot read `/proc/1/environ`. The command prints exit codes only, never an environment. A probe with the same `setpriv` arguments gave exit code 0 in the production container on 27 November 2026. If `setpriv` fails in the session, record that; the CI job `image-check` (check 10) is then the evidence. Result at the release of PR #30: from UID 10001, the read of `/proc/self/environ` exited with 0 (the positive control of that run) and the read of `/proc/1/environ` with 1. |
+| Credentials of `ingest` and `fleet-telemetry` (issue #29) | `railway ssh -- grep -e ^Uid -e ^Gid -e ^Groups -e ^Cap -e ^NoNewPrivs /proc/<ingest pid>/status /proc/<child pid>/status` (the child PID: next row) | For both processes: `Uid` and `Gid` 10001 four times, `Groups` empty, `CapInh`, `CapPrm`, `CapEff`, `CapBnd`, and `CapAmb` all `0000000000000000`, and `NoNewPrivs` 1. Result at the release of PR #30: as expected for `ingest` (PID 2) and `fleet-telemetry` (PID 15). |
+| Shutdown of the old deployment (Linux check 2) | The release of a new image is a redeploy. Use the command of the row "Shutdown on a redeploy" in section 3.2 with the ID of the old deployment. | The expected result of that row. It also shows that the init of Railway forwards SIGTERM to `ingest`, which no longer runs as the user of the init. Result at the release of PR #30: the previous deployment logged `shutdown_started`, `gate_stopped`, `child_killed`, a final `flushed`, and `shutdown_complete` within 2 s, with no `task_stop_timeout`, `gate_connections_open`, or `flush_incomplete`. |
 | Open-file limit | `railway ssh -- grep "open files" /proc/<ingest pid>/limits` | Soft limit equals hard limit. Both are at least 4096: 2048 descriptors for 1024 gate connections, plus the descriptors of the child and a margin. Record the values. |
 | Child environment and descriptors (Linux check 6) | The child PID: `railway ssh -- sh -c 'for d in /proc/[0-9]*; do case "$(tr "\0" " " < "$d/cmdline" 2>/dev/null)" in "/fleet-telemetry -config "*) echo "${d#/proc/}";; esac; done'`. Then `railway ssh -- sh -c 'grep PPid /proc/<pid>/status; ls -l /proc/<pid>/fd'` and `railway ssh -- cat /proc/net/tcp` | `PPid` is the PID of `ingest`. No `socket:[<inode>]` of the child is a listening socket (state `0A`) of `ingest`: the gate port 4443 (hex `115B`) or the `PORT` of STACK.md section 15 (in hex). If the session cannot read `/proc/<pid>/fd` ("Permission denied"), record that; the CI job `image-check` is then the evidence. The environments of the child (empty) and of `ingest` (`DATABASE_URL`, no `TLS_CERT`, `TLS_KEY`, or `MIGRATION_DATABASE_URL`) come from the CI job `image-check`, because the session cannot read them (notes above). |
-| TLS files | `railway ssh -- stat -c "%a %u %n" /etc/fleet-telemetry/tls /etc/fleet-telemetry/tls/tls.crt /etc/fleet-telemetry/tls/tls.key` | `700 10001`, `600 10001`, `600 10001`. |
+| TLS files | `railway ssh -- stat -c "%a %u %n" /etc/fleet-telemetry/tls /etc/fleet-telemetry/tls/tls.crt /etc/fleet-telemetry/tls/tls.key` | `700 10001`, `600 10001`, `600 10001`. Result at the release of PR #30: as expected, owner and group 10001:10001. |
 | Kernel values | `railway ssh -- sh -c 'uname -r; cat /proc/sys/net/ipv4/tcp_retries2; cat /proc/sys/kernel/yama/ptrace_scope'` | Record all three. ADR 0001 assumes `tcp_retries2` 15. `ptrace_scope` 1 or higher keeps the child from reading the memory of `ingest` (STACK.md section 15, accepted risks); a missing file means that Yama is off, so record it as 0. |
 | No record in the log | `railway logs --since 1h --filter "<the VIN>"` on the lead's computer | No line. Record only the count. Before this release, every record had a line. |
 | `dispatch_total` on the real binary (ADR 0001) | After the first records: `railway ssh -- perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new("127.0.0.1:9090") or die; print $s "GET /metrics HTTP/1.0\r\n\r\n"; print grep { /^dispatch_total/ } <$s>'` | Lines `dispatch_total{record_type="V"}` and others. The program prints only these lines; the other metric `vin_signal_count` holds the VIN. `perl-base` is part of every Debian image. |
