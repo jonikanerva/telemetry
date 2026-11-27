@@ -2,7 +2,7 @@
 
 This document estimates the Tesla usage of `config/telemetry_config.json`.
 It also explains the usage that a test config with 8 fields showed, and
-it tells how to measure the usage.
+it states how the usage is measured and what is missing.
 
 ## Result
 
@@ -154,9 +154,9 @@ slowly while the car is parked.
 
 ## Observed usage of the test config
 
-The test config has 8 fields and `alert_types: ["service"]`. The server log
-shows one connection of 1323 seconds while the car was parked and charging.
-Its `socket_disconnected` line has `V: 2789`, `alerts: 1094`, and
+Evidence of a test config with 8 fields and `alert_types: ["service"]`: the
+server log of that config has one connection of 1323 seconds while the car
+is parked and charging. Its `socket_disconnected` line has `V: 2789`, `alerts: 1094`, and
 `errors: 86`.
 
 These numbers are bytes, not signals. In `server/streaming/socket.go` of
@@ -181,8 +181,9 @@ The `record_payload` lines of the same connection give the signal count:
   (`jsonOptions.Marshal`) of the full message. The log line shows the data
   in a different form. This estimate does not analyse the exact byte
   difference.
-- Each alert record holds 3 alerts and is 547 bytes in the counter. A
-  first short connection has 1 alert record and `alerts: 547`.
+- Each alert record holds 3 alerts and is 547 bytes in the counter. The
+  first short connection of the test config has 1 alert record and
+  `alerts: 547`.
   2 × 547 = 1094.
 - The real rate is 25 signals in 22 minutes, about 68 signals each hour.
   The cost of that connection is about 0.0002 USD.

@@ -80,7 +80,10 @@ build log of the merge shows the result: it must build
 
 If a deployment of the current `main` starts by mistake (for example
 "Deploy" without Alt), record the result. Assumption: such a deployment
-uses the new values with the image of the current `main`. A deployment
+uses the new values with the image of the current `main`. If that image
+works with the new values, the deployment passes both gates and replaces
+the active deployment, and the vehicle reconnects. If it does not, the
+deployment stops, and the old deployment stays active. A deployment
 becomes active only after its pre-deploy command and its
 healthcheck pass. "If your command fails, it will not be retried and the
 deployment will not proceed"
@@ -215,7 +218,7 @@ Notes on `railway ssh`:
 | False positives of the stall rule (ADR 0001, "SUB socket defences") | `SELECT occurred_at, reason FROM raw.ingest_event WHERE kind = 'gate_closed' AND reason = 'subscriber_stalled' ORDER BY occurred_at;` and `railway logs --since 7d --filter "subscriber_stalled OR subscriber_rebuilt OR zmq_shortfall"` | No row and no `subscriber_rebuilt` with the reason `stalled`. Record each one with the `zmq_shortfall` lines and counts around it. |
 | A loss at the high water mark is followed by the older queued records (ADR 0001, "SUB socket defences") | `SELECT occurred_at, dropped_count FROM raw.ingest_event WHERE kind = 'zmq_shortfall' ORDER BY occurred_at;` and the same log query | For each `zmq_shortfall` event, no `subscriber_stalled` line follows within 60 s: the socket stayed live after the loss. With no `zmq_shortfall` event, record "not observed"; the premise then stays unverified. |
 | Neon compute | Neon console or API: effective compute size of `production` and `test`, and the CU-hours of the week | 0.25 CU for both. The consumption fits the budget of ADR 0001, "Why 15 minutes". |
-| A failed healthcheck keeps the old deployment | No test on purpose: it needs a failing release while the vehicle is connected. The healthcheck documentation states it ("Only then will the new deployment be made active and the previous deployment inactive"). | Record "documented, not observed". A first failed release, or a deployment of `main` by mistake in section 1, gives the observation. |
+| A failed healthcheck keeps the old deployment | No test on purpose: it needs a failing release while the vehicle is connected. The healthcheck documentation states it ("Only then will the new deployment be made active and the previous deployment inactive"). | Record "documented, not observed". A first failed release gives the observation. |
 | Forced end of `ingest` (Linux check 4) | On Railway, `ingest` is not PID 1, so the session can send it SIGKILL: `railway ssh -- sh -c 'kill -9 <ingest pid>'`. Run it only while the vehicle is asleep and after a `flushed` line, because SIGKILL loses the records that wait for the next flush. Then `railway logs --since 10m --filter "started"` and the process tree of section 3.1. If the session cannot signal the process, wait for the first watchdog exit or crash instead. | The init ends with `ingest`, the container ends, and the restart policy starts it again: a new `started` event follows, and the process tree has a new `ingest` and a new `fleet-telemetry`, and no `fleet-telemetry` without `ingest`. |
 
 ## 4. Recovery

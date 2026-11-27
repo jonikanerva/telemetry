@@ -234,11 +234,13 @@ the domain's vocabulary. Comments explain non-obvious reasons, constraints,
 or behaviour that the code cannot communicate. Keep relevant explanations
 near the code.
 
-Documents and comments state the current state and, where it is not
-obvious, its reason, not how the state came about: no merged PR, closed
+Documents other than ADRs, and code comments, state the current state and,
+where it is not obvious, its reason, not how the state came about: no merged PR, closed
 issue, or review; no earlier state; no date of a change, decision, reading,
 or observation; no reviewer or approver. A future date, a current pin, the
-open issue of a known gap, and a reassessment condition are current state.
+open issue of a known gap, a reassessment condition, and the date of a
+measurement or data snapshot that a current decision rests on are current
+state.
 `VISION.md` has no decision labels. `STACK.md` gives reasons of at most a
 clause.
 
@@ -349,9 +351,12 @@ evidence. Preserve the intended quality outcome. An implementer, including a
 lead who wrote the change, MUST NOT approve its own weakening of criteria or
 checks.
 
-Record a proposed exception in `STACK.md` or the existing PR: scope, reason,
+Record a proposed exception in the existing PR: scope, reason,
 consequences, compensating controls or evidence, responsible lead, approving
-independent reviewer, and expiry or reassessment condition. The lead may
+independent reviewer, and expiry or reassessment condition. An approved
+exception that outlasts the PR gets an ADR with the same content. `STACK.md`
+states the scope, the compensating evidence, and the expiry of the exception,
+and cites the ADR. The lead may
 proceed with independent approval only within delegated authority and with
 adequate evidence for safe acceptance. A failed or missing mandatory check is
 not waived by a narrative justification alone. Escalate a material unresolved

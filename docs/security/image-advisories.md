@@ -1,7 +1,7 @@
 # Image advisories: triage of the ingest image
 
-Status: the triage covers the advisory data of 26 November 2026 (the
-triage snapshot). The reviewed ignore files
+Status: the triage covers the advisory data of 26 November 2026 and, for
+the programs of the entrypoint, of 27 November 2026 (the triage snapshot). The reviewed ignore files
 `docs/security/osv-scanner-tesla-fleet-telemetry.toml` and
 `docs/security/osv-scanner-debian.toml` record the decisions of this
 document for `mise run vuln`. Each ignore entry expires on its date
@@ -70,7 +70,7 @@ lists for the static C libraries (see "Static C libraries").
 | Item | Value |
 | ---- | ----- |
 | Upstream image | `tesla/fleet-telemetry:v0.10.1`, linux/amd64 digest `sha256:dd3bfb47b730ab5c4c8a4efc7c7c6669ce21d4bf7e56e2a3ab1d25f30ce7adf0`, created 2026-11-25 |
-| Upstream source | tag `v0.10.1` = commit [`6689adb`](https://github.com/teslamotors/fleet-telemetry/tree/6689adb831691b1de211b4aa8220babf7309f31c). Upstream `main` is at the same commit. |
+| Upstream source | tag `v0.10.1` = commit [`6689adb`](https://github.com/teslamotors/fleet-telemetry/tree/6689adb831691b1de211b4aa8220babf7309f31c). In the triage snapshot, upstream `main` is at the same commit. |
 | Binary | `/fleet-telemetry`, SHA-256 `6c52c888d42471f309491c00470202a72f4123134bd2e828070a8255a26375cd`, Go 1.27.4, `CGO_ENABLED=1`, linux/amd64 |
 | Base image | `debian:trixie-slim`, linux/amd64 digest `sha256:ab3b3c8c5159eebfca4376430132d53c4d425f869c765ecbe47177a030da575d`. This is the same image as `trixie-20261123-slim`, the newest dated tag. Debian 13.8. |
 | Scanner | osv-scanner 2.7.1 (commit `02f96a4`), through `mise run vuln` |
@@ -743,8 +743,8 @@ The checks of the deployment facts (`deployment.rs` is
 
 ## `vuln` and `verify`
 
-With the ignore files, `vuln` passes (exit 0 in about 54 s, with about
-67 MB of image downloads). Decision: `vuln` stays a separate
+In the triage snapshot, `vuln` exits with 0 with the ignore files (about
+54 s, about 67 MB of image downloads). Decision: `vuln` stays a separate
 required check and does not join `verify`. Evidence:
 
 - New gating advisories arrive often. The OSV publication date is a proxy
