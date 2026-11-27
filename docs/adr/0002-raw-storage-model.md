@@ -387,17 +387,26 @@ cannot create objects in `raw` or `public`.
   `sslmode=verify-full`.
 - The child process `fleet-telemetry` gets a cleared environment with only
   the values it needs. Limit (issue #14): the child runs as the same user
-  as `ingest`, so it can still read `/proc/1/environ` of `ingest`. That
+  as `ingest`, so it can still read the environment of `ingest`
+  (`/proc/<pid of ingest>/environ`; PID 2 on Railway). That
   file holds `DATABASE_URL`, but not `MIGRATION_DATABASE_URL` or the TLS
-  variables: `ingest/entrypoint.sh` unsets them before the `exec`
-  (`STACK.md` §15, accepted risks).
+  variables: `ingest/entrypoint.sh` unsets them before the `exec`. This
+  holds only under Docker without an init. Observed on Railway on
+  27 November 2026: the init (PID 1) runs as UID 10001 and keeps every
+  service variable, also `MIGRATION_DATABASE_URL`, and `ptrace_scope` is
+  0. So the child and `ingest` can read both URLs in `/proc/1/environ`
+  (the kernel rule for the same UID; not read directly). `STACK.md` §15
+  (accepted risks) names the exposure; ADR 0001, "Process tree on
+  Railway", lists the options for the owner.
 - Accepted risk: the pre-deploy command needs the migrator URL, and Railway
   gives the same variables to the running container [R]. Update (issue
   #14): `ingest/entrypoint.sh` unsets `MIGRATION_DATABASE_URL` before it
-  starts `ingest`, so no running process of the container holds it; the
-  risk remains for the pre-deploy container and for any access to the
-  service variables. Before that change, a compromised `ingest` process
-  could change or drop tables in `raw`. It cannot
+  starts `ingest`, so the environments of `ingest` and the child do not
+  hold it; the risk remains for the pre-deploy container and for any
+  access to the service variables. Update (release of 27 November 2026):
+  on Railway the init (PID 1, UID 10001) still holds the URL, so a
+  compromised `ingest` or `fleet-telemetry` process can read it and
+  change or drop tables in `raw` (previous entry). It cannot
   touch roles or other schemas. Neon keeps 6 hours of restore history [N1].
   Reassessment: when Railway can give a variable to the pre-deploy command
   only, when the migration step can run outside the service, or when a
