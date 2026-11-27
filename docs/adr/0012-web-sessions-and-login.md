@@ -13,7 +13,9 @@
 ## Context
 
 - ADR 0003 leaves the place of the session data to the first web PR.
-- The owner gave these values for the task: at most 8 sessions, an
+- The owner gave these values for the task, through the task text of
+  the lead for slice S2 (no other repository record holds them): at
+  most 8 sessions, an
   absolute lifetime of 30 days, an idle lifetime of 7 days, the cookie
   `__Host-telemetry_session` with `Secure`, `HttpOnly`,
   `SameSite=Strict`, and `Path=/`, the public origin
@@ -42,33 +44,43 @@
    idle deadline; the absolute deadline never moves. At the deadline
    itself the session has ended.
 4. **Cookie.** `__Host-telemetry_session=<token>; Max-Age=<remaining
-   absolute seconds>; Path=/; Secure; HttpOnly; SameSite=Strict`. Logout
-   and a 401 response to a request with a dead cookie send the same name
-   with `Max-Age=0`.
-5. **Fixation and rotation.** A login ends every session that the request
+   absolute seconds>; Path=/; Secure; HttpOnly; SameSite=Strict`. Only a
+   successful login (a new cookie) and a logout (the same name with
+   `Max-Age=0`) change the cookie. A 401 sets no cookie: a late 401 for
+   an old cookie can arrive after another tab has logged in, and a
+   clearing cookie would then remove the new, valid cookie. A dead cookie
+   does no harm: the server refuses it, the next login replaces it, and
+   its `Max-Age` ends at the absolute deadline of its session.
+5. **One session cookie per request.** A browser sends at most one
+   cookie of a `__Host-` name. The guard refuses an API request with more
+   than one `__Host-telemetry_session` pair (in one or more `Cookie`
+   headers, valid in form or not) with 400 `invalid_request`, before any
+   session lookup. So no endpoint chooses between two tokens, and a
+   logout always ends the one presented session.
+6. **Fixation and rotation.** A login ends every session that the request
    presents, then makes a new session. There is no other rotation: a
    session has one token for its whole life, and the lifetimes bound it.
-6. **Revocation and logout.** `DELETE /api/v1/session` ends the session of
+7. **Revocation and logout.** `DELETE /api/v1/session` ends the session of
    the request at once; a copy of the cookie stops working. A restart
    ends every session; this is also the "log out everywhere" mechanism.
    A password change needs a new variable value and a redeploy (ADR
    0003), so it also ends every session.
-7. **Concurrent sessions.** Up to 8 sessions at the same time, for
+8. **Concurrent sessions.** Up to 8 sessions at the same time, for
    example a desktop and a phone. Logout ends only its own session.
-8. **CSRF rule.** Before the handler of every API request with a method
+9. **CSRF rule.** Before the handler of every API request with a method
    other than `GET` and `HEAD`: one `Origin` header equal to
    `WEB_PUBLIC_ORIGIN`, or without `Origin` the header
    `Sec-Fetch-Site: same-origin`; else 403 `forbidden_origin`. The login
    also requires `Content-Type: application/json` (415), so a plain HTML
    form cannot send it. `SameSite=Strict` is the second layer. `GET`
    handlers change nothing except the idle deadline.
-9. **Guard.** One middleware runs before every documented API route. A
+10. **Guard.** One middleware runs before every documented API route. A
    route outside the public list (`/health`, `/api/v1/session`) needs a
    valid session, else 401 `unauthenticated`. The rule is "deny unless
    listed", so a new route of a later slice is protected without a
    change of the guard. No handler, and so no database query, runs for a
    request without a session.
-10. **Throttle.** Global, not for each IP address (ADR 0003):
+11. **Throttle.** Global, not for each IP address (ADR 0003):
     - a token bucket of 5 attempts that gets one attempt back each 12 s
       (at most 300 attempts each hour);
     - one verification slot: at most one Argon2 verification runs at a
@@ -78,8 +90,10 @@
       or 1 s for a busy slot;
     - a malformed request (wrong content type, body above 4 KiB, not a
       JSON object with only `password`, password outside 1 to 1024
-      bytes) gets its problem and costs no attempt.
-11. **Password check.** Argon2id from the crate `argon2` 0.6.0. The
+      bytes) gets its problem and costs no attempt. The login handler
+      checks the content type before it reads the body, and reads at most
+      4 KiB of it, also without `Content-Length`.
+12. **Password check.** Argon2id from the crate `argon2` 0.6.0. The
     verification runs on a blocking thread and owns the slot until it
     ends, also when the client leaves. The start of the server rejects a
     hash outside these bounds, without an echo of the value: algorithm
@@ -88,8 +102,16 @@
     and no associated data. The command `telemetry-web-server
     hash-password` makes the hash with m=65536, t=3, p=1 from a password
     on standard input (16 to 1024 bytes, one optional line end).
-12. **Logs.** Events with a static name and the field `reason` from a
+13. **Logs.** Events with a static name and the field `reason` from a
     closed set only. No password, hash, cookie, token, or IP address.
+14. **Logout in the browser.** The SPA treats the owner as logged out
+    only after the server answered 204. On any other result (network
+    error, timeout, another status) it removes the cached data at once,
+    shows the page `/logout`: the logout did not complete and the session
+    can still be valid on this device, and offers one retry for each
+    click, without an automatic retry. A page that the browser restores
+    from its back-forward cache reloads, so the protected route asks the
+    server again.
 
 ## Threat model
 
@@ -138,6 +160,10 @@ history behind the API.
   rule to its code and test.
 - The browser tests run one worker, because the store and the throttle
   are global in the one test server.
+- Known limit: a second open tab keeps the session data that it already
+  shows after a logout in another tab, until its next API request (which
+  then gets 401 and opens the login page). A logout is a server-side
+  revocation; it does not reach other open tabs at once.
 
 ## Cost of reversal
 
