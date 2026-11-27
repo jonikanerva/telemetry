@@ -18,7 +18,7 @@ import it.
 
 - **Project risk rationale:** one person, the owner, depends on the system. The data contains the vehicle location history and the VIN; a leak shows where the owner is and when the owner is away. A collection failure loses history that cannot be collected again. Usage above the Tesla billing limit removes the vehicle telemetry configuration and suspends the Tesla API for the owner's Home Assistant. No other system depends on this product. The product sends no commands to the vehicle.
 - **Change risk:** assess each changed surface against that rationale. A risk label does not waive required evidence or review. Changes to the ingest service, the vehicle telemetry configuration, access control, and stored location data are material.
-- **Phase scope (ADR 0009):** the first phase builds the ingest path and the raw storage. The web application and the derived periods (drives, charges, parked) come later. The web profile and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3 and §14 become binding with the first web PR.
+- **Phase scope (ADR 0009):** the first phase builds the ingest path and the raw storage. The web application and the derived periods (drives, charges, parked) come later. These parts become binding with the first web PR: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. The general text of the other sections in `docs/stack-web-profile.md` binds the ingest code now, wherever the code has that concern; read the section when a change touches its topic.
 - **Shape:** a monorepo. The Railway service `telemetry` runs one image with Tesla's `fleet-telemetry` server (upstream Go binary) and the Rust ingest process, which supervises it and writes the records to PostgreSQL (ADR 0001). The web application comes later as a second service: one Rust service and one SPA on one origin. The application server uses Rust (ADR 0009).
 
 ### Repository layout and boundaries
@@ -274,7 +274,7 @@ has no adopted budget table.
 - **Migrations:** numbered, reviewed SQLx migrations as a separate release step, never at process start: `ingest migrate` is the Railway pre-deploy command with the role `telemetry_migrator`, and `ingest run` only checks that its embedded migrations are applied (ADR 0002). Use expand-and-contract compatibility. A migration names no role and no schema (the default privileges of `db/roles.sql` apply). A new reason of `raw.unprocessed_record` needs a migration in the same release.
 - **Recovery:** test empty-database setup and upgrade from supported prior schemas. Application rollback does not restore deleted data. Restore is Neon's 6-hour history, not tested.
 - **Server version:** the test server has the production major version (§15). Read the production version after each platform upgrade (`SHOW server_version`). Evidence from another major version is not evidence for production.
-- **Connection TLS:** one SQLx TLS feature, `tls-rustls-aws-lc-rs`, with the one rustls provider of the binary (§7). `storage::connect_options` sets `sslmode=verify-full`, so neither the URL nor `PGSSLMODE` can turn the check off. rustls rejects a server certificate that is not version 3; check the production `sslmode`, `PGSSLMODE`, and certificate version read-only at a release (ADR 0002, "Not verified"). Neon terminates TLS in its proxy, so `pg_stat_ssl` shows no TLS.
+- **Connection TLS:** one SQLx TLS feature, `tls-rustls-aws-lc-rs`, with the one rustls provider of the binary (§7). `storage::connect_options` sets `sslmode=verify-full`, so neither the URL nor `PGSSLMODE` can turn the check off. SQLx builds the rustls configuration with an explicit aws-lc-rs provider and the Mozilla roots of `webpki-roots`, so it needs no system certificates. It ignores the libpq parameter `channel_binding` with a warning; it does not use channel binding. rustls rejects a server certificate that is not version 3; check the production `sslmode`, `PGSSLMODE`, and certificate version read-only at a release (ADR 0002, "Not verified"). Neon terminates TLS in its proxy, so `pg_stat_ssl` shows no TLS.
 
 ---
 
@@ -600,8 +600,8 @@ table holds the same values. Source: the Railway documentation
 
 The service variables `DATABASE_URL`, `MIGRATION_DATABASE_URL`, `TLS_CERT`,
 and `TLS_KEY` hold secrets. The image `ENV` lines hold the other settings
-(README.md, "Configuration"); a service variable of the same name would
-replace them. `ingest/Dockerfile` has no `ARG` line, so no secret reaches a
+(README.md, "Configuration"). Do not set these names as service variables:
+a service variable replaces the image value. `ingest/Dockerfile` has no `ARG` line, so no secret reaches a
 build step.
 
 ### Lead authority (ADR 0004, ADR 0007)

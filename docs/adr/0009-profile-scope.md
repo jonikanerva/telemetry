@@ -26,10 +26,9 @@
 
 1. **Phase scope.** The first phase builds the ingest path and the raw
    storage. The web application and the derived periods (drives, charges,
-   parked) come later. The web parts of the profile
-   (`docs/stack-web-profile.md`) and the pnpm, TypeScript, Oxlint, Vitest,
-   and Playwright parts of `STACK.md` §3 and §14 apply from the first web
-   PR.
+   parked) come later. These parts of the profile apply from the first web PR: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. The
+   general text of the other sections applies now, wherever the code has
+   that concern.
 2. **Rust.** The application server uses Rust. The product has domain
    rules (units, periods, energy calculations) and a long-running ingestion
    path, where strict types and explicit failure handling earn their cost.

@@ -359,8 +359,10 @@ in `ingest`. No path from outside the container reads the file.
   reads the key file anyway; the init adds a second copy, not a new
   reader.
 
-**Residual risks of option 1.** The owner accepted each on 27 November
-2026.
+**Residual risks of option 1.** These items stay after the owner decision
+for option 1 (27 November 2026). The owner accepted note N1 and the
+pre-deploy command as root explicitly on that date, and decided that
+issue #31 has no schedule.
 
 - **Note N1: the child can read the environment of `ingest`.**
   `fleet-telemetry` runs as user 10001, as `ingest` does, so it can read

@@ -9,7 +9,7 @@
 - `DOCTRINE.md` P7 requires the latest stable releases, and it requires
   respect for the declared minimum release age, except for security fixes.
 - The profile sets a minimum release age for pnpm (`minimumReleaseAge`, for
-  example 1440 minutes). Cargo has no such setting.
+  example 1440 minutes).
 - `cargo update` and `mise run deps` do not print the publish time of a
   crate release.
 

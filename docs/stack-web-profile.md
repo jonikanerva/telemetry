@@ -5,8 +5,11 @@ application, the HTTP API, and the general profile rules in their full
 form. `STACK.md` holds the rules that apply to the ingest service now, in
 short form, and the project facts.
 
-- This file is binding from the first web PR. Read it before the first web
-  PR and with each web change.
+- The web parts are binding from the first web PR: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. Read this file
+  before the first web PR and with each web change.
+- The general text of the other sections binds the ingest code now,
+  wherever the code has that concern. Read the section when a change
+  touches its topic.
 - The section numbers are those of `STACK.md`. A section reference (§) to a
   section that this file does not hold points to `STACK.md`.
 - When a rule here and a rule of `STACK.md` cover the same topic, both
