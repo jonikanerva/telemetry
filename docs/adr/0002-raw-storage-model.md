@@ -387,10 +387,13 @@ cannot create objects in `raw` or `public`.
   `sslmode=verify-full`.
 - The child process `fleet-telemetry` gets a cleared environment with only
   the values it needs. Limit (issue #14): the child runs as the same user
-  as `ingest`, so it can still read `/proc/1/environ` of `ingest`. That
+  as `ingest`, so it can still read the environment of `ingest`
+  (`/proc/<pid of ingest>/environ`; PID 2 on Railway). That
   file holds `DATABASE_URL`, but not `MIGRATION_DATABASE_URL` or the TLS
   variables: `ingest/entrypoint.sh` unsets them before the `exec`
-  (`STACK.md` §15, accepted risks).
+  (`STACK.md` §15, accepted risks). On Railway the init (PID 1) keeps
+  the full environment; whether the child can read it depends on the UID
+  of the init, still to verify (ADR 0001, "Process tree on Railway").
 - Accepted risk: the pre-deploy command needs the migrator URL, and Railway
   gives the same variables to the running container [R]. Update (issue
   #14): `ingest/entrypoint.sh` unsets `MIGRATION_DATABASE_URL` before it
