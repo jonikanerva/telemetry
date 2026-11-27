@@ -1,26 +1,16 @@
-# STACK.md — Rust / Axum backend + TypeScript / React / Vite frontend profile
+# STACK.md — Rust ingest service and the stack profile
 
-> Web application with a Rust backend and a strict TypeScript SPA. Axum,
-> Tokio, and Tower provide HTTP and concurrency. Utoipa exports OpenAPI 3.1;
-> Hey API generates a TypeScript client and Zod validators. React, Vite,
-> TanStack Router, and TanStack Query provide the browser application. Jiff
-> represents time. PostgreSQL with SQLx is the default when durable data is
-> needed. One immutable image contains the server and built SPA files.
+This file states the current technology, commands, values, and rules. Use it
+with `DOCTRINE.md` and `CLAUDE.md`; MUST, SHOULD, and MAY have the doctrine
+meanings. Text with an ADR citation changes only through that ADR. The
+profile is `STACK-RUST.md` of agent-setup `05e0480`; a profile rule that no
+code uses yet becomes binding when an application PR implements it.
 
-**Adoption status (26 November 2026):** copied from agent-setup `05e0480`,
-profile `STACK-RUST.md`. Sections 0, 1, 3, 5, 6, 13, and 15 contain
-project facts. The first application PR (#9) adds the Rust workspace and
-the ingest process skeleton. The other sections are the profile baseline
-and become binding when an application PR implements them.
-§13 lists the open gaps.
-
-Use with `DOCTRINE.md` (P1–P9) and the selected host contract. This is an
-example profile, not evidence that a project has implemented its checks.
-MUST, MUST NOT, SHOULD, and MAY have the meanings in the doctrine. On adoption,
-confirm scope, pin a compatible version set, implement the five commands,
-and complete §14–15. Record exclusions and enforcement gaps. This profile
-is self-contained and does not require another stack profile to be copied.
-It does not grant authority beyond the adopted project contract.
+**Web profile.** `docs/stack-web-profile.md` holds the web parts and the
+full profile text of each section; this file states the rules that apply
+now in short form. Read the web profile before the first web PR and with
+each web change. It is binding from the first web PR. `CLAUDE.md` does not
+import it.
 
 ---
 
@@ -28,62 +18,32 @@ It does not grant authority beyond the adopted project contract.
 
 - **Project risk rationale:** one person, the owner, depends on the system. The data contains the vehicle location history and the VIN; a leak shows where the owner is and when the owner is away. A collection failure loses history that cannot be collected again. Usage above the Tesla billing limit removes the vehicle telemetry configuration and suspends the Tesla API for the owner's Home Assistant. No other system depends on this product. The product sends no commands to the vehicle.
 - **Change risk:** assess each changed surface against that rationale. A risk label does not waive required evidence or review. Changes to the ingest service, the vehicle telemetry configuration, access control, and stored location data are material.
-- **Phase scope (owner, 26 November 2026):** the first phase builds the ingest path and the raw storage. The web application and the derived periods (drives, charges, parked) come later. Until the first web PR, these parts of the profile do not apply, because the phase has no browser code: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. They become binding with the first web PR.
-- **Shape:** a monorepo. The first phase deploys one Railway service, `telemetry`. Its image runs Tesla's `fleet-telemetry` reference server (Go, upstream binary, not rewritten) and the Rust ingest process, which supervises the server and writes the records to PostgreSQL (`docs/adr/0001-ingestion-architecture.md`). The web application comes later as a second service: one Rust service and one browser SPA, served from one origin.
-- **Reason for Rust:** the owner selected Rust for the application server. The product has domain rules (units, periods, energy calculations) and a long-running ingestion path where strict types and explicit failure handling earn their cost.
-- **Critical execution paths:** server request decode, domain conversion, use case, and response; browser route, query/client boundary, view model, and render. Blocking work must not stall async I/O or the browser main thread.
-- **Applicable UI states:** initial loading, success, empty, stale usable data with refresh failure, unavailable data, offline, denied access, and product-specific states.
-- **Intended use:** interactive web applications. Durable data, accounts, background jobs, and real-time connections depend on `VISION.md`; they are not mandatory product features.
-- **Reassessment:** SEO-first, SSR-required, or offline-first products need an adapted design. A small integration or CRUD product may cost less to maintain as one TypeScript system; record the product reason for Rust.
+- **Phase scope (ADR 0009):** the first phase builds the ingest path and the raw storage. The web application and the derived periods (drives, charges, parked) come later. These parts become binding with the first web PR: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. The general text of the other sections in `docs/stack-web-profile.md` binds the ingest code now, wherever the code has that concern; read the section when a change touches its topic.
+- **Shape:** a monorepo. The Railway service `telemetry` runs one image with Tesla's `fleet-telemetry` server (upstream Go binary) and the Rust ingest process, which supervises it and writes the records to PostgreSQL (ADR 0001). The web application comes later as a second service: one Rust service and one SPA on one origin. The application server uses Rust (ADR 0009).
 
 ### Repository layout and boundaries
 
 Two crates SHOULD be the starting point when the product has domain rules.
 A pass-through service without such rules MAY use one crate. The ingest
 process is such a service: it stores the source values without
-interpretation, so `crates/ingest` is one crate. Do not invent
-concepts to populate a layer. Further splits need a current ownership,
-build-time, or maintenance benefit.
+interpretation, so `crates/ingest` is one crate. Do not invent concepts to
+populate a layer. Further splits need a current ownership, build-time, or
+maintenance benefit.
 
 ```text
 repo/
-  ingest/                # Dockerfile, entrypoint, and fleet-telemetry config of the ingest service (ADR 0001); the Railway settings are in §15
-  crates/
-    ingest/src/          # Ingest process: gate, supervisor, ZMQ reader, PostgreSQL writer (ADR 0001)
-    ingest/proto/        # Vendored upstream .proto files of the deployed fleet-telemetry tag
-    domain/src/          # Types, invariants, and rules (web phase)
-    server/src/          # HTTP, use cases, adapters, configuration, lifecycle (web phase)
-  packages/api-client/   # Generated SDK/validators and a small handwritten facade
-  web/src/               # Routes, features, components, view models
-  contract/openapi.json  # Generated and committed
-  migrations/            # SQLx migrations; raw storage model in ADR 0002
-  db/roles.sql           # Roles, schema, and privileges of ADR 0002; run once by the owner role
-  scripts/               # sqlx-metadata.sh: the SQLx metadata check against a test database
+  ingest/                # Dockerfile, entrypoint, and fleet-telemetry config (ADR 0001)
+  crates/ingest/src/     # Ingest process: gate, supervisor, ZMQ reader, PostgreSQL writer
+  crates/ingest/proto/   # Vendored upstream .proto files of the deployed fleet-telemetry tag
+  migrations/            # SQLx migrations (ADR 0002)
+  db/roles.sql           # Roles, schema, and privileges (ADR 0002); run once by the owner role
+  scripts/               # Check scripts: SQLx metadata, image check, CI PostgreSQL
   .sqlx/                 # Committed query metadata of the SQLx macros
-  e2e/                   # Browser journeys against the built service
-  Cargo.toml
-  Cargo.lock
-  rust-toolchain.toml
-  clippy.toml
-  deny.toml
-  mise.toml
-  pnpm-workspace.yaml
-  pnpm-lock.yaml
-  STACK.md  VISION.md  DOCTRINE.md  CLAUDE.md
+  Cargo.toml  Cargo.lock  rust-toolchain.toml  clippy.toml  deny.toml  mise.toml
 ```
 
-- `domain` MUST NOT depend on Axum, Tokio, SQLx, reqwest, server code, or storage adapters. It receives time, identifiers, and other external values explicitly. It MUST NOT read the environment, filesystem, ambient clock, or random sources.
-- `server` owns effects, HTTP DTOs, use cases, persistence adapters, public error mapping, and process wiring. Handlers decode input, call a use case, and return its mapped result.
-- Separate DTOs, database rows, and domain values when their meanings differ. Use validating constructors or `TryFrom`. Serde derives on domain values MAY be used when representations agree and deserialization cannot bypass invariants.
-- `packages/api-client` owns generated API artifacts and a small handwritten facade for runtime configuration, validation failures, and application-facing errors. Generated files MUST NOT be edited manually.
-- `web` accesses the API through that package. It MUST NOT import server implementations or maintain duplicate handwritten wire contracts.
-
-Cargo enforces declared crate dependencies, not purity. Changes to dependency
-manifests need boundary review. Standard-library I/O and ambient time remain
-possible without new dependencies. Use selected Clippy disallowed-method
-rules where practical and record review-only gaps. Global cargo-deny bans
-are not per-crate architecture checks. Enforce frontend import directions
-with Oxlint `no-restricted-imports` rules and inspect dynamic-loading gaps.
+The web phase adds `crates/domain`, `crates/server`, `packages/api-client`,
+`web/`, `contract/openapi.json`, and `e2e/` (web profile §0).
 
 ---
 
@@ -91,11 +51,10 @@ with Oxlint `no-restricted-imports` rules and inspect dynamic-loading gaps.
 
 ### Backend
 
-- **Language baseline:** Rust 1.100, edition 2024 (pinned 1.100.0, §15). Confirm the stable release and dependency MSRVs on adoption; pin the exact supported toolchain in `rust-toolchain.toml`, including rustfmt and Clippy.
-- **Minimum Rust version:** declare `rust-version` in workspace package metadata and inherit it in each crate. It must cover selected dependency MSRVs; lowering an adopted floor needs owner approval.
-- **Runtime:** native Linux binary in the declared container target. A local macOS build does not validate the Linux artifact or its CPU architecture.
-- **Package manager:** Cargo with workspace dependency inheritance. Commit `Cargo.lock`; use `--locked` on Cargo operations that support it and resolve/build/test dependencies.
-- **Strictness:** inherit workspace lints in every first-party crate. Run Clippy with `-D warnings`. The unsafe restriction applies to first-party code, not a claim about dependency internals.
+- Rust 1.100.0, edition 2024, pinned in `rust-toolchain.toml` with rustfmt and Clippy. Check the dependency MSRVs with each toolchain change. `rust-version` is in the workspace package metadata and each crate inherits it; lowering it needs owner approval.
+- A native Linux binary in the container. A local macOS build does not validate the Linux artifact.
+- Cargo with workspace dependency inheritance and a committed `Cargo.lock`; `--locked` on each Cargo operation that supports it.
+- Every first-party crate inherits the workspace lints; Clippy runs with `-D warnings`. The unsafe rule applies to first-party code only.
 
 ```toml
 [workspace.lints.rust]
@@ -128,181 +87,32 @@ allow-print-in-tests = true
 
 `dbg!` stays denied in tests, because it is a debugging leftover.
 
-Use narrow `#[expect(clippy::lint_name, reason = "...")]` for a justified
-lint limitation. A stale expectation fails verification. An expectation
-cannot waive an acceptance criterion or replace §13. Test-only assertion and
-fixture code has a different failure contract from production request paths.
-Do not ban lossless numeric casts as a class; pedantic conversion findings
-and domain bounds address lossy conversions. Add targeted checks where needed.
-
-### Frontend
-
-- **Language baseline:** TypeScript 7 with the native compiler. Pin the exact release. TypeScript 7.0 has no programmatic compiler API. A tool that needs the compiler API gets a scoped exception (§2.1). Reassess the exceptions when a TypeScript 7 release provides the new API.
-- **Build-time runtime:** Node.js 24 LTS, exact supported patch pinned in mise. Node is not a production server requirement for this SPA. Reassess later LTS lines after release and a tooling trial.
-- **Package manager:** pnpm workspaces, exact pnpm version pinned, committed `pnpm-lock.yaml`, and frozen-lockfile installs. Do not use `latest` in manifests.
-- **Lint:** Oxlint with its type-aware tsgolint backend (`oxlint-tsgolint`). typescript-eslint does not run on TypeScript 7. Enable the type-aware rules that correspond to typescript-eslint `strict-type-checked`, the React hook rules, and the import restrictions. Deny warnings. Record each strict rule that Oxlint does not implement and the review that covers it.
-
-```json
-{
-  "compilerOptions": {
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-    "noImplicitOverride": true,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "useUnknownInCatchVariables": true,
-    "verbatimModuleSyntax": true,
-    "moduleDetection": "force"
-  }
-}
-```
+Use a narrow `#[expect(clippy::lint_name, reason = "...")]` for a justified
+lint limitation; a stale expectation fails verification, and it cannot
+waive an acceptance criterion. Do not ban lossless numeric casts as a
+class.
 
 ### Provisioning
 
-Mise tasks are the common bootstrap and command interface. Declare how mise
-and rustup are installed on a fresh machine. `rust-toolchain.toml` owns the
-Rust version; mise owns Node, pnpm, and auxiliary tool pins. Do not maintain
-conflicting Rust pins. Use the selected toolchain, not an incidental global one.
-
-`mise run setup` MUST provision or verify the pinned tools, install locked
-Cargo/pnpm dependencies, install required browser binaries, and explain how
-to start isolated test services. Pin nextest, cargo-deny, cargo-shear, Gitleaks,
-and SQLx CLI when selected. Verify each tool's installation method and feature
-set; pinning its package version alone does not prove reproducible tool builds.
+`rust-toolchain.toml` owns the Rust version; mise owns the other tool pins.
+Do not keep conflicting Rust pins. `mise run setup` MUST provision or
+verify the pinned tools and install the locked dependencies. A pinned
+package version alone does not prove a reproducible tool build; verify the
+installation method and feature set of each tool.
 
 ---
 
 ## 2. Frameworks
 
-| Concern                  | Technology                                                | Role                                                           |
-| ------------------------ | --------------------------------------------------------- | -------------------------------------------------------------- |
-| HTTP                     | Axum, Tower, tower-http                                   | Routing, extraction, request limits, tracing, and static files |
-| Concurrency              | Tokio                                                     | Async I/O and owned tasks; explicit shutdown policy            |
-| Domain errors            | Result, enums, thiserror                                  | Meaningful expected failures                                   |
-| Wire representation      | Serde and serde_json                                      | Validated transport boundaries                                 |
-| HTTP contract            | utoipa and utoipa-axum                                    | OpenAPI 3.1 tied to registered routes                          |
-| Client generation        | Hey API with Zod                                          | SDK, types, and executed runtime validators                    |
-| Time                     | Jiff                                                      | Instant, civil, zoned, elapsed, and calendar values            |
-| Persistence, if needed   | PostgreSQL, SQLx, jiff-sqlx                               | Explicit SQL, constraints, transactions, and time adapters     |
-| Outbound HTTP, if needed | reqwest                                                   | Shared configured client with bounded work                     |
-| Logging                  | tracing and tracing-subscriber                            | Structured events and async spans                              |
-| UI and build             | React, React DOM, Vite                                    | SPA without a second production runtime                        |
-| Routing and server state | TanStack Router and Query                                 | URL state and query cache ownership                            |
-| Styling                  | CSS; Tailwind optional                                    | Product-specific styling choice                                |
-| Tests                    | nextest, Cargo doctests, proptest, Vitest, Playwright/axe | Behaviour, contracts, and critical journeys                    |
-| Formatting and lint      | rustfmt, Clippy, Prettier, Oxlint, tsc                    | Named checks through mise                                      |
-
-### 2.1 API contract and generation
-
-1. Register documented routes through utoipa-axum. Export OpenAPI 3.1 from Rust HTTP types and route declarations. Do not claim that annotations prove actual handler responses.
-2. Export to an explicit file path without production configuration, a database connection, or pre-built SPA assets. SQLx macro compilation uses committed offline metadata where applicable.
-3. Generate the SDK, wire types, and Zod validators from the local specification into `packages/api-client`. No hosted generation service is required.
-4. Commit the OpenAPI document and generated client artifacts. Pin the generator and plugins. `contract:check` regenerates in scratch space and compares complete trees, including added/deleted files. It MUST NOT repair the working tree. A plain tracked-file diff is insufficient.
-5. Enable runtime validation explicitly in the executed client path. Test rejection of an invalid success response and separately test error-body validation. A generated unused schema is not protection.
-6. Test real responses from changed operations against the declared contract: status, content type, body, and failure paths. Keep expected outcomes traced to requirements, not only to the same generator.
-7. Define handling of optional/null fields, unknown fields and enum values, tagged unions, numeric bounds, and temporal precision. Do not silently coerce or invent facts.
-8. Preserve a declared client/server compatibility window. An old browser tab remains an old client after a combined deployment. Define safe upgrade behaviour that preserves unsaved input.
-
-Generator configuration, checked with Hey API 0.99:
-
-- Make the output independent of where it is written. The generator reads the first `tsconfig*.json` above its install directory to choose the import extension; set the extension and turn the lookup off (`output.module.extension`, `output.tsConfigPath: null`), or `contract:check` in scratch space can differ from the committed tree.
-- The generator uses the TypeScript compiler API, which TypeScript 7.0 does not provide. Pin a TypeScript 6 release as a devDependency of the API-client package only, so that only the generator resolves it. Run every type check with TypeScript 7. Record this dependency as a §13 exception. Remove the exception when the generator supports TypeScript 7.
-- The client runtime that the generator copies into the output can fail `exactOptionalPropertyTypes`. Never edit generated files. Type-check the generated directory with its own `tsconfig` that turns off only this flag, keep the flag for the facade and the application, and record a scoped exception.
-- A generator dependency can pin a vulnerable package version outside the reach of an ordinary update. Use a pnpm override for that exact parent version, prove with `contract:check` that the output does not change, and record the override with its removal condition.
-
-The build dependency order is Rust contract-export compilation, OpenAPI
-export, client generation, frontend build, and image assembly. Export and
-ordinary server compilation MUST NOT depend on frontend assets. If embedding
-is selected, keep export independent so it cannot create a generation cycle.
-
-### 2.2 Errors and failure containment
-
-Use thiserror enums for expected domain and use-case errors. Use RFC 9457
-Problem Details with `application/problem+json` for public failures and a
-stable application `code` extension. Preserve the standard meanings of
-`type`, `title`, `status`, `detail`, and `instance` when supplied.
-
-Map known server errors exhaustively in one place. Cover extractor rejections,
-invalid JSON, body limits, timeouts, authentication failures, and route
-fallbacks too. The client handles known codes exhaustively and unknown codes,
-invalid bodies, and intermediary responses safely. Do not expose SQL,
-internal traces, secrets, or personal data. Programmer defects remain defects;
-define and test the generic public failure behaviour without treating a
-broken invariant as a valid business outcome.
-
-A retryable classification does not authorize repeating a write. Define
-idempotency separately. An invalid independent item may be excluded only if
-the contract permits partial success; expose its safe reason. Invalid
-whole-operation input and atomic failures MUST NOT publish partial success.
-
-### 2.3 Outbound sources
-
-Decode each external source at its adapter and narrow it into domain types
-before other code sees it.
-
-- Serde's derived `Deserialize` for a struct also accepts a JSON array in field order, and a repeated key fails the whole value. When the source contract requires an object or accepts the last repeated key, check the JSON type or decode through `serde_json::Value`, which keeps the last repeated key. Test both cases.
-- Give each attempt a deadline that includes the response body, and limit the body size. A per-attempt timeout that stops at the headers leaves the body read unbounded.
-- The text of a transport error can contain a URL with a query or a token. Map transport failures to fixed messages before they reach a log, an error value, or a response. In reqwest, `Error::without_url` removes the URL.
-- Turn off redirects for a client that sends a credential in a custom header or in the query. reqwest removes only standard credential headers, such as `Authorization` and `Cookie`, on a redirect to another host.
-- Set the `User-Agent` explicitly. reqwest sends none by default.
-
-### 2.4 Frontend state
-
-| State                                     | Owner                           |
-| ----------------------------------------- | ------------------------------- |
-| Server data and client cache              | TanStack Query                  |
-| Shareable filters, search, and pagination | Router and validated URL values |
-| Local interaction state                   | React                           |
-| Incomplete input                          | Form state                      |
-| Durable business data                     | Backend and selected storage    |
-
-Set stale times, refetch triggers, retries, and cache lifetimes explicitly.
-Scope query keys/data to authorization context. Remove or isolate cached data
-on logout and tenant changes. Forward cancellation signals where supported;
-client cancellation does not prove server-side rollback. Avoid copying query
-data into another global store. Use typed view states rather than unrelated
-optional flags. A failed fetch MUST NOT become an empty successful result.
-
-### 2.5 Authentication, when accounts are required
-
-Use an approved OIDC provider and opaque backend-owned cookie sessions.
-Evaluate openidconnect and a maintained session implementation with a
-compatible storage/version tuple. Backend authorization applies per resource
-and tenant, regardless of browser visibility or cached claims.
-
-Define Secure, HttpOnly, and suitable SameSite cookie settings, CSRF protection,
-rotation, fixation prevention, expiry, revocation, logout, and concurrent
-session behaviour. Verify the login/callback flow and failure paths. Avoid
-persistent browser bearer-token storage as the default design.
-
-The inspected tower-sessions-sqlx-store 0.15.0 uses SQLx 0.8 and
-tower-sessions-core 0.14, not the SQLx 0.9 baseline below. Recheck this at
-adoption. Do not assume pools or session types are interchangeable, or add
-two incompatible pools as a workaround. A first-party session system requires
-a demonstrated need, threat model, independent security review, and end-to-end
-evidence; it is not the default fix for adapter lag. Until the authentication
-trial passes, report that capability as unvalidated.
-
-**Project note (owner decision, 27 November 2026; ADR 0003):** this project
-has no accounts and no OIDC provider. One password protects the web
-application: a Railway service variable holds an Argon2id hash, a login
-gives a session cookie with an expiry and a logout, and the server slows
-down repeated login attempts globally. The login, the session, and the
-throttle are a first-party session system. The requirements above for
-such a system apply with the first web PR: a threat model, an independent
-security review, and end-to-end evidence. The cookie, CSRF, rotation,
-fixation, expiry, revocation, and logout rules above also apply. ADR 0003
-records the demonstrated need.
+The framework table and §2.1 to §2.5 (API contract, errors, outbound
+sources, frontend state, and authentication with the password login of ADR
+0003) are in `docs/stack-web-profile.md`.
 
 ---
 
 ## 3. Build & verify commands
 
-Mise tasks are the single source of truth. Implement them in the adopting
-project; this profile ships no application scripts. Commits, agent workflows,
-and any CI invoke these entry points rather than separate tool pipelines.
+Mise tasks are the single source of truth for commits, agents, and CI.
 
 | Variable      | Command           |
 | ------------- | ----------------- |
@@ -312,502 +122,271 @@ and any CI invoke these entry points rather than separate tool pipelines.
 | `$TEST_CMD`   | `mise run test`   |
 | `$VERIFY_CMD` | `mise run verify` |
 
-**Project commands.** `mise.toml` defines the tasks and pins the auxiliary
-tools. In a fresh checkout, install mise and rustup, then run `mise trust`
-and `mise run setup`. mise reads the Rust version from `rust-toolchain.toml`
-(setting `idiomatic_version_file_enable_tools`), so a global mise `rust`
-entry cannot replace it.
+`mise.toml` defines the tasks and pins the tools. In a fresh checkout,
+install mise and rustup, then run `mise trust` and `mise run setup`. mise
+reads the Rust version from `rust-toolchain.toml`
+(`idiomatic_version_file_enable_tools`).
 
-| Task     | Content                                                                                                                              |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `setup`  | Install the pinned tools of `mise.toml` (not the global mise tools) and the Rust toolchain, fetch the locked crates. The database tests need `TEST_DATABASE_URL` (below). |
-| `format` | `cargo fmt --all`                                                                                                                    |
-| `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings` for the host. In CI, the host is linux/amd64.                      |
-| `build`  | `cargo build --workspace --release --locked`                                                                                         |
-| `test`   | Fails at once when `TEST_DATABASE_URL` is not set. Then `cargo nextest run --workspace --locked` (all tests, also the database tests) and `cargo test --doc --workspace --locked` (task `doctest`) |
-| `test-ci` | For CI only. Fails at once when `TEST_DATABASE_URL` is not set. Then `cargo nextest run --workspace --locked --no-fail-fast` against the PostgreSQL server of the runner, without the tests that need Neon (nextest filter), and `doctest`. The tests that need Neon: the four end-to-end tests of `tests/storage/pipeline.rs` (the binary gets a new URL and an empty environment, so it trusts only the Mozilla roots, not the test CA) and the two tests of `tests/storage/roles.rs` that read the membership of `neon_superuser` (`the_roles_get_the_privileges_of_adr_0002`, `the_role_script_is_idempotent`). |
-| `verify` | Fails at once when `TEST_DATABASE_URL` is not set. Then the static checks (task `checks`): format check without edits, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the JSON syntax of `ingest/server_config.json` and `config/telemetry_config.json`, the shell syntax of `ingest/entrypoint.sh`, `scripts/sqlx-metadata.sh`, and `scripts/image-check.sh`, no tracked `.env*`, `secrets/`, or `.bin/` path. Then `sqlx-check`, `build`, and `test`. Stops at the first failure. |
-| `ci`     | The task of the GitHub Actions workflow (below): `checks`, `sqlx-check`, `build`, and `test-ci`, against the PostgreSQL server of the runner (`scripts/ci-postgres.sh`). Stops at the first failure. `ci` does not replace `verify`. |
+| Task     | Content |
+| -------- | ------- |
+| `setup`  | The pinned tools of `mise.toml`, the Rust toolchain, and the locked crates. |
+| `format` | `cargo fmt --all` |
+| `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings` for the host (linux/amd64 in CI). |
+| `build`  | `cargo build --workspace --release --locked` |
+| `test`   | `cargo nextest run --workspace --locked` (all tests) and `cargo test --doc --workspace --locked` (task `doctest`). |
+| `test-ci` | CI only: `cargo nextest run --workspace --locked --no-fail-fast` against the PostgreSQL server of the runner, without the tests that need Neon (below), and `doctest`. |
+| `verify` | The static checks of task `checks` (format check, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, or `.bin/` path), then `sqlx-check`, `build`, and `test`. |
+| `ci`     | The CI job `ci`: `checks`, `sqlx-check`, `build`, and `test-ci` against the PostgreSQL server of the runner (`scripts/ci-postgres.sh`). It does not replace `verify`. |
 | `sqlx-check` | `scripts/sqlx-metadata.sh check`: `cargo sqlx prepare --workspace --check` against a new database on the Neon branch `test`, migrated with `migrations/`, then dropped. |
 | `sqlx-prepare` | `scripts/sqlx-metadata.sh prepare`: writes `.sqlx/` the same way after a change of a query or a migration. |
-| `deps`   | The dependency freshness check below: the crates, the mise tools, the Rust toolchain, the `FROM` images of `ingest/Dockerfile` (newest `tesla/fleet-telemetry` release tag, newest `rust:<version>-slim-<Debian codename of the final stage>` tag, current Debian stable release), and the CI pins of `.github/workflows/ci.yml` (actions, mise version, runner label, and the PostgreSQL image with the newest PostgreSQL 18 tag). |
-| `vuln`   | `cargo deny --locked check advisories`, `osv-scanner scan source -r .` without `.claude/worktrees/` (old agent worktrees; `--x-exclude`, an experimental option), and `osv-scanner scan image --archive` for each runtime `FROM` image of `ingest/Dockerfile` (every stage except `build`: `tesla/fleet-telemetry` and `debian`). crane downloads each image for `linux/amd64` as a Docker archive, with `DOCKER_CONFIG` set to a temporary directory that holds an empty `config.json`, so the pulls are anonymous and no local credential file is read. No container runtime is needed. Each image scan reads the reviewed ignore file `docs/security/osv-scanner-<repository, / as ->.toml` (`--config`); an image without a file fails. The builder image is not scanned (§13). First checks the three deployment facts of the ignore files that no other check holds (`docs/security/image-advisories.md`, "Ignore files and deployment facts"): `ingest/Dockerfile` copies only `/fleet-telemetry` and the `ingest` binary between stages; `ingest/entrypoint.sh` has the pinned git blob ID; `ingest/server_config.json` has one JSON value, no repeated key, lowercase keys outside the record type names, no extra client CA, no status port, and no profiler. Runs every scan; fails when a fact breaks, a scan fails, a scan finds a vulnerability that no entry covers, or the task did not scan exactly two runtime images. |
-| `image-check` | `scripts/image-check.sh`: builds `ingest/Dockerfile` with Docker and checks the running container without a database (port 1 of the loopback interface refuses the connection) and with a self-signed certificate. Checks (each negative check first shows that its input is readable): `ingest` is PID 1 (under Docker without an init; on Railway it is PID 2 under the init of Railway) as user and group 10001 with no supplementary groups, no capabilities (`CapInh`, `CapPrm`, `CapEff`, `CapBnd`, `CapAmb` 0), and `NoNewPrivs` 1, its environment holds `DATABASE_URL` but no TLS variable and no `MIGRATION_DATABASE_URL` (under Docker; on Railway the init keeps them, §15), the soft open-file limit equals the hard limit, and `ldd` lists only glibc and `libgcc_s` for the `ingest` binary; `fleet-telemetry` is a child of PID 1 with an empty environment, the same credentials, and without a listening socket of `ingest`; the TLS files are regular files with mode 0600 and owner 10001 in a directory with mode 0700; `/health` answers 503; the SUB socket settles on the libzmq PUB socket of the real server, and its metrics answer on 127.0.0.1:9090; after 120 s, degraded mode opens the gate and a TLS client through the gate verifies the server certificate, although the container gets `INGEST_TEST_QUEUE_BYTES=1` and `INGEST_TEST_DEGRADED_AFTER_MS=1000` (a debug build would stop at once or enter degraded mode after 1 s, so this proves a release build); every metrics read of the real binary succeeds until then (no `shortfall_read_failed`, `metrics_unreadable`, or `subscriber_stalled`); after each of three forced child exits the reader ends its socket, settles on the new child, and the gate opens again, and no zombie remains; SIGTERM ends with exit code 1 within 30 s and the shutdown lines of ADR 0001; the log holds no TLS key and no database password. A second container starts with the init of Docker (`docker run --init`, tini) as on Railway (issue #29): PID 1 runs as UID 0; `ingest` is a child of PID 1 with the credentials above; a process of UID 10001 cannot read `/proc/1/environ` (exit codes only; positive controls first: UID 10001 reads the environment of `ingest`, and root reads `/proc/1/environ`); the checks of the environment, the child, the TLS files, SIGTERM through the init, and the log run again; then the same container starts again, and the entrypoint replaces the TLS files of the first start. A third container starts as user 10001 (`docker run --user`): `setpriv` fails, the container stops with an error, and `ingest` writes no line. Needs Docker, so it runs in CI only (job `image-check`). |
+| `deps`   | The dependency freshness check (below). |
+| `vuln`   | The vulnerability check (below). |
+| `image-check` | `scripts/image-check.sh` (CI only): builds `ingest/Dockerfile` and checks the running container without a database, without an init, with the init of Docker (`--init`, as on Railway), and as user 10001 (must fail). The script header lists each check. |
+
+Tests that need Neon: the four end-to-end tests of `tests/storage/pipeline.rs` (the binary gets a new URL and an empty environment, so it trusts only the Mozilla roots, not the test CA) and the two tests of `tests/storage/roles.rs` that read the membership of `neon_superuser` (`the_roles_get_the_privileges_of_adr_0002`, `the_role_script_is_idempotent`). They run only in the local `verify` (ADR 0008).
 
 Pinned tools: cargo-nextest 0.9.152, cargo-deny 0.22.1, cargo-shear 1.14.1,
 Gitleaks 8.30.1, osv-scanner 2.7.1, SQLx CLI 0.9.1 (features `postgres` and
 `rustls`, built from source, both programs `sqlx` and `cargo-sqlx`), jq
 1.8.2, and crane 0.22.1.
 
-**Database tests and the SQLx metadata check.** Both need
+**Database tests.** `test`, `test-ci`, `verify`, and `sqlx-check` need
 `TEST_DATABASE_URL`, the URL of the role `neondb_owner` on the Neon branch
-`test` (§5). Export it before the command, for example
-`set -a; . ./.env.test; set +a; mise run verify`, with the value in
-quotes in the file (a Neon URL has `?` and `&`); mise does not read the
-file. The tests and the script refuse the production endpoint, and the
-tests refuse a database with a schema `raw`. Every connection uses
-`sslmode=verify-full`, whatever the URL says. The query macros read
-`.sqlx/` (`SQLX_OFFLINE=true` in `.cargo/config.toml`), so `build` and
-`lint` never connect to a database. Every `sqlx` call uses `--no-dotenv`,
-so no `.env` file of a parent directory is read.
-
-Scope and gaps of `vuln`:
-
-- The image scan covers the two runtime `FROM` images, not the image that
-  Railway builds. Only `/fleet-telemetry` comes from `tesla/fleet-telemetry`,
-  so the Debian 12 package findings of that image are not in production.
-  The packages that `apt-get` installs or upgrades during the Railway build
-  are not scanned (§13). The builder image `rust:<version>-slim-trixie` is
-  not scanned: only the `ingest` binary leaves it (§13).
-- `linux/amd64` is an assumption about the Railway host. It is not
-  verified.
-- The Rust toolchain and the mise tools have no scanner (§13). The static
-  C libraries inside `/fleet-telemetry` (libzmq with its tweetnacl copy,
-  librdkafka with its bundled libraries) have no scanner either (§13).
-- The triage `docs/security/image-advisories.md` records a decision for
-  each image advisory. The ignore files contain only advisories with a
-  recorded decision, each with a reason and an expiry date. A new
-  advisory, an expired entry, or a broken deployment fact fails `vuln`. Then the
-  lead triages the finding in a `chore/deps-<topic>` PR. A "needs action"
-  finding gets no entry.
-- `vuln` does not read the CISA KEV catalog. At each vulnerability check,
-  compare the CVE IDs of the ignored advisories with the catalog.
-- `verify` does not include `vuln`. Reassessed with issue #15: with the
-  ignore files, `vuln` passes, but new gating image advisories arrived on
-  9 days between 30 October and 25 November 2026 (evidence in
-  `docs/security/image-advisories.md`). In `verify`, each would block every
-  open change until a reviewed triage merges. `vuln` therefore stays a
-  separate required check at the points of DOCTRINE.md P7. `verify` keeps
-  `cargo deny --locked check`, which covers the advisories of the Rust
-  dependencies. Reassess when a scheduled CI run can execute `vuln`, or
-  when the gating advisory rate falls below one each month over 60 days.
-- The CI workflow (below) runs `vuln` in a separate job for each pull
-  request, each push to `main`, and once each day on a schedule. These
-  runs are the runs of DOCTRINE.md P7. The result of the job:
-  - A green `vuln` job is a merge condition of a PR that changes an input
-    of the job: `Cargo.lock`, each `Cargo.toml`, `deny.toml`, the `vuln`
-    task or the scanner pins in `[tools]` of `mise.toml` (cargo-deny,
-    osv-scanner, crane, jq), the `vuln` job of `.github/workflows/ci.yml`,
-    any lockfile that `osv-scanner scan source -r .` reads, any
-    `osv-scanner.toml` (in the root or next to a lockfile),
-    `ingest/Dockerfile`, `ingest/entrypoint.sh`,
-    `ingest/server_config.json`, or the ignore files in `docs/security/`.
-  - For any other PR, a red `vuln` job of any cause (a new advisory, an
-    expired ignore entry, a broken deployment fact, or a failed image download)
-    starts a triage in a `chore/deps-<topic>` PR. It does not block that
-    other PR. Before that other PR merges with a red `vuln` job, the lead
-    compares the IDs of the new findings with the CISA KEV catalog. The
-    comparison is manual, because `vuln` does not read the catalog (above).
-  - When a finding is a known exploited vulnerability (for example in the
-    CISA KEV catalog) or a malicious package version, DOCTRINE.md P7
-    applies: its fix is due before other work.
+`test` (§5); a missing URL is a failure, not a skipped check. Export it
+before the command (`set -a; . ./.env.test; set +a; mise run verify`, value
+in quotes); mise does not read the file. The query macros read `.sqlx/`
+(`SQLX_OFFLINE=true`), so `build` and `lint` never connect to a database;
+every `sqlx` call uses `--no-dotenv`. The SQLx check MUST use an isolated
+migrated database. Checks never silently regenerate missing evidence. A
+missing required database or scanner is a gap, not a pass.
 
 Scope and gaps of `verify`:
 
-- Gitleaks scans the committed history (`gitleaks git --redact`). It does
-  not read uncommitted or ignored files, so it never reads `.env` or
-  `secrets/`. Commit the change before the final `verify`.
-- `cargo deny` reads the RustSec advisory database from the network.
-- `verify` does not build or test the ingest image: the development
-  machine has no container runtime. The CI job `image-check` builds and
-  checks it (below). `crates/ingest/tests/deployment.rs` (in `test`)
-  checks that the image settings, the server configuration, the Railway
-  settings, and the entrypoint agree, and runs a copy of the entrypoint
-  with temporary paths.
-- `verify` runs on the development machine (macOS arm64). The Linux evidence comes from the CI workflow below, not from `verify`.
-- No web code exists yet. Prettier, Oxlint, `tsc`, Vitest, Playwright, and
-  `pnpm audit` join `verify` with the first web change.
-- The database tests run on the Neon branch `test` (PostgreSQL 18.7),
-  from this machine with a round-trip time of about 240 ms. A full run of
-  the 42 tests of the test binary `storage` takes about 2.5 minutes, at most 8 at the same
-  time. Four of them (`tests/storage/pipeline.rs`) run the real binary
-  with the fake `fleet-telemetry` of `crates/ingest/examples/` and a TCP
-  proxy that cuts the database; each takes 30 to 65 s.
-- The end-to-end tests start the example binary `fake_fleet_telemetry`
-  as the child. `cargo nextest run` builds the examples together with the
-  tests; `tests/harness/mod.rs` finds the binary in
-  `target/<profile>/examples/`. They need a debug build of `ingest`,
-  because only a debug build reads the test overrides (ADR 0001,
-  "Decisions of the pipeline change"). The ignored test `measure_the_size_of_a_signal_row` writes
-  100,000 rows; it runs only on request (ADR 0002, "Expected size").
-- A database test needs the network and the Neon compute. When Neon is
-  down or the CU-hours of the project are used up, `verify` fails; that
-  is a gap, not a pass.
+- Gitleaks scans the committed history, not uncommitted or ignored files:
+  commit before the final `verify`.
+- `cargo deny` and the database tests need the network; a Neon outage or
+  used-up CU-hours fail `verify` (a gap, not a pass).
+- `verify` runs on macOS arm64 and builds no image; CI gives the Linux and
+  image evidence (ADR 0008). `crates/ingest/tests/deployment.rs` checks
+  that the image, the server configuration, the Railway settings, and the
+  entrypoint agree.
+- The end-to-end tests need a debug build, because only a debug build
+  reads the test overrides (ADR 0001). The ignored test
+  `measure_the_size_of_a_signal_row` runs only on request (ADR 0002).
+- Each task stops at the first failure. Prettier, Oxlint, `tsc`, Vitest,
+  Playwright, and `pnpm audit` join `verify` with the first web change.
 
-**CI (GitHub Actions).** `.github/workflows/ci.yml` has three jobs on the
-GitHub-hosted runner `ubuntu-26.04` (x86_64, linux/amd64, the production
-platform of §1). The job `ci` runs `mise run setup`, `scripts/ci-postgres.sh`, and
-`mise run ci`. The job `vuln` runs `mise run setup` and `mise run vuln`
-(see the scope of `vuln` above). The job `image-check` runs
-`mise run image-check` with the Docker engine of the hosted runner. The
-workflow runs for each pull request and for each push to `main`. A daily
-schedule (04:17 UTC) runs only the job `vuln`; GitHub runs a schedule on
-the default branch only, and disables it after 60 days without activity
-in a public repository.
+**CI (GitHub Actions).** `.github/workflows/ci.yml` runs the jobs `ci`
+(with `postgres:18.7-trixie` on the runner, TLS, a test CA, and
+`sslmode=verify-full`), `vuln`, and `image-check` on `ubuntu-26.04`
+(linux/amd64) for each pull request and each push to `main`. A daily
+schedule (04:17 UTC) runs only `vuln`; GitHub disables a schedule after 60
+days without activity. The token can only read the contents; there is no
+repository secret and no `pull_request_target` trigger; each third-party
+action is pinned to a full commit SHA. `image-check` pushes no image and
+has no secret and no database. A `pull_request` run tests the merge with
+the base.
 
-- The job `image-check` builds the image of the PR merge and runs it on
-  the runner. It pushes no image and logs in to no registry; Docker pulls
-  the three `FROM` images of `ingest/Dockerfile` anonymously. The
-  container has no secret and no database: the script makes a
-  self-signed certificate, and the database URL points to a refused port.
-  It does not prove the Railway build (another builder, other caching,
-  the Railway proxy, the Railway healthcheck); the post-release checks of
-  §15 cover those. A green `image-check` job of the current PR head is a
-  merge condition of a PR that changes an input of the image (the watch
-  paths of §15) or the job.
+Merge conditions (`CLAUDE.md`, ADR 0008):
 
-- Each PR has one concurrency group: a new push to the PR cancels the old
-  run of that PR. Each push to `main` has a group of its own (the event
-  name and `github.sha` of the tip commit), so a later push or a scheduled
-  run cancels neither its running nor its pending run. There is one run for each push to `main`, for the tip
-  commit of that push. With merge commits only, that is one run for each
-  merge.
-- The runner installs the tools of `mise.toml` and the Rust toolchain of
-  `rust-toolchain.toml` through mise, so CI and the development machine
-  use the same versions. The mise version is pinned in the workflow.
-  §15 records the CI pins, and `mise run deps` compares them with their
-  newest releases.
-- The run compiles, links, and runs the tests on Linux. It is the Linux
-  evidence of §13. A `pull_request` run tests the merge of the PR head with
-  the base branch, not the head alone.
-- The token of the workflow can only read the repository contents. The
-  workflow uses no repository secret and no
-  `pull_request_target` trigger. A pull request from a fork therefore runs
-  without a secret and without write access. The checkout stores no
-  credential. Each third-party action is pinned to a full commit SHA.
-- The checkout reads the full history (`fetch-depth: 0`), because Gitleaks
-  scans all commits.
-- The database tests run in the job `ci` against PostgreSQL 18.7 on the
-  runner (`postgres:18.7-trixie`, pinned by tag and index digest in the
-  workflow; the production major version). `scripts/ci-postgres.sh` makes
-  a test CA and a server certificate for `localhost` on each run, starts
-  the server with TLS only (`hostssl`, SCRAM passwords), creates the role
-  `neondb_owner` (CREATEROLE and CREATEDB, not a superuser) with the
-  database `neondb`, and sets `TEST_DATABASE_URL` with `sslrootcert`. SQLx
-  adds that CA to the Mozilla roots, and the storage keeps
-  `sslmode=verify-full`, so the connections verify the certificate and the
-  host name. The password is random for each run; CI uses no repository
-  secret and no Neon compute. `sqlx-check` runs against the same server.
-  `test-ci` excludes the tests that need Neon: the four end-to-end tests of `tests/storage/pipeline.rs` (the binary gets a new URL and an empty environment, so it trusts only the Mozilla roots, not the test CA) and the two tests of `tests/storage/roles.rs` that read the membership of `neon_superuser` (`the_roles_get_the_privileges_of_adr_0002`, `the_role_script_is_idempotent`).
-  They run only in the local `verify`. So the Neon TLS path (the Neon
-  proxy and its certificate chain) and those six tests have no Linux
-  evidence before the deployment checks. The end-to-end tests of the
-  pipeline without a database (`tests/pipeline.rs`) run in CI.
-- Local verification stays mandatory (DOCTRINE.md P6): `mise run verify`
-  runs before merge on the version to be merged, also when CI is green.
-  A green `ci` job of the PR is also required before merge, because it is
-  the Linux evidence. It does not replace `verify`. The green run must be
-  for the current head of the PR. A `pull_request` run tests the merge
-  with the base at the time of the run, and it does not start again when
-  `main` moves. When the base changes after the run, update the PR branch,
-  so that a new run tests the merge with the current base.
-- The workflow does not change the repository settings. Branch protection
-  is an owner decision, and this workflow does not add it. A red run
-  therefore does not block a merge technically; the acceptance conditions
-  of CLAUDE.md block it.
+- The local `mise run verify` on the version to be merged.
+- A green `ci` job for the current head. When the base changes after the
+  run, update the PR branch so that a new run tests the current base.
+- A green `image-check` job of the current head for a change of an image
+  input (the watch paths of §15) or of the job.
+- A green `vuln` job for a change of a `vuln` input (below).
+- The workflow adds no branch protection (an owner decision); the
+  acceptance conditions of `CLAUDE.md` block a merge with a red run.
 
-- **format:** rustfmt and Prettier in write mode.
-- **lint:** `cargo clippy --workspace --all-targets --locked -- -D warnings`, type-aware Oxlint, and TypeScript 7 `tsc --noEmit` for web, client, and test code. Declare supported feature combinations; do not blindly enable incompatible features.
-- **build:** export/generate in the declared order, build the SPA, and build the release server with locked dependencies and offline SQLx metadata. Verify the intended Linux image before claiming release readiness.
-- **test:** nextest workspace tests, `cargo test --doc --workspace --locked`, Vitest, required real-database integration tests, and Playwright against the built service. Required browser tests are part of the complete test command, not an optional omitted suffix.
-- **verify:** format check without edits; isolated service setup and migrations where needed; lint/type checks; complete-tree contract drift check; SQLx metadata check; security/dependency checks; build; all required tests. Stop on required failures, retain useful diagnostics, and clean up only owned temporary resources.
+**Dependency freshness check** (`mise run deps`): `cargo update --dry-run
+--verbose` (also lists crates behind across major versions), `mise outdated
+--bump`, `pnpm outdated --recursive` with the first web PR, and the newest
+releases of `rust-toolchain.toml`, the `FROM` images of
+`ingest/Dockerfile`, and the CI pins. Compare the other §15 versions by
+hand. A crate release younger than 1440 minutes is not due, except a
+security fix (ADR 0006). `deps` checks the workflow against a strict line
+allowlist (`mise.toml`, task `deps`) that changes together with the
+workflow. Limits: it does not parse YAML, and it does not read what a
+pinned action runs, the action inputs other than the mise `version`, or the
+`run:` commands, which can download and run code. Before a change of the
+runner label, check in the README of `actions/runner-images` that the image
+is generally available.
 
-`cargo sqlx prepare --workspace --check` MUST use an isolated migrated
-database with the relevant targets/features. The release compilation uses
-`SQLX_OFFLINE=true`; offline compilation does not replace the schema check.
-Initial query/migration work may generate metadata against the isolated database
-before verification. Checks never silently regenerate missing expected evidence.
+**Vulnerability check** (`mise run vuln`, ADR 0005): `cargo deny --locked
+check advisories`, `osv-scanner scan source -r .` (without
+`.claude/worktrees/`), and `osv-scanner scan image --archive` of each
+runtime `FROM` image (every stage except `build`), downloaded anonymously
+with crane for `linux/amd64`. Each image scan reads its reviewed ignore
+file `docs/security/osv-scanner-<repository, / as ->.toml`. First the task
+checks the three deployment facts that no other check holds
+(`docs/security/image-advisories.md`, "Ignore files and deployment facts").
+It fails when a fact breaks, a scan fails or finds an uncovered
+vulnerability, or it did not scan exactly two runtime images. `pnpm audit`
+joins with the first web PR. Compare the Rust toolchain and each §15
+version with its vendor advisories.
 
-Use `cargo deny check`, `pnpm audit`, and Gitleaks with the policies in §14.
-Cargo-shear SHOULD check unused Rust dependencies. Quick tasks MAY exist but
-do not replace full verification. A missing required browser, database, or
-scanner is a gap, not a pass. Validate test connection configuration and
-isolation before creating, migrating, or dropping any database.
+Scope and gaps of `vuln`:
 
-**Dependency freshness check:** `cargo update --dry-run --verbose`, `pnpm outdated --recursive`, and `mise outdated --bump`. `cargo update` stays within SemVer-compatible versions, so also compare each direct crate requirement with its latest crates.io release. In this project, `cargo update --dry-run --verbose` (Cargo 1.100) also lists each locked crate that is behind its latest crates.io release across major versions, as `Unchanged <crate> <version> (available: <latest>)`. Checked on 26 November 2026 with a probe crate that requires `thiserror = "1"`: the output was `Unchanged thiserror v1.0.69 (available: v2.0.21)`. Minimum release age of crates (owner decision of 27 November 2026): a crate release that is younger than 1440 minutes (24 hours) is not due; a security fix is the exception (§15, Maintenance). `cargo update` and `mise run deps` do not print the publish time, so the lead reads it on crates.io (`created_at` of the version). Deferred on 27 November 2026: `cc` 1.11.3 to 1.12.0 and `find-msvc-tools` 0.1.15 to 0.1.16, both published on 2026-11-27 at 06:16 UTC (crates.io, read on 27 November 2026); they are due at the next delivery task. Compare `rust-toolchain.toml` with the latest stable Rust release. Compare each infrastructure version in §15, for example the database server, the container base image, and the source builder, with its latest stable release.
-
-In this project, `mise run deps` also reads the CI pins of `.github/workflows/ci.yml` (§15) and prints each pin with the newest release tag: each action (and it fails when the pinned SHA is not the commit of the tag in the comment), the mise version, and the runner label with the newest Ubuntu runner image that has a tag in `actions/runner-images`. It reads the tags with `git ls-remote` and fails when it cannot read a tag list. Before it reads the tags, it checks the workflow against a strict allowlist, like the Dockerfile check of `vuln`. (1) `.github/` holds only `workflows/` and `pull_request_template.md`, and `.github/workflows/` holds only `ci.yml`; any other entry fails with its name, for example a second workflow file (`.yml` or `.yaml`) or a composite action in `.github/actions/`, and a PR that adds such an entry extends the check in the same PR. (2) In `ci.yml`, each line with a `uses`, `version`, or `runs-on` key (also quoted, also without `- `) must be `- uses: <owner>/<repo>@<40 lowercase hex> # vX.Y.Z` (a full release tag), `version: X.Y.Z` directly under the `with:` of each mise action step, or `runs-on: ubuntu-NN.04`; the only image line is `postgres_image: postgres:18.N-<variant>@sha256:<64 lowercase hex>` (exactly one; the task fails when the digest is not the index digest of the tag, and prints the newest PostgreSQL 18 tag of that variant); each other line with a `container`, `services`, or `image` key fails; each job has one `runs-on`; YAML anchors and aliases are not allowed. Any other line fails the task with its line number, and the check changes together with the workflow. Limits: the check searches lines and does not parse YAML, so a key that a line search cannot see (a key written with an escape sequence, an explicit `? key`, or an anchor after a quoted `#`) is not checked; it does not read what a pinned action runs inside (other actions or downloads), the inputs of a pinned action other than the mise `version`, or the commands of `run:` steps, which can download and run code; the tools that the mise tasks run are pinned in `mise.toml` and compared by `mise outdated`. A newer runner image can be a beta: before a change of the runner label, check in the README of `actions/runner-images` that the image is generally available.
-
-**Vulnerability check:** `cargo deny check advisories`, `pnpm audit`, and `osv-scanner scan source -r .` for the lockfiles. `osv-scanner scan image <image>` for each container image. Compare the Rust toolchain and each infrastructure version in §15 with its vendor security advisories. Record each surface without scanner coverage.
+- §13 lists the surfaces without a scanner. The Debian 12 packages of the
+  upstream image are not in production; only `/fleet-telemetry` comes from
+  it. `linux/amd64` is an unverified assumption about the Railway host.
+- Each ignore entry needs a recorded decision in
+  `docs/security/image-advisories.md`, a reason, and an expiry date. A red
+  `vuln` gets a triage in a `chore/deps-<topic>` PR; a "needs action"
+  finding gets no entry.
+- `vuln` does not read the CISA KEV catalog. The lead does the manual
+  comparisons of ADR 0005 (decision 6) in each PR that changes an input of
+  `vuln`, and in each triage of a red `vuln` job.
+- `verify` does not include `vuln`; it keeps `cargo deny --locked check`
+  (ADR 0005).
+- The CI job `vuln` gives the runs of `DOCTRINE.md` P7. Result rules (ADR
+  0005):
+  - A green `vuln` job is a merge condition of a PR that changes an input:
+    `Cargo.lock`, each `Cargo.toml`, `deny.toml`, the `vuln` task or the
+    scanner pins in `[tools]` of `mise.toml` (cargo-deny, osv-scanner,
+    crane, jq), the `vuln` job of `.github/workflows/ci.yml`, any lockfile
+    that `osv-scanner scan source -r .` reads, any `osv-scanner.toml`,
+    `ingest/Dockerfile`, `ingest/entrypoint.sh`,
+    `ingest/server_config.json`, or the ignore files in `docs/security/`.
+  - For any other PR, a red `vuln` job starts a triage in a
+    `chore/deps-<topic>` PR and does not block that PR. Before such a PR
+    merges, the lead compares the IDs of the new findings with the CISA
+    KEV catalog.
+  - A known exploited vulnerability or a malicious package version makes
+    its fix due before other work (`DOCTRINE.md` P7).
 
 ---
 
 ## 4. Performance budgets
 
-Complete this table at adoption from product requirements. Specify conditions
-and measure the result. Unvalidated example numbers are not acceptance gates.
-Do not raise an adopted budget only to fit a poor implementation result.
-
-The illustration column shows an order of magnitude for a typical interactive
-web application. It is not a gate, a promise, or a measured result.
-
-| Budget                         | Required adoption value and measurement conditions                                                       | Illustration (not a gate)                                              |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| API latency and errors         | Per-route class p50/p99 and error-rate limit; workload, concurrency, data volume, and upstream inclusion | p50 10 ms, p99 50 ms per simple route, excluding upstream calls        |
-| Startup                        | Startup-to-ready limit; target hardware and cold/warm conditions                                         | < 1 s to ready, excluding migrations                                   |
-| Memory and resource saturation | Resident-memory limit, database pool, queue, and concurrency ceilings under declared load                | < 256 MB resident for the server container                             |
-| Release size                   | Image/binary and initial compressed JS/CSS budgets where they affect product fitness                     | Image < 100 MB compressed; initial JS < 200 KB and CSS < 50 KB gzipped |
-| Web experience                 | LCP, INP, and CLS targets with devices, network, sample conditions, and measurement method               | At the 75th percentile: LCP ≤ 2.5 s, INP ≤ 200 ms, CLS ≤ 0.1           |
-
-Distinguish field percentile evidence from laboratory approximations. New
-analytics collection needs the normal privacy and authority assessment.
-Include TLS, diagnostics, database access, and concurrent work in service
-measurements. A microbenchmark is not production capacity evidence.
+The budget template is in `docs/stack-web-profile.md`, §4. The ingest phase
+has no adopted budget table.
 
 ---
 
 ## 5. Persistence shape
 
-- **Storage:** PostgreSQL on Neon (Free plan) through SQLx. `VISION.md` requires durable data. Read on 26 November 2026: 1 GB storage for each project, 100 CU-hours each month, scale to zero after 5 minutes (cannot be disabled), 6 hours of restore history, computes up to 2 CU, 10 branches for each project. Source: <https://neon.com/docs/introduction/plans>. Neon suspends the compute when the CU-hours are used, and rejects writes when the storage is full. Batch the writes and bound the raw signal volume so that the compute can scale to zero. The Neon project is `telemetry` (§15). The ingest process writes a batch at the latest 15 minutes after the oldest queued record and keeps no idle connection, so that the compute can scale to zero (ADR 0001). The raw tables, value representation, idempotency keys, roles, and size estimate are in `docs/adr/0002-raw-storage-model.md`.
-- **Test databases:** tests that need PostgreSQL use the Neon branch `test` of the project. It has the production major version and no production data. Never reset it from its parent; that copies production data. The credentials stay outside the repository. The branch counts against the 1 GB of the project, and its compute uses the same 100 CU-hours: budget at most 20 active hours (5 CU-hours) each month. Tests close their connections when they end, so the compute scales to zero after 5 minutes. Isolation (`crates/ingest/tests/storage/support.rs`): each test works in a schema of its own, `itest_<unix seconds>_<random>`, and a test that needs roles creates roles with the same prefix, because roles are shared by every database of the branch. The SQL of the storage names no schema; the connection sets the `search_path` (production: `raw`), so the schema name is a test parameter and production code has no test branch. The harness removes the schema and the roles after the test, also after a failure, and removes objects of earlier runs that are older than 6 hours. It refuses the production endpoint `ep-young-dawn-bgyaj83l` in any part of the URL before it connects, and refuses a database that has a schema `raw`. At most 8 database tests run at the same time (`.config/nextest.toml`); a hung test stops after 4 minutes. `db/roles.sql` and the cleanup of test roles take one advisory lock, because two changes of the privileges of the database at the same time fail with SQLSTATE XX000 ("tuple concurrently updated"; seen in 4 of 4 parallel runs without the lock). One full run keeps the compute active for about 3 minutes.
-- **Entities and retention:** defined by `VISION.md`; technical browser caches require the same purpose and privacy assessment.
-- **Queries:** prefer SQLx checked query macros for static SQL. Commit `.sqlx` metadata and verify it against the migrated schema. Dynamic SQL needs bound parameters, explicit structural constraints, and integration tests; it does not acquire the same compile-time guarantee. In this project every statement of the storage is a query macro (`.sqlx/`, `mise run sqlx-check`), except the role script and the statements of the SQLx migrator itself. The macros know no `jiff` type, so a bind of a `jiff_sqlx::Timestamp` or of an array with NULL elements uses the override `as _`, and a time column uses the override `AS "name: jiff_sqlx::Timestamp"`. The database tests execute every statement against the migrated schema. The role script `db/roles.sql` is plain SQL that the tests and the lead run through `apply_roles`.
-- **Domain conversion:** validate rows when storage types permit values the domain forbids. A query type check does not establish authorization, isolation, or meaning.
-- **Constraints:** use applicable NOT NULL, CHECK, foreign keys, unique keys, and exclusion constraints. Test rejection and competing writes; read-before-write alone cannot enforce concurrent uniqueness.
-- **Atomicity:** use transactions for atomic operations. Define isolation, locking, or optimistic concurrency from the invariant. Do not publish partial success.
-- **Repeated requests:** define idempotency and outcome reconciliation, including a committed write followed by a lost response. Use keys and uniqueness where needed.
-- **Migrations:** numbered, reviewed migrations. Run SQLx migration tooling or a subcommand using SQLx's own migration support as a separate release step, not an implicit startup effect. Use expand-and-contract compatibility with running prior releases. In this project, `ingest migrate` runs as the Railway pre-deploy command with the role `telemetry_migrator` (ADR 0002; lead decision in §15). `ingest run` only checks that its embedded migrations are applied (ADR 0002). A migration names no role and no schema: the default privileges of `db/roles.sql` give the ingest role its privileges on each new table. A new reason of `raw.unprocessed_record` needs a migration in the same release (ADR 0002).
-- **Recovery:** test empty-database setup, upgrade from supported prior schemas, and restore/roll-forward paths. Application rollback does not restore deleted data. Follow the authorized policy for destructive changes.
-- **Server version:** run the isolated test server on the same PostgreSQL major version as production. Read the production version on adoption and after each platform upgrade (`SHOW server_version`, read-only, or the platform's database image tag) and pin the test server to that major version. Record both versions. A migration test, query metadata check, or catalog snapshot from another major version is not evidence for production. A newer stable major version follows the `DOCTRINE.md` P7 infrastructure rule.
-- **Connection TLS:** enable one SQLx TLS feature that uses the same rustls crypto provider as the rest of the binary. With reqwest `rustls`, that is `tls-rustls-aws-lc-rs` (§7). The default `sslmode=prefer` uses TLS when the server offers it, checks no certificate chain, and fails the connection on a failed handshake instead of falling back to plain text. `sslmode=require` fails without a TLS feature. SQLx also reads `PGSSLMODE` when the URL has no `sslmode`. rustls rejects a server certificate that is not version 3, although `psql` accepts it. Before the first release, check the production `sslmode`, `PGSSLMODE`, and certificate version read-only. In this project `storage::connect_options` sets `sslmode=verify-full` after it parses the URL, so neither the URL nor `PGSSLMODE` can turn the check off. SQLx 0.9.1 builds the rustls configuration with an explicit aws-lc-rs provider and the Mozilla roots of `webpki-roots`, so it does not panic and needs no system certificates. It ignores the libpq parameter `channel_binding` (Neon URLs have `channel_binding=require`) with a warning; it does not use channel binding. A test connects to the test branch by its IP address: the name check fails the handshake, and SQLx returns that error as an I/O error. Neon terminates TLS in its proxy, so `pg_stat_ssl` shows no TLS for the session.
-
-SQLite backup needs its supported backup API, VACUUM INTO, or a proven
-quiescent snapshot with a tested restore. Do not assume a live file copy is
-consistent. Redis, event sourcing, repository traits, and durable queues need
-a current reason; they are not baseline dependencies.
+- **Storage:** PostgreSQL on Neon (Free plan: 1 GB storage, 100 CU-hours each month, scale to zero after 5 minutes, 6 hours of restore history, computes up to 2 CU, 10 branches; <https://neon.com/docs/introduction/plans>). Neon suspends the compute when the CU-hours are used, and rejects writes when the storage is full. The ingest process writes a batch at the latest 15 minutes after the oldest queued record and keeps no idle connection (ADR 0001). ADR 0002 holds the tables, values, idempotency keys, roles, and size estimate.
+- **Test databases:** the Neon branch `test` (ADR 0002, "Test databases"); never reset it from its parent. The connection sets the `search_path` (production: `raw`), so the storage SQL names no schema. At most 8 database tests run at the same time (`.config/nextest.toml`); a hung test stops after 4 minutes. `db/roles.sql` and the cleanup of test roles take one advisory lock (parallel privilege changes fail with SQLSTATE XX000).
+- **Queries:** every storage statement is a checked SQLx query macro, except `db/roles.sql` (run through `apply_roles`) and the SQLx migrator. A bind of a `jiff_sqlx::Timestamp` or of an array with NULL elements uses `as _`; a time column uses `AS "name: jiff_sqlx::Timestamp"`. The database tests execute every statement against the migrated schema. Dynamic SQL needs bound parameters, structural constraints, and integration tests.
+- **Entities and retention:** `VISION.md`.
+- **Constraints and atomicity:** use the database constraints that apply (NOT NULL, CHECK, foreign, unique, exclusion), and test rejection and competing writes; read-before-write alone cannot enforce concurrent uniqueness. Use transactions for atomic operations; never publish partial success. Idempotency: ADR 0002, "Idempotency".
+- **Migrations:** numbered, reviewed SQLx migrations as a separate release step, never at process start: `ingest migrate` is the Railway pre-deploy command with the role `telemetry_migrator`, and `ingest run` only checks that its embedded migrations are applied (ADR 0002). Use expand-and-contract compatibility. A migration names no role and no schema (the default privileges of `db/roles.sql` apply). A new reason of `raw.unprocessed_record` needs a migration in the same release.
+- **Recovery:** test empty-database setup and upgrade from supported prior schemas. Application rollback does not restore deleted data. Restore is Neon's 6-hour history, not tested.
+- **Server version:** the test server has the production major version (§15). Read the production version after each platform upgrade (`SHOW server_version`). Evidence from another major version is not evidence for production.
+- **Connection TLS:** one SQLx TLS feature, `tls-rustls-aws-lc-rs`, with the one rustls provider of the binary (§7). `storage::connect_options` sets `sslmode=verify-full`, so neither the URL nor `PGSSLMODE` can turn the check off. SQLx builds the rustls configuration with an explicit aws-lc-rs provider and the Mozilla roots of `webpki-roots`, so it needs no system certificates. It ignores the libpq parameter `channel_binding` with a warning; it does not use channel binding. rustls rejects a server certificate that is not version 3; check the production `sslmode`, `PGSSLMODE`, and certificate version read-only at a release (ADR 0002, "Not verified"). Neon terminates TLS in its proxy, so `pg_stat_ssl` shows no TLS.
 
 ---
 
 ## 6. Approved dependencies
 
-These are profile baseline lines, not a tested application lockfile. They
-reflect the 13 October 2026 selection. On adoption, verify support, features,
-licences, advisories, and compatibility; pin exact resolved versions and tools.
-Do not install unused conditional packages. New dependencies need a PR rationale
-for necessity, provenance, maintenance, licence, transitive cost, and replacement
-cost. Significant durable choices need short ADRs in the adopting project.
-Routine libraries remain delegated choices; providers, external data transfers,
-added cost, and material lock-in follow the doctrine's escalation rules.
-
-| Dependency                                     | Baseline line             | Why it earns its place                                                           | Approver  | Date       |
-| ---------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------- | --------- | ---------- |
-| axum / tokio                                   | 0.8 / 1                   | HTTP and async runtime                                                           | (default) | (template) |
-| tower / tower-http                             | 0.5 / 0.7                 | Service middleware and static-file delivery                                      | (default) | (template) |
-| serde / serde_json / thiserror                 | 1 / 1 / 2                 | Wire types and typed errors                                                      | (default) | (template) |
-| jiff                                           | 1                         | Semantic time types; the first workspace PR pins the exact resolved version      | Lead      | 2026-11-26 |
-| utoipa / utoipa-axum                           | 6 / 0.3                   | OpenAPI routes and schemas                                                       | (default) | (template) |
-| tracing / tracing-subscriber                   | 0.1 / 0.3                 | Structured backend diagnostics                                                   | (default) | (template) |
-| sqlx / jiff-sqlx, conditional                  | 0.9 / 1                   | Durable data and Jiff database wrappers; TLS feature `tls-rustls-aws-lc-rs` (§5) | Lead      | 2026-11-26 |
-| uuid / rust_decimal, conditional               | 1 / 1                     | Typed identities and exact decimal quantities                                    | (default) | (template) |
-| reqwest, conditional                           | 0.13                      | External HTTP calls; feature `rustls` (aws-lc-rs provider)                       | (default) | (template) |
-| @hey-api/openapi-ts                            | 0.99, pin exact release   | Local client and validator generation                                            | (default) | (template) |
-| zod                                            | 4                         | Executed browser boundary validation                                             | (default) | (template) |
-| react / react-dom / vite                       | 19 / 19 / 8               | SPA and build                                                                    | (default) | (template) |
-| @tanstack/react-router / @tanstack/react-query | 1 / 5                     | Routing and server-state cache                                                   | (default) | (template) |
-| typescript / oxlint / oxlint-tsgolint          | 7 / pin exact / pin exact | Native compiler and type-aware linting (§1)                                      | (default) | (template) |
-| typescript, API-client generator only          | 6, pin exact              | Compiler API for the generator until it supports TypeScript 7 (§2.1)             | (default) | (template) |
-| prettier / vitest                              | 3 / 5                     | Format and frontend unit tests                                                   | (default) | (template) |
-| @playwright/test / @axe-core/playwright        | 1 / 4                     | Browser journeys and accessibility checks                                        | (default) | (template) |
-| proptest, dev                                  | 1                         | Targeted invariant tests                                                         | (default) | (template) |
-| tailwindcss, optional                          | 4                         | Styling when selected by the product                                             | (default) | (template) |
-
-Jiff SQLx values use adapter wrapper types; configure query type overrides
-or annotations deliberately and test their round trips. Utoipa's `uuid`
-and decimal-related features must agree with actual serialization.
-
-Known conflict (lead, 26 November 2026): the baseline names `jiff` 1, but
-utoipa 6.0.0, the newest release, has only the feature `jiff_0_2`. The
-ingest phase has no utoipa dependency, so the conflict does not affect it.
-The first web PR must resolve the utoipa and `jiff` pairing with
-compatibility evidence: a utoipa release with `jiff` 1 support, explicit
-schema overrides for the time types, or a reviewed §13 exception. Reassess
-when utoipa publishes `jiff` 1 support or when the first web PR starts.
-Pin selected Cargo feature sets; avoid enabling everything by convenience.
-Authentication packages and their compatible store remain conditional §2.5
-adoption decisions. Snapshot, mutation, and coverage tools are optional when
-they address a named risk. Their versions belong in the adopting tool pins.
+A new dependency needs a PR rationale for necessity, provenance,
+maintenance, licence, transitive cost, and replacement cost (`DOCTRINE.md`
+P2). Pin the selected Cargo feature sets. A change of a dependency manifest
+needs boundary review.
 
 ### Pinned direct dependencies
 
-`Cargo.lock` pins the resolved versions. Each version below was the latest
-stable release on crates.io on 26 November 2026. Default features are off;
-the listed features are the complete set. `src/main.rs` of `crates/ingest`
-is the only reader of the environment and the command line.
+`Cargo.lock` pins the resolved versions. Default features are off; the
+listed features are the complete set. `src/main.rs` of `crates/ingest` is
+the only reader of the environment and the command line.
 
-| Crate              | Version | Features                                                     | Why it earns its place                                                   | Licence           |
-| ------------------ | ------- | ------------------------------------------------------------ | ------------------------------------------------------------------------ | ----------------- |
-| axum               | 0.8.9   | none                                                         | Router and handler of `GET /health`                                      | MIT               |
-| hyper              | 1.13.0  | `client`, `http1`, `server`                                  | HTTP/1 connection with a header read timeout (`axum::serve` has none); the client of the metrics read of the shortfall check | MIT               |
-| hyper-util         | 0.1.21  | `service`, `tokio`                                           | Tokio I/O and timer adapters, router-to-hyper service adapter            | MIT               |
-| socket2            | 0.6.5   | `all`                                                        | TCP keep-alive with idle time, interval, and probe count on accepted gate sockets (ADR 0001, gate rule 3); `with_retries` needs `all` | MIT OR Apache-2.0 |
-| tokio              | 1.54.1  | `rt-multi-thread`, `net`, `signal`, `time`, `sync`, `macros`, `io-util`, `process` | Runtime, listeners, SIGTERM and SIGINT, connection limits, deadlines, the gate copy (`io-util`), the child process (`process`) | MIT               |
-| tracing            | 0.1.44  | `std`                                                        | Structured log events                                                    | MIT               |
-| tracing-subscriber | 0.3.23  | `fmt`, `std`                                                 | Subscriber, level filter, and writer for the JSON formatter              | MIT               |
-| serde_json         | 1.0.154 | `std`                                                        | Correct JSON encoding of each log line                                   | MIT OR Apache-2.0 |
-| thiserror          | 2.0.21  | `std`                                                        | Error types whose text holds static words only                           | MIT OR Apache-2.0 |
-| jiff               | 1.0.3   | `std`                                                        | `Timestamp` of the record times and of the `ingest_event` records (§10)  | Unlicense OR MIT  |
-| prost              | 0.14.6  | `derive`, `std`                                              | Protobuf decode of the `fleet-telemetry` payloads (ADR 0001)             | Apache-2.0        |
-| prost-types, also build | 0.14.6 | `std`                                                   | `google.protobuf.Timestamp` of the generated types; `build.rs` reads the schema descriptors with it | Apache-2.0 |
-| uuid               | 1.29.3  | `std`                                                        | Typed connection ID of a `connectivity` record (ADR 0002)                | Apache-2.0 OR MIT |
-| prost-build, build | 0.14.6  | none                                                         | Generates the Rust types of `crates/ingest/proto/` in `build.rs`         | Apache-2.0        |
-| protox, build and dev | 0.10.0 | none                                                       | Parses the `.proto` files in Rust, so no `protoc` binary is needed; the tests read the schema with it | MIT OR Apache-2.0 |
-| proptest, dev      | 1.12.0  | `std`                                                        | Property tests of the decode with arbitrary bytes                        | MIT OR Apache-2.0 |
-| sqlx               | 0.9.1   | `postgres`, `runtime-tokio`, `tls-rustls-aws-lc-rs`, `migrate`, `macros`, `uuid`, `json` | PostgreSQL connections (no pool; ADR 0001, "Delivery path", step 6), checked query macros, embedded migrations, TLS with certificate verification (ADR 0001, ADR 0002) | MIT OR Apache-2.0 |
-| jiff-sqlx          | 1.0.0   | `postgres`                                                   | `timestamptz` and `timestamptz[]` binds of `jiff::Timestamp` (§10)        | Unlicense OR MIT  |
-| zeromq             | 0.7.0   | `tcp-transport`, `tokio-runtime`                             | The ZMQ SUB socket of the reader (ADR 0001, "Transport"); pure Rust, no libzmq | MIT               |
-| futures-util       | 0.3.34  | none                                                         | `StreamExt::next` on the monitor stream of the `zeromq` socket, a `futures` stream | MIT OR Apache-2.0 |
-| getrandom          | 0.4.3   | none                                                         | Random bytes without a panic: the run ID of `raw.ingest_event` and the jitter of the retry cadence | MIT OR Apache-2.0 |
+| Crate | Version | Features | Use | Licence |
+| ----- | ------- | -------- | --- | ------- |
+| axum | 0.8.9 | none | `GET /health` | MIT |
+| hyper | 1.13.0 | `client`, `http1`, `server` | HTTP/1 with a header read timeout; client of the metrics read | MIT |
+| hyper-util | 0.1.21 | `service`, `tokio` | Tokio and router adapters for hyper | MIT |
+| socket2 | 0.6.5 | `all` | TCP keep-alive on gate sockets (ADR 0001, gate rule 3) | MIT OR Apache-2.0 |
+| tokio | 1.54.1 | `rt-multi-thread`, `net`, `signal`, `time`, `sync`, `macros`, `io-util`, `process` | Runtime, listeners, signals, deadlines, gate copy, child process; tests add `test-util` | MIT |
+| tracing | 0.1.44 | `std` | Structured log events | MIT |
+| tracing-subscriber | 0.3.23 | `fmt`, `std` | Subscriber and writer of the JSON formatter | MIT |
+| serde_json | 1.0.154 | `std` | JSON encoding of each log line | MIT OR Apache-2.0 |
+| thiserror | 2.0.21 | `std` | Error types with static text only | MIT OR Apache-2.0 |
+| jiff | 1.0.3 | `std` | `Timestamp` of records and events (§10) | Unlicense OR MIT |
+| prost | 0.14.6 | `derive`, `std` | Protobuf decode (ADR 0001) | Apache-2.0 |
+| prost-types, also build | 0.14.6 | `std` | `google.protobuf.Timestamp`; schema descriptors in `build.rs` | Apache-2.0 |
+| uuid | 1.29.3 | `std` | Typed connection ID (ADR 0002) | Apache-2.0 OR MIT |
+| prost-build, build | 0.14.6 | none | Rust types of `crates/ingest/proto/` | Apache-2.0 |
+| protox, build and dev | 0.10.0 | none | `.proto` parser in Rust, no `protoc` | MIT OR Apache-2.0 |
+| proptest, dev | 1.12.0 | `std` | Property tests of the decode | MIT OR Apache-2.0 |
+| sqlx | 0.9.1 | `postgres`, `runtime-tokio`, `tls-rustls-aws-lc-rs`, `migrate`, `macros`, `uuid`, `json` | Connections without a pool, checked queries, migrations, verified TLS (§5) | MIT OR Apache-2.0 |
+| jiff-sqlx | 1.0.0 | `postgres` | `timestamptz` binds of `jiff::Timestamp` (§10) | Unlicense OR MIT |
+| zeromq | 0.7.0 | `tcp-transport`, `tokio-runtime` | ZMQ SUB socket (ADR 0001); pure Rust | MIT |
+| futures-util | 0.3.34 | none | `StreamExt::next` on the `zeromq` monitor stream | MIT OR Apache-2.0 |
+| getrandom | 0.4.3 | none | Run ID and retry jitter without a panic | MIT OR Apache-2.0 |
 
-hyper and hyper-util replace the axum features `http1` and `tokio`, which
-pulled in the same two crates. `Cargo.lock` has 56 packages, as before
-the change. The other baseline lines that the table above does not list
-are not dependencies yet. The first change that uses one pins its exact
-version here.
+Facts of the dependency tree:
 
-Protobuf decode (issue #10): `Cargo.lock` now has 118 packages. Most of
-the new ones are build-only or dev-only: `prost-build` and `protox` run
-only in `build.rs` and in the tests; they are not part of the binary. No
-crate of the tree builds C code, and no `protoc` binary is needed
-(`cargo tree -i cc` finds no package). `deny.toml` has one licence
-exception: `foldhash` (Zlib), which `prost-build` needs through
-`petgraph`. Two duplicate versions are new, at the warning level of
-`cargo deny`: `hashbrown` 0.15 (`petgraph`) next to 0.17, and `syn` 2
-(`prost-derive`) next to 3.
-
-Gate and child supervision (issue #11): `socket2` and the tokio features
-`io-util` and `process` are new; the tests also use the tokio feature
-`test-util` (a paused clock). tokio already pulled `socket2` 0.6.5 with
-`all` through its feature `net`, so `Cargo.lock` gets no new package; the
-direct dependency keeps `all` when that transitive path changes.
-`Cargo.lock` has 118 packages, as after the decode change.
-
-Storage (issue #12): `Cargo.lock` now has 238 packages. sqlx brings the
-rustls stack with the aws-lc-rs provider and the macros. The storage uses
-no `SQLx` pool.
-`Cargo.lock` also lists `sqlx-mysql`, `sqlx-sqlite`, `libsqlite3-sys`, and
-`ring`: optional dependencies of `sqlx-macros-core` that Cargo records but
-does not build (`cargo tree -i ring --target all` and `cargo tree -i
-libsqlite3-sys --target all` find no package). osv-scanner reads
-`Cargo.lock`, so it can report these crates; they are not in the binary.
-`cargo tree -i aws-lc-rs` shows the one provider, through rustls.
-
-C code: `aws-lc-sys` 0.47.0 compiles the AWS-LC C library with the `cc`
-crate and links it statically. On macOS (aarch64) and on Linux x86_64 and
-aarch64 the crate has pre-generated bindings, so the build needs a C
-compiler only: no CMake, Go, Perl, NASM, or `bindgen` (checked on macOS
-with the Xcode command line tools; the build output shows the `cc` build
-and `link_kind=static`). The Linux image build needs a C compiler in its
-builder stage, for example `gcc` of the official Rust image; the runtime
-image needs no TLS library. The CI workflow (§3) compiles and links
-`aws-lc-sys` on linux/amd64, on the GitHub Actions runner. The build in the
-builder stage of the image is not verified yet (§13, the image build gap).
-The crate looks for an installed AWS-LC first; none is installed here.
-
-Licences: `deny.toml` has one exception for each new crate with a licence
-outside the allow list: ISC (`aws-lc-rs`, `aws-lc-sys`, `rustls-webpki`,
-`untrusted`) and CDLA-Permissive-2.0 (`webpki-roots`, the Mozilla root
-certificates as data). `foldhash` 0.2 (Zlib) is now part of the binary
-through the statement cache of sqlx; the existing `foldhash` exception
-covers it.
-
-Retained older transitive version: matchit 0.8.4 (0.8.6 exists), because
-axum 0.8.9 requires `=0.8.4`. Reassess with the next axum release.
-
-Pipeline (issue #13): `Cargo.lock` now has 249 packages. `zeromq` brings
-`async-trait`, `asynchronous-codec`, `futures`, `futures-macro`, `scc`,
-`saa`, `sdd`, and `tokio-util`; the hyper feature `client` brings `want`
-and `try-lock`. `futures-util` and `getrandom` 0.4.3 were already in the
-tree. Every new licence is on the allow list of `deny.toml`; no new
-exception. `zeromq` uses the `log` crate. The process installs no `log`
-logger, so its log records go nowhere and cannot reach the JSON log
-(`STACK.md` §8). `zeromq` has no `unsafe` in its `src/` (ADR 0001,
-"Crates", checked again for 0.7.0); its concurrent maps `scc`, `saa`, and
-`sdd` use `unsafe` inside; first-party code needs none. The test helper `examples/fake_fleet_telemetry.rs` uses only these
-crates and is not part of the image.
+- hyper and hyper-util replace the axum features `http1` and `tokio`.
+  `prost-build` and `protox` run only at build time and in the tests.
+- Only `aws-lc-sys` compiles C code (AWS-LC, linked statically). With its
+  pre-generated bindings, the build needs only a C compiler (`gcc` in the
+  builder stage); the runtime image needs no TLS library.
+- One rustls provider (`cargo tree -i aws-lc-rs`). `Cargo.lock` also lists
+  `sqlx-mysql`, `sqlx-sqlite`, `libsqlite3-sys`, and `ring`, which Cargo
+  does not build; osv-scanner can report them.
+- Licence exceptions are in `deny.toml`.
+- matchit stays at 0.8.4, because axum 0.8.9 requires `=0.8.4`. Reassess
+  with the next axum release.
+- `zeromq` logs through the `log` crate; the process installs no `log`
+  logger, so these records cannot reach the JSON log (§8). `zeromq` has no
+  `unsafe` in its `src/`; its maps `scc`, `saa`, and `sdd` use `unsafe`
+  inside. First-party code needs none.
 
 ---
 
 ## 7. Stack-specific reject-list additions
 
-- First-party unsafe code outside a reviewed §13 exception.
-- Production unwrap, expect, panic, todo, or unimplemented paths used for ordinary failures; unchecked indexing or arithmetic that can violate accepted input bounds.
-- Lint suppression without a narrow reason; changing checks only to obtain a pass.
-- Bare `String`, `Uuid`, or integer entity IDs across crate or API boundaries; use one newtype per entity. Binary floating-point values for exact quantities.
-- Deserialization that bypasses domain invariants; unchecked wire-to-domain casts, silent loss of precision, or default facts without requirements.
-- TypeScript any, double casts, or ts-ignore/ts-expect-error used to bypass required validation. A justified compiler limitation needs a precise reason and review.
-- Raw API fetches or handwritten duplicate wire contracts outside the API-client boundary; manual edits to generated artifacts.
-- Broad untyped domain error signatures that erase required error handling; anyhow may be used for startup/tooling context, not as the domain error model.
-- println, eprintln, or dbg in shipped server paths; public diagnostics containing secrets, personal data, or whole payloads. Export tools write to an explicit file path.
-- Ambient time, environment, filesystem, or random access in domain logic; unvalidated configuration scattered across modules.
-- Unbounded queues, retries, response bodies, or concurrency; outbound/database operations without defined deadlines.
-- Blocking I/O or heavy CPU work on async request execution paths; synchronous lock guards across await; unowned spawned tasks or silently discarded errors/futures.
+- First-party unsafe code; production unwrap, expect, panic, todo, or unimplemented for ordinary failures; unchecked indexing or arithmetic that can violate accepted input bounds.
+- Lint suppression without a narrow reason; a check changed only to obtain a pass.
+- Bare `String`, `Uuid`, or integer entity IDs across crate or API boundaries (use one newtype per entity); binary floating point for exact quantities.
+- Deserialization that bypasses invariants; unchecked wire casts, silent loss of precision, or invented default facts.
+- Broad untyped error signatures; anyhow only for startup or tooling context.
+- println, eprintln, or dbg in shipped paths; diagnostics with secrets, personal data, or whole payloads.
+- Ambient time, environment, filesystem, or random access in domain logic; unvalidated configuration across modules.
+- Unbounded queues, retries, response bodies, or concurrency; outbound or database operations without deadlines.
+- Blocking work on async paths; synchronous lock guards across await; unowned spawned tasks or silently discarded errors or futures.
 - Unbound SQL interpolation or unchecked SQL safety assertions.
-- Two rustls crypto providers in one binary, for example SQLx `tls-rustls-ring-webpki` together with reqwest `rustls` (aws-lc-rs). rustls panics when a certificate verifier is built without an explicit provider, so `sslmode=verify-ca` or `verify-full` stops the process. Check `cargo tree -i ring` and `cargo tree -i aws-lc-rs` after a TLS feature change.
-- useEffect for server-data fetching, duplicate global query stores without need, or auth-scoped cache reuse across users/tenants.
-- Host-local timezone arithmetic, invented instants for date-only values, or manual UTC-offset calculations (§10).
+- Two rustls crypto providers in one binary (for example SQLx `tls-rustls-ring-webpki` with reqwest `rustls`): rustls then panics when `sslmode=verify-ca` or `verify-full` builds a verifier. Check `cargo tree -i ring` and `cargo tree -i aws-lc-rs` after a TLS feature change.
+- Host-local timezone arithmetic, invented instants for date-only values, or manual UTC offsets (§10).
 
-Scope tests and tooling according to their contracts. Supported platform APIs
-and justified lossless operations do not need blanket bans. New frontend
-state frameworks require a current reason rather than an automatic prohibition.
+Scope tests and tooling by their contracts. Supported platform APIs and
+justified lossless operations need no blanket ban.
 
 ---
 
 ## 8. Logging & privacy
 
-Use tracing with tracing-subscriber JSON output in production and a readable
-development formatter. Carry safe request correlation through async spans.
-Allowlist fields. Apply the allowlist to span fields as well as event fields,
-because request correlation puts data on spans. Avoid automatic Debug output of complete arguments, DTOs,
-configuration, headers, and payloads. Redact secret types and test redaction.
-Create the request identifier inside the panic containment of the request: a
-random identifier generator can panic when the operating system gives no
-random bytes. Work that several requests share has no single request
-identifier; record that gap instead of borrowing the first caller's span.
-
-Define diagnostic access, retention, cardinality, and resource limits. Select
-a browser diagnostic mechanism explicitly; the Rust logger does not cover
-browser failures. No external crash reporter or telemetry exporter is enabled
-by default. Assess new data flows and obtain required authority before adding
-one. Keep secrets out of source history, images, generated files, and browser
-bundles. Validate configuration in one startup boundary.
+tracing with the tracing-subscriber JSON formatter only (§13, ADR 0009).
+Allowlist the fields of events and spans. No automatic Debug output of
+arguments, configuration, headers, or payloads. Redact secret types and
+test the redaction. Carry safe correlation through spans. Create a request
+identifier inside the panic containment of the request (a random generator
+can panic); work that several requests share has no single identifier, so
+record that gap. Define diagnostic access, retention, cardinality, and
+resource limits. ADR 0001, "Logging", holds the log rules of the
+ingest process. No external crash reporter or telemetry exporter is
+enabled; a new data flow needs an assessment and the required authority.
+Keep secrets out of source history, images, and generated files. Validate
+configuration in one startup boundary.
 
 ---
 
 ## 9. Background & lifecycle
 
-Every background task needs an owner, observable failure, and shutdown policy.
-Use JoinSet, tracked handles, or suitable cancellation mechanisms. Bound request,
-upstream, database, and queue work. Define retry count, backoff, jitter, total
-deadline, and operation safety; make time and randomness controllable in tests.
+Every background task has an owner, an observable failure, and a shutdown
+policy. Bound all external work. Define retry count, backoff, jitter, total
+deadline, and operation safety; make time and randomness controllable in
+tests. Dropping a future does not undo committed effects, and a timeout on
+waiting does not prove that work stopped. Implement and test a shutdown
+deadline; after it, end the process with `shutdown_background` or
+`shutdown_timeout`, because a dropped Tokio runtime waits without a limit
+for its blocking tasks. Treat a failed signal-handler set-up the same way
+for every signal, and log it. At shutdown, stop accepting work, drain or
+cancel owned operations, and define the outcome at the deadline. Work
+promised to survive a restart needs durable ownership and recovery.
 
-A client disconnect does not guarantee cancellation. Dropping a future does
-not undo committed or external effects. Already-running spawn_blocking work
-cannot normally be aborted; limit parallelism and define its completion or
-cooperative stop policy. A timeout on waiting does not prove work stopped.
-
-A cache or a request-coalescing map that runs one shared lookup per key as a
-spawned task owns that task. Bound it with deadlines. Remove its entry with a
-drop guard inside the task, so a panic after every caller has left cannot keep
-the key in memory or cache the failure. Drive expiry from a clock that tests
-can pause (`tokio::time::Instant`); a cache crate with its own clock source
-makes expiry tests slow or nondeterministic. Choose and test the time to live
-of a failure separately from the time to live of a success. The drop guard
-runs on a panic only with `panic = "unwind"`.
-
-Implement and test a shutdown deadline in addition to Axum graceful shutdown.
-Dropping a Tokio runtime waits without a limit for its blocking tasks, so end
-the process with `shutdown_background` or `shutdown_timeout` after the deadline.
-Treat a failed signal-handler set-up the same way for every signal, and log it.
-Stop accepting work, drain or cancel owned operations, and define the outcome
-at the deadline. Periodic jobs and real-time connections are allowed for an
-explicit product need with bounded resource use and authorization.
-
-Work promised to survive a restart requires durable ownership and recovery.
-An in-memory task is insufficient. Evaluate a database-backed job mechanism
-before adding another service, but do not prescribe a custom queue without
-assessing concurrency, retries, idempotency, and maintenance.
-
-In this project, `ingest run` owns these tasks (`crates/ingest/src/lifecycle.rs`):
+`ingest run` owns these tasks (`crates/ingest/src/lifecycle.rs`):
 
 | Task | Watchdog limit | Stop |
 | ---- | -------------- | ---- |
@@ -819,64 +398,41 @@ In this project, `ingest run` owns these tasks (`crates/ingest/src/lifecycle.rs`
 | Log of the events | none | Aborted after the last log lines |
 | Health server | none | At once, in parallel, deadline 3 s |
 
-A task that ends by itself starts the shutdown, and the exit code is 1.
-The retry cadence of the writer and its deadlines are in ADR 0001
-("Delivery path", step 5, and "Decisions of the pipeline change"). The
-in-memory queue does not survive a restart; ADR 0001 accepts this loss
-and rejects a durable spool for now ("Key alternatives"). The tests
+A task that ends by itself starts the shutdown, and the exit code is 1. ADR
+0001 holds the retry cadence of the writer and its deadlines ("Delivery
+path and bounded buffering", "Decisions of the pipeline change"). The tests
 control the time with the paused Tokio clock, and the jitter with an
 injected function.
+
+The in-memory queue does not survive a restart. A restart during a database
+outage longer than 15 minutes can lose the whole queue, at most 64 MiB.
+This loss is accepted, and there is no durable spool (ADR 0001, "Key
+alternatives").
 
 ---
 
 ## 10. Time & timezones
 
-- **Instant:** Jiff Timestamp; PostgreSQL timestamptz when persisted; validated RFC 3339 UTC with Z on the wire. Define supported precision and range.
-- **Calendar value:** civil Date/Time and separate date-only/local-time wire fields. Store an IANA zone and rule for recurring local schedules. Use Zoned for zone-aware computation. Timestamptz alone does not preserve the original zone rule.
-- **Duration:** SignedDuration for elapsed quantities and Span for calendar arithmetic. Define wire units/format separately; never silently treat calendar months or days as fixed seconds. Measure elapsed time with a monotonic clock.
-- **Conversions:** use Jiff timezone APIs, declare the timezone database source/update policy, and specify DST gap/overlap handling. No manual offsets or host-local assumptions.
-- **Browser:** validate wire values before use. Use Date only for appropriate instants and Intl with explicit display zones. Use Temporal only with verified target-browser support or an approved polyfill; retain date-only and calendar semantics otherwise.
-- **Numbers:** exact decimals and integers outside JavaScript's safe integer range cross JSON as strings. A bounded small integer MAY remain numeric if the contract enforces its bounds. Validate DB/wire/domain range differences.
-- **Tests:** pass fixed time into domain functions; use an injectable process clock where needed. Test relevant DST, precision, expiry, retry, and date-only cases. Jiff SQLx wrapper conversion needs round-trip evidence.
+- **Instant:** Jiff `Timestamp`; PostgreSQL `timestamptz` when persisted; validated RFC 3339 UTC with `Z` on the wire. Define the supported precision and range.
+- **Duration:** `SignedDuration` for elapsed quantities and `Span` for calendar arithmetic. Never silently treat calendar months or days as fixed seconds. Measure elapsed time with a monotonic clock.
+- **Tests:** pass fixed time into the functions under test; use an injectable process clock where needed. Test the relevant precision, expiry, and retry cases. The Jiff SQLx wrapper conversion needs round-trip evidence.
 
-Use one first-party domain time abstraction by default. Transitive dependencies
-may use other libraries; their presence does not require rewriting them.
+Use one first-party time abstraction. Transitive dependencies may use other
+libraries.
 
 ---
 
 ## 11. Design guidelines & UX thresholds
 
-- **Design authority:** WCAG 2.2 AA and native HTML semantics. Semantic elements first; ARIA only where needed.
-- **Thresholds:** exercise text contrast at 4.5:1 for normal text and 3:1 for large text; pointer targets at the WCAG 2.5.8 24 by 24 CSS pixel threshold or a documented applicable exception; visible keyboard focus on interactive elements.
-- **Inputs:** full keyboard operability, sensible DOM/focus order, accessible names, and announced validation/error states.
-- **Browser evidence:** Playwright journeys against the release service, axe checks on critical pages/states, and keyboard-only operation. Declare supported browsers and viewports.
-- **Deterministic journeys:** when the service depends on external sources, run the journeys in `verify` against a test server binary that mounts the real router, the real middleware, and the built SPA with fake adapters for the external sources. A journey against live external services is a separate live check, not part of `verify`.
-
-A component or CSS library does not prove conformance. Automated checks miss
-accessibility issues; identify remaining checks and evidence. An owner-only
-test needed for safe release blocks merge, but seek an automated equivalent
-instead of making owner testing routine. Preserve user input during upgrades,
-retry, offline transitions, and recoverable errors where required by the product.
+The design guidelines and UX thresholds are in `docs/stack-web-profile.md`, §11.
 
 ---
 
 ## 12. Best practices source
 
-Consult current, version-relevant official documentation for uncertain APIs
-and material decisions. Use the documentation tools available in the current
-host. Cite the relevant sections in decisions or reviews; do not require every
-role to repeat unchanged research.
-
-- [Rust edition guide](https://doc.rust-lang.org/edition-guide/rust-2024/index.html) and [Clippy](https://rust-lang.github.io/rust-clippy/master/index.html).
-- [Axum](https://docs.rs/axum/), [Tower HTTP](https://docs.rs/tower-http/), and [Tokio shutdown](https://tokio.rs/tokio/topics/shutdown).
-- [SQLx](https://docs.rs/sqlx/), [Jiff SQLx](https://docs.rs/jiff-sqlx/), and [PostgreSQL](https://www.postgresql.org/docs/).
-- [Serde](https://serde.rs/), [Jiff](https://docs.rs/jiff/), [utoipa](https://docs.rs/utoipa/), and [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457).
-- [Hey API validators](https://heyapi.dev/docs/openapi/typescript/plugins/sdk#validators), [React](https://react.dev/), [Vite](https://vite.dev/), and [TanStack](https://tanstack.com/).
-- [Nextest](https://nexte.st/), [Playwright accessibility](https://playwright.dev/docs/accessibility-testing), and [cargo-deny](https://embarkstudios.github.io/cargo-deny/checks/index.html).
-- [OWASP CSRF guidance](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) and [WCAG 2.2](https://www.w3.org/TR/WCAG22/).
-
-Select the pinned version in documentation where available. Manifest support,
-latest documentation, and a tested application combination are different facts.
+The list of documentation sources is in `docs/stack-web-profile.md`, §12.
+Consult current official documentation for the pinned version (`DOCTRINE.md`
+P2).
 
 ---
 
@@ -885,474 +441,204 @@ latest documentation, and a tested application combination are different facts.
 Do not weaken a rule or check to make a change pass. The responsible lead
 resolves exceptions within project authority, with an independent reviewer.
 The change author must not approve their own weaker acceptance or checks.
-Escalate changes beyond authority and unresolved material risks to the owner.
-Record significant durable choices in short docs/adr records in the adopting
-project; do not require an ADR for every ordinary default. Backlog and history
-remain in GitHub.
+Escalate changes beyond authority and unresolved material risks to the
+owner. Each exception has an ADR; the ADR names the decider and the
+approval.
 
-| Rule / scope | Reason and consequences | Compensating evidence | Responsible lead / reviewer / approval | Expiry or reassessment |
-| ------------ | ----------------------- | --------------------- | -------------------------------------- | ---------------------- |
-| §3, §14: vulnerability check of the built ingest image layer, the Rust toolchain, and the mise tools | The earlier exception for all freshness and vulnerability checks ends with this first application PR. `mise run vuln` now scans the crates in `Cargo.lock` and both runtime `FROM` images of `ingest/Dockerfile` as archives (crane and `osv-scanner scan image --archive`, no container runtime). Three surfaces stay without a scanner. (1) The image that Railway builds: it stays in the Railway registry, and no local container runtime can build it. The CI job `image-check` (issue #14) builds an equal image on the runner, but does not scan it yet. The packages that `apt-get` adds or upgrades during the build (`ca-certificates`, `libstdc++6`, and the `apt-get upgrade` results) are therefore not scanned. (2) The Rust toolchain and the mise tools: no advisory database that osv-scanner or cargo-deny reads has a record for the Rust toolchain, and no scanner reads the installed tool binaries. (3) The C code that is linked statically into `/fleet-telemetry`: libzmq 4.3.4 (upstream Dockerfile) with its own copies of tweetnacl and SHA-1, and the librdkafka 2.3.0 bundle of `confluent-kafka-go/v2` v2.3.0 with OpenSSL 3.0.11, libcurl 7.86.0, zlib 1.2.13, zstd 1.5.2, and lz4 1.9.3. libsodium is not linked: the upstream Dockerfile builds libsodium 1.0.19, but the libzmq build uses its tweetnacl copy (no `--with-libsodium`). Cyrus SASL is not linked. At each start, in every configuration, the ELF `_init` runs the OpenSSL CPU feature detection `OPENSSL_cpuid_setup` (reads the environment variable `OPENSSL_ia32cap` and the `CPUID` instruction), and the Go package `zmq4` creates a libzmq context (allocation, process ID, one `eventfd`; no random source); neither takes network input. Since issue #14, the `zmq` dispatcher is on: libzmq binds a PUB socket on 127.0.0.1:5284, starts its I/O thread, and parses ZMTP (the greeting, also of ZMTP 1.0 and 2.0 peers, the NULL handshake, `PING`, subscriptions, and frame headers) from local peers only. The deployment test (`crates/ingest/tests/deployment.rs`) requires `zmq.addr` `tcp://127.0.0.1:5284`, and the only peer is `ingest`; a local process of the same user could subscribe and read every record, but that user can already read the records and the TLS key (`docs/security/image-advisories.md`, "Code that runs with the `zmq` dispatcher"). All other code of the bundle components runs only behind the `kafka` dispatcher, which the deployment test rejects (`docs/security/image-advisories.md`, "Static C libraries"). Consequence: a known vulnerability in these surfaces is found only by the manual comparison. | In each PR that runs the vulnerability check, record: the Rust toolchain against the GitHub security advisories of `rust-lang/rust`; each mise tool against OSV (crates.io or Go package) and the GitHub security advisories of its repository; the `apt-get` packages against OSV for `Debian:13`; each static C component of `/fleet-telemetry` against OSV by release commit, or the reason why a component is not compared one by one (`docs/security/image-advisories.md`, "Static C libraries"). Compare the OpenSSL and libcurl records one by one before a change enables the `kafka` dispatcher. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9); surface (3): qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17); the issue #14 change (runtime images, `zmq` listener, triggers): qa-enforcer, [PR #23](https://github.com/jonikanerva/telemetry/pull/23), review round 2. | Reassess when the built image can be downloaded, when a scanner covers the toolchain, the tools, or the static C libraries, when a change enables another dispatcher or binds libzmq to another address, or by 2027-01-25 (the expiry of the Debian 13 ignore entries), whichever comes first. The earlier trigger "a container build check" is met with the CI job `image-check` (issue #14). Follow-up declined by the owner for now (owner decision of 27 November 2026: keep the present scan scope): scan the built image in that job (`docker save` and `osv-scanner scan image --archive` with both ignore files), which would cover surface (1). The reassessment triggers above stay. |
-| §3: reviewed ignore files of the image scan | `osv-scanner scan image` reports advisories that do not affect this deployment, or that have no fix. The ignore files `docs/security/osv-scanner-tesla-fleet-telemetry.toml` (33 Go groups and the Debian 12 packages of the upstream image) and `docs/security/osv-scanner-debian.toml` (69 Debian 13 groups) hide them, so that `vuln` fails only on new or undecided findings. Consequence: an ignored advisory that later gets a Debian fix or a KEV listing is not shown until its entry expires. | Each entry names its decision in `docs/security/image-advisories.md` and has an expiry date. The deployment facts of the entries are checked by `crates/ingest/tests/deployment.rs` (dispatchers, `zmq.addr`, metrics host, no `USER` line, the `setpriv` line), by the CI job `image-check` (credentials, libraries of `ingest`), and by `vuln` for the three facts that no other check holds (`docs/security/image-advisories.md`, "Ignore files and deployment facts"). `vuln` fails when it did not scan exactly two runtime images. A build that runs the `apt-get` step installs the Debian fixes of the build date. A cached layer of that step skips the upgrade, and the Railway cache behaviour is not verified; the post-release check of §15 reads the installed package versions from the build log and detects a skipped step. The KEV comparison stays manual. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17), [PR #23](https://github.com/jonikanerva/telemetry/pull/23), and [PR #30](https://github.com/jonikanerva/telemetry/pull/30); the smaller checks of the deployment facts: qa-enforcer, [PR #36](https://github.com/jonikanerva/telemetry/pull/36). | Go entries expire on 2027-02-24, Debian 13 entries on 2027-01-25. Reassess earlier with a new upstream release, a base image change, a broken deployment fact, or a KEV listing. |
-| §8: readable development formatter | The process has only the JSON formatter. One formatter gives one redaction path: the field allowlist exists once, and a second formatter cannot leak a field that the JSON formatter redacts. Nothing needs readable logs yet. Consequence: developers read the logs with `jq`. | The JSON formatter and its redaction tests in `crates/ingest/src/logging.rs`. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9). | Reassess when a developer workflow needs readable logs, and with the first web PR. |
-| §1, §14: runtime tests on linux/amd64 before merge | The development machine is macOS arm64. The CI workflow (§3) runs the tests on linux/amd64 against PostgreSQL on the runner, but not in the container: `ingest` is not PID 1 there, no Railway proxy is in front of the gate, and the tests that need Neon do not run there. The ingest process has platform-dependent code: TCP keep-alive options, PID 1 signal handling and child reaping, and the child process. Consequence: a Linux-only runtime fault that shows only in the container, as PID 1, behind the Railway proxy, or in a test that needs Neon shows only after deployment. CI runs the database tests against PostgreSQL 18.7 on the runner with `sslmode=verify-full` and a test CA (§3), except the six tests that need Neon; these and the Neon TLS path run only on macOS. Scope: until the first deployment that starts `ingest`. Until then the image does not contain the binary, the gate stays closed, and `/health` answers 503. | Before merge: a green run of `mise run ci` on linux/amd64 for the PR (§3): Clippy with `-D warnings`, the locked release build, and the nextest suite and the doctests without the tests that need Neon. Check 1 below is now produced by CI for each PR, without the tests that need Neon; it replaces the earlier Clippy step for `x86_64-unknown-linux-gnu` in `mise run lint`. The tests that need Neon run only locally, on macOS (§3). Required evidence of the deployment change (also in ADR 0001, "To verify at first deployment"): check 1 and the container part of checks 2, 3, and 6 before the merge (CI jobs `ci` and `image-check`), and checks 2 to 6 on Railway after the release (`docs/ingest-release.md`): (1) `cargo nextest run --workspace --locked` passes on linux/amd64: CI produces this without the tests that need Neon, and the deployment PR links the green CI run of its head. (2) `ingest` is PID 1 (on Railway: PID 2 under the init of Railway). On a redeploy, the log of the old deployment shows `shutdown_started` with reason `SIGTERM`, `gate_stopped`, `child_killed` with `exit_signal` 9, the `stopped` event, and `shutdown_complete` within `drainingSeconds`, and no `task_stop_timeout` and no `gate_connections_open` (PR #24). (3) After at least three child exits and restarts, the process table of the container has no zombie (`ps` state `Z`). (4) After a forced end of `ingest` (a watchdog exit or SIGKILL of `ingest`), the container ends, Railway restarts it, a new `started` event follows, and no `fleet-telemetry` process survives without `ingest`. (5) Every `gate_connection_closed` event of a normal connection has `socket_options` `set`, `keepalive` `15/15/9`, and `nodelay` `true` (none has `failed`), and the idle dead-peer case closes in about 150 s; if the Railway proxy terminates TCP, `ss -tio` in the container shows the keep-alive timers, or check 1 covers them. (6) `fleet-telemetry` starts with an empty environment, and `/proc/<child pid>/fd` has no listener of `ingest`. Since issue #14, the CI job `image-check` runs checks 2 (without a database, so the `stopped` event is not stored and the exit code is 1), 3, and 6 against the built image on linux/amd64 before merge, without the Railway proxy and without Railway (`scripts/image-check.sh`). It runs under Docker without an init, where `ingest` is PID 1; on Railway an init is PID 1 and `ingest` is PID 2 (observed at the release of 27 November 2026; ADR 0001, "Process tree on Railway"), so the signal forward and the orphan reaping of the init, and check 4 (now possible on purpose by SIGKILL of PID 2), stay Railway checks. Since issue #29, `image-check` also runs the image under the init of Docker (`docker run --init`, tini): the process tree with `ingest` as PID 2, the credentials, the read of `/proc/1/environ`, and SIGTERM through an init. tini is not the init of Railway, so the Railway checks stay. The deployment PR still records checks 2 to 5 on Railway after the release (`docs/ingest-release.md`). Check 2 on Railway: at the release of PR #30 (27 November 2026, deployment `dcda346d-1934-4054-a25b-5a32cc286c6d`), the init forwarded SIGTERM, and the previous deployment logged `shutdown_started`, `gate_stopped`, `child_killed`, a final `flushed`, and `shutdown_complete` within 2 s, with no `task_stop_timeout`, `gate_connections_open`, or `flush_incomplete` (ADR 0001, "To verify at first deployment"). Check 6 is closed by the CI job `image-check` for Docker: on Railway the `railway ssh` session (UID 0) cannot read the environment of a process of UID 10001, so check 6 has no Railway record. | Lead: Claude Code. Approving independent reviewer: qa-enforcer, [PR #18](https://github.com/jonikanerva/telemetry/pull/18); CI as the source of check 1: qa-enforcer, [PR #21](https://github.com/jonikanerva/telemetry/pull/21); `image-check` as the container evidence (issue #14): qa-enforcer, [PR #23](https://github.com/jonikanerva/telemetry/pull/23), review round 1. | Ends when the release records checks 1 to 5 (`docs/ingest-release.md`) and check 6 has the stated CI evidence (`image-check`). Check 2 is recorded (release of PR #30). Still open: check 3 on Railway (the three child exits), check 4, and check 5 on vehicle connections with the dead-peer bounds. Check 4 (a forced end of `ingest`) was not run at the releases of 27 November 2026. On Railway, `ingest` is PID 2, so a SIGKILL from `railway ssh` can produce check 4 on purpose (`docs/ingest-release.md`, section 3.3). Reassess on 2027-02-28 if it is still open. Reassess also when CI can run the tests that need Neon. |
-| §14: build and test of the ingest image before merge | No local container runtime is available to the lead. Since issue #14, the CI job `image-check` builds `ingest/Dockerfile` with Docker on linux/amd64 and checks the running container (§3). The Railway build stays unverified before merge: another builder and cache, the Railway settings, the TCP proxy, and the healthcheck run only after the merge. | Before merge: a green `image-check` job of the PR head. After release: the checks of `docs/ingest-release.md`; on failure, the recovery path there. | Lead: Claude Code. Approval: owner, with the adoption PR. Change of the compensating evidence (issue #14): qa-enforcer, [PR #23](https://github.com/jonikanerva/telemetry/pull/23), review round 1. | Reassess when Railway documents its Dockerfile build, or when the repository can build with the Railway builder before merge. |
-| §3: scan of the builder image `rust:<version>-slim-trixie` | Proposed with issue #14. Approved by the independent reviewer (last column). The owner accepted the present scan scope on 27 November 2026: the builder image is not scanned. The build stage needs the official Rust image (Rust, gcc, libc6-dev, binutils). Only the `ingest` binary leaves the stage; no Debian package of the builder image reaches the final image. `osv-scanner scan image` of `rust:1.100.0-slim-trixie` on 27 November 2026 reports 66 affected package entries (for example binutils 2.44-3 with 69 groups, gcc-14, glibc, openssl, perl, sqlite3). Most are parser or library flaws in tools that read only the trusted source of this repository. A triage of each entry would cost more than it protects. Consequence: a vulnerability in the compiler or linker that changes the produced binary is not found by a scanner. The binary links glibc and libgcc_s dynamically from the final image, which `vuln` scans; it contains the static start files of glibc from libc6-dev and the C code of `aws-lc-sys` that gcc compiles. | The tag is pinned (`<channel of rust-toolchain.toml>-slim-<Debian codename of the final stage>`; no check holds this form); `mise run deps` prints the newest tag. The CI job `image-check` runs the binary in the final image. The Rust toolchain comparison of the first row covers Rust. At each vulnerability check, compare the gcc-14, binutils, and glibc advisories of `Debian:13` that are marked as exploited (CISA KEV) with the builder image. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #23](https://github.com/jonikanerva/telemetry/pull/23), review round 1. Owner: accepted on 27 November 2026 (present scan scope). | Reassess when a scanner of the built image runs in CI, when a build-stage advisory is listed in CISA KEV, or with a change of the builder image. |
-| §15: one image for server and SPA | The ingest service is a second image, because it is Tesla's upstream server. | The application still ships as one image. | Lead: Claude Code. Approval: owner, with the adoption PR. | Permanent while the upstream server is used. |
+| Rule / scope | Consequence | Compensating evidence | ADR | Reassessment |
+| ------------ | ----------- | --------------------- | --- | ------------ |
+| §3: no scanner for the `apt-get` packages of the built image, the Rust toolchain, the mise tools, and the static C code of `/fleet-telemetry` | A known vulnerability there is found only by a manual comparison. | The manual comparisons of ADR 0005, decision 6. Before a change enables the `kafka` dispatcher, compare the OpenSSL and libcurl records one by one. | ADR 0005 | The built image can be downloaded; a scanner covers these surfaces; another dispatcher or another libzmq address; or by 2027-01-25. |
+| §3: reviewed ignore files of the image scan | An ignored advisory that later gets a Debian fix or a KEV listing stays hidden until its entry expires. | A recorded decision and an expiry for each entry; the deployment-fact checks; the build-log check of §15; manual KEV comparison. | ADR 0005 | Expiry: Go entries 2027-02-24, Debian 13 entries 2027-01-25. Earlier with a new upstream release, a base image change, a broken deployment fact, or a KEV listing. |
+| §3: no scan of the builder image `rust:<version>-slim-trixie` | A compiler or linker vulnerability that changes the binary is not found by a scanner. | The tag is pinned (`<channel of rust-toolchain.toml>-slim-<Debian codename of the final stage>`; no check holds this form); `deps` prints the newest tag; `image-check` runs the binary; manual KEV comparison. | ADR 0005 | A scanner of the built image in CI; a build-stage advisory in CISA KEV; a change of the builder image. |
+| §3: no scan of the test-only CI image `postgres:18.7-trixie` | A vulnerability in that image is not found by a scanner. | It runs only on the CI runner, with test data, no secret, and on loopback. | ADR 0005 | The image is used outside CI. |
+| §8: no readable development formatter | Developers read the logs with `jq`. | The JSON formatter and its redaction tests (`crates/ingest/src/logging.rs`). | ADR 0009 | A developer workflow needs readable logs; the first web PR. |
+| §1, §14: runtime tests on linux/amd64 before merge | A Linux-only fault in the container, as PID 1, behind the Railway proxy, or in a test that needs Neon shows only after deployment. | The Linux checks 1 to 6 of ADR 0001 ("To verify at first deployment"): CI, `image-check`, and the Railway checks of `docs/ingest-release.md`. Open: check 3 on Railway, check 4, and check 5. | ADR 0008 | Ends when the release records checks 1 to 5 and check 6 has CI evidence. Reassess on 2027-02-28 if open, and when CI can run the tests that need Neon. |
+| §14: build and test of the ingest image before merge | The Railway build, settings, proxy, and healthcheck are unverified before the merge. | A green `image-check` job of the PR head; the post-release checks and the recovery of `docs/ingest-release.md`. | ADR 0008 | Railway documents its Dockerfile build, or the Railway builder can run before the merge. |
+| Web profile §15: one image for server and SPA | The ingest service is a second image (Tesla's upstream server). | The application still ships as one image. | ADR 0009 | Permanent while the upstream server is used. |
 
 ---
 
 ## 14. Applicability and evidence
 
-Complete local environments, command wiring, scanner policies, and existing
-required CI checks on adoption. Run required tests and the full `$VERIFY_CMD`
-locally on the version to be merged against the current integration base.
-Missing or failed mandatory local evidence blocks merge. Existing required
-CI must also pass; CI itself is optional under P6. Never bypass existing gates.
+The merge conditions are in §3. CI does not replace the local run, and the
+local run does not replace CI; neither is a branch protection rule. Assign
+each check to before merge or after release: missing pre-merge evidence
+blocks the merge; missing post-release evidence blocks a claim of a
+successful release. A future production deployment is not required to
+approve its PR. `DOCTRINE.md` P9 states when the reviewer runs its own
+full verification.
 
-In this project, the local `mise run verify` stays mandatory before merge.
-The GitHub Actions workflow of §3 adds the Linux evidence: a green `ci` job
-(`mise run ci` on linux/amd64) for the current head of the PR is required
-before merge (§13, §3). The CI
-run does not replace the local run, and the local run does not replace the
-CI run. CI runs the database tests against PostgreSQL on the runner; the
-tests that need Neon run only in the local `verify` (§3). The CI result is an acceptance
-condition of this contract, not a branch protection rule; branch
-protection is an owner decision.
-
-Assign each check to before merge or after release. Missing pre-merge evidence
-blocks merge; missing post-release evidence prevents claiming a successful
-release. A future production deployment is not required to approve its PR.
-DOCTRINE.md P9 states when the independent reviewer runs its own full
-verification and what it records.
-
-Retain commands, safe fixtures or reconstruction steps, expected outcomes and
-their original sources, versions, environments, and results. Challenge material
-assumptions and transformations beyond supplied examples. A test of a generated
-assumption is not proof of that assumption. Regression tests should detect the
-original failure. Investigate flakes rather than treating a rerun as an
-explanation. Apply P6 evidence reuse without waiving an independent run that P9 requires.
-
-| Doctrine / applicability      | Required evidence                                                                                                                       | Environment / gap                                                                                 |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| P1, P6: each task             | Criteria, failures, assumptions, and check mapping                                                                                      | Lead records; independent review for material changes                                             |
-| P2–P4: types and dependencies | Strict checks, dependency rationale, crate/import boundaries                                                                            | Manifest edits and ambient effects need review                                                    |
-| P3, P5: HTTP contract         | Complete-tree drift check; real response tests; executed success/error validation                                                       | Annotations do not prove handler behaviour                                                        |
-| P5–P6: data meaning           | Conversion and property/challenge cases; partial versus atomic failure tests                                                            | Preserve missing/null/zero, units, precision, and uncertainty                                     |
-| P5–P7: storage, when used     | Migrated-schema metadata check; constraints, competing writes, upgrade, and restore tests; recorded production and test server versions | Isolated PostgreSQL of the production major version required; offline build alone is insufficient. Here: `mise run sqlx-check` and `crates/ingest/tests/storage/` on the Neon branch `test` (PostgreSQL 18.7); production version not read yet (§15). CI on linux/amd64 runs `sqlx-check` and these tests against PostgreSQL 18.7 on the runner with `sslmode=verify-full` and a test CA, except the tests that need Neon (§3); those and the Neon TLS path are not exercised on Linux before the deployment checks (§13). Restore is Neon's 6-hour history (ADR 0002), not tested. |
-| P3, P7: security              | Named scanner results and auth/privacy checks                                                                                           | Resolve session tuple if accounts are used; scanners do not prove authorization                   |
-| P5–P7: browser                | Critical Playwright journeys, degraded/error states, keyboard and axe                                                                   | Record unsupported browsers and manual accessibility gaps                                         |
-| P7: release                   | Before merge: target build and recovery readiness; after release: identity, health, and smoke evidence                                  | Local build is not a verified deployment                                                          |
-| P6, P7: production platform   | Green `ci` job (`mise run ci` on linux/amd64, GitHub Actions, §3) for the PR, together with the local `mise run verify`; for a change of an image input, also a green `image-check` job | CI runs no test that needs Neon; `image-check` runs the container without Railway (§13); CI is not branch protection |
-| P8–P9: material changes       | Current docs, significant decisions, independent review; independent integrated verification where P9 requires it                    | Separate reviewer context; exact tested revisions                                                 |
+| Doctrine / applicability | Required evidence | Environment / gap |
+| ------------------------ | ----------------- | ----------------- |
+| P1, P6: each task | Criteria, failures, assumptions, and check mapping | Lead records; independent review for material changes |
+| P2–P4: types and dependencies | Strict checks, dependency rationale, crate boundaries | Manifest edits and ambient effects need review |
+| P5–P6: data meaning | Conversion and property or challenge cases; partial versus atomic failure tests | Preserve missing, null, and zero, units, precision, and uncertainty |
+| P5–P7: storage | Migrated-schema metadata check; constraint, competing-write, and upgrade tests; production and test server versions | §5. The tests that need Neon and the Neon TLS path have no Linux evidence before deployment (§13). Restore is not tested. |
+| P3, P7: security | Named scanner results and privacy checks | Scanners do not prove authorization |
+| P6, P7: release and platform | Before merge: `verify`, green `ci`, and for an image input a green `image-check`; after release: identity, health, and smoke evidence | A local build is not a verified deployment (§13) |
+| P8–P9: material changes | Current docs, ADRs, independent review; independent integrated verification where P9 requires it | Separate reviewer context; exact tested revisions |
 
 ### Check configuration
 
-| Check             | Tool                                                                                     | Acceptance condition                                                                |
-| ----------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Format            | rustfmt and Prettier check modes                                                         | No formatting differences                                                           |
-| Types/lint        | Clippy, tsc, type-aware Oxlint                                                           | No errors or unreviewed warnings under §1                                           |
-| Dead dependencies | cargo-shear SHOULD; rustc unused checks; Knip optional                                   | No unexplained findings; configure generated/dynamic entry points                   |
-| Boundaries        | Cargo declarations, Clippy disallowed methods where practical, Oxlint restricted imports | No forbidden edges; review declared gaps                                            |
-| Contracts         | Scratch export/generation and actual HTTP/client tests                                   | No unexplained drift or invalid data accepted                                       |
-| SQL metadata      | SQLx prepare check with declared targets/features                                        | Matches the migrated isolated schema                                                |
-| Secrets           | Gitleaks with redacted output and declared source/history scope                          | No confirmed exposed secrets                                                        |
-| Rust dependencies | cargo-deny advisories, licences, bans, sources                                           | Triage findings; enforce declared allowlists and reviewed exceptions                |
-| JS dependencies   | pnpm audit                                                                               | Triage all findings; no unresolved high/critical findings without a valid exception |
-| Behaviour         | nextest, doctests, SQLx tests, Vitest, Playwright                                        | All required cases pass; expected outcomes have independent support                 |
+| Check | Tool | Acceptance condition |
+| ----- | ---- | -------------------- |
+| Format, types, lint | rustfmt check, Clippy `-D warnings` | No differences, no unreviewed warnings |
+| Dead dependencies | cargo-shear, rustc unused checks | No unexplained findings |
+| Boundaries | Cargo declarations; Clippy disallowed methods where practical | No forbidden edges; declared gaps reviewed |
+| SQL metadata | SQLx prepare check | Matches the migrated isolated schema |
+| Secrets | Gitleaks, redacted, over the committed history | No confirmed exposed secret |
+| Rust dependencies | cargo-deny advisories, licences, bans, sources (`deny.toml`) | Findings triaged; allowlists and reviewed exceptions enforced |
+| Behaviour | nextest, doctests, SQLx tests | All required cases pass; expected outcomes have independent support |
 
-Pin scanner tools and configuration. Record advisory freshness and unsupported
-surfaces. External audit endpoints may receive dependency metadata; assess the
-data flow and obtain required authorization before using a new provider.
-An unavailable scanner is a gap, not a pass. Property tests, mutation analysis,
-snapshots, and coverage address named risks; scores do not replace correctness.
-Do not accept snapshots without reviewing their expected meaning.
-
-### Adoption trial
-
-Before calling the application profile validated, retain evidence for:
-
-1. A browser request through the generated client, Rust conversion, and a real domain rule.
-2. SQLx persistence where applicable, including data constraints and query checks.
-3. Invalid input rejected through the public problem contract.
-4. A deliberately invalid success response and an invalid error body rejected safely by the client.
-5. Concurrent changes, repeated writes, cancellation, and shutdown behaviour relevant to the product.
-6. Migration from a supported prior schema and a tested recovery path where persistence applies.
-7. Full verification from a clean checkout with isolated services and pinned tools.
-8. The actual deployment-target artifact and a critical browser smoke journey.
-
-An item may be not applicable with a reason tied to product purpose. An
-unsupported tool is not an applicability exemption. Identify what static
-checks, the trial, and agent reviews still do not prove.
-
-### Live checks of external sources
-
-A live check against an external source asserts on a stable control sample.
-When the source can legitimately lack data for recent items, report the hit
-rate of such a sample as a measurement, not as a pass condition. Never run a
-live check with a user's credential unless the owner runs it.
+Pin the scanners and their configuration. Record advisory freshness and
+unsupported surfaces. A new external audit endpoint needs a data-flow
+assessment and authorization. An unavailable scanner is a gap, not a pass.
 
 ---
 
 ## 15. Release, recovery, and maintenance
 
-- **Release:** one immutable image contains the Rust binary and built SPA files. ServeDir is the default asset mechanism; embedding is optional for a demonstrated single-executable need. Tag with the commit SHA and retain the image digest. Declare target architecture, environments, commands, permissions, and whether main deploys automatically.
-- **Source builders:** a platform builder that detects the language from the repository root (for example Railpack) selects the Rust provider when the root has `Cargo.toml`, and then does not build the SPA. Declare the build in the builder's config file: the Rust and Node toolchains, the locked SPA build, the locked release build, and an image that contains only the binary and the SPA files. Pin the builder version where the platform allows it. A builder can give every service variable to every build command, including the build scripts of dependencies; record this with its compensating controls. A builder can also read crate manifests with its own parser: Railpack 0.40.1 cannot decode inherited package fields such as `edition.workspace = true` in the binary crate and then plans a failing build. Check the builder's plan after each manifest change, and repeat the needed package fields in the binary crate when the builder requires it.
-- **Asset routing:** keep API failures out of the SPA fallback. Test deep links, missing assets, MIME types, cache headers, and relevant security headers. Separate static hosting MAY preserve one origin through routing; CORS is not an automatic requirement.
-- **Configuration:** validate settings at startup, with safe diagnostics on failure. Secrets come from the declared secret mechanism, not the image or frontend bundle.
-- **Migrations:** run the declared SQLx migration step before routing traffic to code that needs it. Maintain compatibility with still-running versions. Perform destructive contract steps only under approved policy after compatibility is no longer required.
-- **Observe:** expose a safe version identifier, liveness, and dependency-aware readiness. Verify expected deployed revision/digest, health, and one critical journey. Define observation duration, diagnostic source, latency/error/resource signals, and readiness behaviour during dependency failure.
-- **Compatibility:** declare the old-client support window and a safe upgrade path. An automatic reload alone does not preserve unsaved input or prove compatibility. Confirm Jiff timezone data source and update behaviour.
-- **Recover:** keep a known working image and use a declared rollback or roll-forward command. Confirm schema compatibility before rolling back code. Test data restoration; a backup file or a down migration alone is not recovery evidence.
-- **Data:** document each store's purpose, retention, deletion policy, credentials, and access boundary. Cache removal is not recovery for durable data.
-- **Maintenance:** apply `DOCTRINE.md` P7. Record each infrastructure component, for example a database, cache, message broker, object storage, or container base image, with its version in each environment. Keep test and production on the same major version. Set pnpm `minimumReleaseAge` (for example 1440 minutes). Exclude a version from it only for a security fix. Cargo has the same minimum release age of 1440 minutes (owner decision of 27 November 2026): a crate release that is younger is not due in the dependency freshness check (§3), except a security fix. Review toolchain and dependency upgrades with the same evidence rules. Utoipa and Hey API need integration checks, not mandatory simultaneous upgrades. Recheck session adapters and pre-1.0 library compatibility when affected.
+- **Configuration:** validate settings at startup, with safe diagnostics. Secrets come from the service variables, never from the image.
+- **Migrations:** run the migration step before traffic reaches code that needs it; keep compatibility with running versions; do destructive steps only under an approved policy.
+- **Observe:** after a release, verify the deployed revision, the health, and the post-release checks of `docs/ingest-release.md`.
+- **Data:** each store has a documented purpose, retention, deletion policy, credentials, and access boundary (`VISION.md`, ADR 0002).
+- **Recover:** keep a known working image and a declared rollback or roll-forward. Confirm schema compatibility before a code rollback. A backup file or a down migration alone is not recovery evidence.
+- **Maintenance:** apply `DOCTRINE.md` P7. The table below records each infrastructure component with its version. Keep test and production on the same major version. Minimum release age: 1440 minutes for crates (ADR 0006), and pnpm `minimumReleaseAge` with the first web PR, except a security fix.
 
 ### Infrastructure and environments
 
-There is one deployment environment: production. The CI workflow of §3 is
-a verification environment; its pins are the five rows that start with
-"CI". Read on 26 November 2026.
+One deployment environment: production. CI (§3) is a verification
+environment; its pins are the rows that start with "CI".
 
-| Component                 | Version or value                                         | Notes                                                                                   |
-| ------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Railway                   | Hobby plan, project `calmdonut`, service `telemetry`     | Builds `ingest/Dockerfile` from `main` of `jonikanerva/telemetry`, root directory `/`. A merge to `main` that changes a watch path is a release. The service settings are in "Railway settings of the service `telemetry`" below. Runs the ADR 0001 image since 27 November 2026 (first release: merge `c46cd6d`, deployment `76616de9-cf69-49ce-ace6-9bcaf8112289`). Current deployment: merge `8080e2c` (PR #30, issue #29), deployment `dcda346d-1934-4054-a25b-5a32cc286c6d`, 27 November 2026. Railway starts the container under its own init: PID 1 `/run/podman-init -- /entrypoint.sh` as UID 0 since issue #29, `ingest` PID 2 as UID 10001 (ADR 0001, "Process tree on Railway"). |
-| Ingest server             | `tesla/fleet-telemetry:v0.10.1`                          | Upstream binary, copied into the image in `ingest/Dockerfile`. Go 1.27.4, dynamically linked against the glibc and libstdc++ of the base image. Advisory triage: `docs/security/image-advisories.md`. |
-| Ingest base image         | `debian:trixie-slim`                                     | Debian 13 (trixie), the current stable release. Point release 13.8 on 26 November 2026. Same digest as `trixie-20261123-slim`. The build runs `apt-get upgrade`, so the packages depend on the build date. |
-| Ingest builder image      | `rust:1.100.0-slim-trixie`                               | Build stage of `ingest/Dockerfile`. Official Rust image, Rust 1.100.0 (`--profile minimal`) with gcc and libc6-dev on Debian 13. Digest for linux/amd64 on 27 November 2026: `sha256:6014030547c3168bb80e700b7aaf653fbb92e5ac1e2712c49a1c9ec1beea49d8`. Only the `ingest` binary leaves the stage. `mise run deps` prints the newest tag. Not scanned (§13). |
-| Rust toolchain            | 1.100.0, `rust-toolchain.toml`                           | Latest stable on 26 November 2026. Builds `crates/ingest` locally, in CI, and (through the builder image) in the Railway build. |
-| Railway TCP proxy         | `zephyr.proxy.rlwy.net:57438` to container port 4443     | The vehicle's signed config contains host `telemetry.calmdonut.com` and port 57438.     |
-| Railway container (observed) | Kernel `6.12.12+bpo-cloud-amd64`; `tcp_retries2` 15; Yama `ptrace_scope` 0; open files 1048576 soft and hard | Lead observation through `railway ssh` after the release, 27 November 2026. Listeners: `0.0.0.0:4443`, `0.0.0.0:8080`, `127.0.0.1:4444`, `127.0.0.1:5284`, `127.0.0.1:9090`. `railway ssh` runs as UID 0 without the right to read `/proc/<pid>/environ` of UID 10001. Repeat after a platform change. |
-| DNS                       | Cloudflare, `telemetry` CNAME, DNS only                  | A proxied record breaks the vehicle mTLS connection.                                    |
-| Ingest TLS certificate    | Cloudflare Origin CA, ECC, valid until 22 November 2041  | Railway variables `TLS_CERT` and `TLS_KEY`. The Origin CA ECC root expires 15 August 2029. |
-| Vehicle telemetry client  | 1.3.0, vehicle firmware 2026.39.100                      | Read from Tesla `fleet_status`.                                                         |
-| Tesla Fleet API           | Region `na`                                              | The owner's account is in the NA region although the vehicle is in Europe.              |
-| PostgreSQL                | 18, Neon Free plan                                       | Project `telemetry`, region `aws-eu-central-1`, database `neondb`, branch `production`. Values from the owner. The branch `test` reports 18.7 (`SELECT version()`, 26 November 2026, storage change). Production: major version 18 (Neon project setting, read at the release of 27 November 2026). The lead created the roles with `db/roles.sql` (`roles_applied`; README.md, "Database roles"), the pre-deploy step applied migration 0001 (schema `raw`), and `ingest` stores the records. |
-| Neon production compute   | Fixed 0.25 CU (autoscaling minimum and maximum 0.25)     | Lead decision (ADR 0001). Applied on 26 November 2026 through the Neon API on endpoint `ep-young-dawn-bgyaj83l`; the response showed 0.25 and 0.25, and `suspend_timeout_seconds` 0 (plan default, 5 minutes). Check the effective size and the consumption after the first week of ingest. |
-| PostgreSQL test database  | Neon branch `test`, fixed 0.25 CU                        | Created on 26 November 2026 from `production`, before it held vehicle data (§5). Shares the 100 CU-hours of the project; budget at most 5 CU-hours each month (ADR 0001). |
-| CI runner image           | GitHub-hosted `ubuntu-26.04`, x86_64                     | `.github/workflows/ci.yml`. Ubuntu 26.04.1. GitHub updates the image within the label, and two jobs of one run can get different image versions (for example 20261122.9.1, 20261116.202.1, and 20261116.88.1 on 26 November 2026); the log of each job shows its version. `ubuntu-latest` pointed to `ubuntu-26.04` on 26 November 2026. |
-| CI mise                   | 2026.11.14                                               | `version` input of the mise action in `.github/workflows/ci.yml`. Latest release on 26 November 2026; the same version as on the development machine. |
-| CI action: checkout       | `actions/checkout` v7.0.1, commit `3d3c42e5aac5ba805825da76410c181273ba90b1` | Pinned by the full commit SHA. Latest release on 26 November 2026. |
-| CI action: mise           | `jdx/mise-action` v5.3.0, commit `924e7c586e33d7d4bae9c14e26c5d22e2beb6e78` | Pinned by the full commit SHA. Latest release on 26 November 2026. |
-| CI PostgreSQL image       | `postgres:18.7-trixie`, index digest `sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328` | `postgres_image` of the job `ci`; the server of the database tests in CI (§3). The same version as the Neon branch `test`. Newest PostgreSQL 18 tag on 27 November 2026. |
+| Component | Version or value | Notes |
+| --------- | ---------------- | ----- |
+| Railway | Hobby plan, project `calmdonut`, service `telemetry` | Builds `ingest/Dockerfile` from `main`. A merge to `main` that changes a watch path is a release. PID 1 is the Railway init `/run/podman-init -- /entrypoint.sh` as UID 0; `ingest` is PID 2 as UID 10001 (ADR 0001, "Process tree on Railway"). |
+| Ingest server | `tesla/fleet-telemetry:v0.10.1` | Upstream binary, Go 1.27.4, dynamically linked against the glibc and libstdc++ of the base image. Triage: `docs/security/image-advisories.md`. |
+| Ingest base image | `debian:trixie-slim` | Debian 13. The build runs `apt-get upgrade`, so the packages depend on the build date. |
+| Ingest builder image | `rust:1.100.0-slim-trixie` | Rust 1.100.0 (`--profile minimal`) with gcc and libc6-dev. Only the `ingest` binary leaves the stage (§13). |
+| Rust toolchain | 1.100.0, `rust-toolchain.toml` | Local, CI, and Railway builds. |
+| Railway TCP proxy | `zephyr.proxy.rlwy.net:57438` to container port 4443 | The vehicle's signed config names host `telemetry.calmdonut.com` and port 57438. |
+| Railway container | Kernel `6.12.12+bpo-cloud-amd64`; `tcp_retries2` 15; Yama `ptrace_scope` 0; open files 1048576 soft and hard | Listeners `0.0.0.0:4443`, `0.0.0.0:8080`, `127.0.0.1:4444`, `127.0.0.1:5284`, `127.0.0.1:9090`. `railway ssh` (UID 0) cannot read `/proc/<pid>/environ` of UID 10001. Read again after a platform change. |
+| DNS | Cloudflare, `telemetry` CNAME, DNS only | A proxied record breaks the vehicle mTLS connection. |
+| Ingest TLS certificate | Cloudflare Origin CA, ECC, valid until 22 November 2041 | Variables `TLS_CERT` and `TLS_KEY`. The Origin CA ECC root expires 15 August 2029. |
+| Vehicle telemetry client | 1.3.0, vehicle firmware 2026.39.100 | From Tesla `fleet_status`. |
+| Tesla Fleet API | Region `na` | The owner's account is in the NA region. |
+| PostgreSQL | 18, Neon Free plan | Project `telemetry`, region `aws-eu-central-1`, database `neondb`, branch `production`. The branch `test` runs 18.7. |
+| Neon production compute | Fixed 0.25 CU (autoscaling minimum and maximum 0.25) | Endpoint `ep-young-dawn-bgyaj83l`; `suspend_timeout_seconds` 0 (5 minutes). No connection pool (ADR 0001, lead decision 3). |
+| PostgreSQL test database | Neon branch `test`, fixed 0.25 CU | Holds no production data. At most 5 CU-hours each month (ADR 0002). |
+| CI runner image | GitHub-hosted `ubuntu-26.04`, x86_64 | GitHub updates the image within the label; the log of each job shows its version. |
+| CI mise | 2026.11.14 | `version` input of the mise action; the same as on the development machine. |
+| CI action: checkout | `actions/checkout` v7.0.1, commit `3d3c42e5aac5ba805825da76410c181273ba90b1` | Full commit SHA. |
+| CI action: mise | `jdx/mise-action` v5.3.0, commit `924e7c586e33d7d4bae9c14e26c5d22e2beb6e78` | Full commit SHA. |
+| CI PostgreSQL image | `postgres:18.7-trixie`, index digest `sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328` | `postgres_image` of the job `ci`; the version of the Neon branch `test`. Not scanned (§13). |
 
-Project-specific release rules:
+### Release rules of the ingest service
 
-- The ingest service must terminate mTLS itself. It uses the Railway TCP
-  proxy, never a Railway HTTP domain.
-- A redeploy of the ingest service disconnects the vehicle for a short time.
-  The vehicle reconnects by itself. Give each Railway service its own root
-  directory and watch patterns, so that an application merge does not
-  redeploy the ingest service.
-- Layout (ADR 0001): the service `telemetry` runs one image with the Rust
-  ingest process and `fleet-telemetry` as its child. Under Docker (the CI
-  job `image-check`) `ingest` is PID 1; on Railway an init that Railway
-  adds is PID 1 and `ingest` is PID 2 (ADR 0001, "Process tree on
-  Railway"). The ingest
-  process owns port 4443 and forwards the vehicle connections only while
-  it can take records. The container starts as root (the image has no
-  `USER` line). The entrypoint drops to user and group 10001 with no
-  capabilities (`setpriv`) before it starts `ingest`, so `ingest` and
-  `fleet-telemetry` run as 10001 (issue #29).
-- Railway settings: the table below. Railway deprecated config as code
-  ("Existing `railway.json` / `railway.toml` files continue to work for
-  services that already use them until 2026-12-01 (hard cutoff). New
-  services cannot opt into Config as Code", read on 27 November 2026,
-  <https://docs.railway.com/guides/config-as-code>). The service
-  `telemetry` has no config file today. So the lead sets each value as a
-  service setting or a `RAILWAY_*` variable. Owner decision of 27
-  November 2026: no `railway.json` and no file in its place;
-  Infrastructure as Code (`.railway/railway.ts`) when it is possible and
-  safe; reassess in December 2026 (ADR 0001, lead decision 7, with the
-  blocking facts). Owner decision of 27 November 2026 (decisions
-  review): the December reassessment is a separate task with a
-  `railway config plan` dry run. Adopt Infrastructure as Code only if
-  the plan does not touch the TCP proxy port and starts no deployment.
+- The ingest service terminates mTLS itself, behind the Railway TCP proxy,
+  never a Railway HTTP domain. A redeploy disconnects the vehicle for a
+  short time; it reconnects by itself. Each Railway service has its own
+  root directory and watch patterns.
+- Layout (ADR 0001): one image; `ingest` supervises `fleet-telemetry`, owns
+  port 4443, and forwards the vehicle connections only while it can take
+  records. The container starts as root (no `USER` line); the entrypoint
+  drops to user and group 10001 with no capabilities (`setpriv`) before it
+  starts `ingest`.
+- The service has no `railway.json` and no config file in its place. The
+  lead sets each value of the table below by hand. Infrastructure as Code
+  (`.railway/railway.ts`) waits for a reassessment in December 2026 with a
+  `railway config plan` dry run; adopt it only if the plan does not touch
+  the TCP proxy port and starts no deployment (ADR 0001, lead decision 7).
 - Release steps, post-release checks, and recovery:
-  [`docs/ingest-release.md`](docs/ingest-release.md).
-- Railway documentation does not state that the TCP proxy port is permanent.
-  The port stayed the same over one redeploy. If the port changes, sign and
-  send a new vehicle telemetry config (`config/telemetry_config.json`).
-- A change to the vehicle telemetry config needs the Tesla application
-  private key and a Tesla OAuth token. Both stay on the owner's computer.
-- Post-release check for the ingest service: the deployment status is
-  `SUCCESS`, `openssl s_client` verifies the certificate against the Origin
-  CA ECC root on port 57438, and the log shows a vehicle connection after the
-  vehicle is next awake. The first release of the ADR 0001 image has more
-  checks (`docs/ingest-release.md`). After each build of the ingest image, also read the
-  Railway build log: the `apt-get` step must have run, not come from a cached
-  layer, and the log must show the installed versions of the fixed packages,
-  for example `libzstd1` 1.5.7+dfsg-1+deb13u1 and `passwd` 1:4.17.4-2+deb13u1
-  on 26 November 2026. If the step came from the cache, start a build
-  without the cache. How Railway caches Dockerfile layers is not verified.
-- Recovery: roll back to the previous successful Railway deployment.
-  Railway restores its image and its custom variables. Before the first
-  rollback to an image without `ingest` (the image before ADR 0001),
-  clear the pre-deploy command and the healthcheck path, because that
-  image has neither `/usr/local/bin/ingest` nor `/health`; that image
-  writes the VIN and the location to the log again
-  (`docs/ingest-release.md`, "Recovery").
-- Image advisories: `mise run vuln` reads the reviewed ignore files in
-  `docs/security/` (§3, §13). When an entry expires or a new advisory
-  appears, triage it in a `chore/deps-<topic>` PR and update
-  `docs/security/image-advisories.md` and the ignore file together. When
-  Debian publishes a fix for a library that the server loads (glibc,
-  gcc-14), start a rebuild of the ingest image, because `apt-get upgrade`
-  applies fixes only at build time. A build can reuse a cached layer of the
-  `apt-get` step; the build log must show that the step ran and installed
-  the fix.
-- The `zmq` dispatcher makes libzmq 4.3.4 listen. The deployment test
-  (`crates/ingest/tests/deployment.rs`) requires `zmq.addr`
-  `tcp://127.0.0.1:5284`.
+  [`docs/ingest-release.md`](docs/ingest-release.md). The minimum check:
+  the deployment status is `SUCCESS`, `openssl s_client` verifies the
+  certificate against the Origin CA ECC root on port 57438, and the log
+  shows a vehicle connection when the vehicle is next awake. After each image
+  build, the Railway build log must show that the `apt-get` step ran (not
+  a cached layer) and the installed versions of the fixed packages; else
+  build again without the cache.
+- If the TCP proxy port changes (Railway does not document it as
+  permanent), sign and send a new vehicle telemetry config
+  (`config/telemetry_config.json`). That needs the Tesla application private
+  key and a Tesla OAuth token, which stay on the owner's computer.
+- Recovery: roll back to the previous successful Railway deployment
+  (image and custom variables). Before a rollback to the image before ADR
+  0001, clear the pre-deploy command and the healthcheck path; that image
+  writes the VIN and the location to the log (`docs/ingest-release.md`,
+  "Recovery").
+- Image advisories: triage an expired ignore entry or a new advisory in a
+  `chore/deps-<topic>` PR, with `docs/security/image-advisories.md` and the
+  ignore file together. A Debian fix for a library that the server loads
+  (glibc, gcc-14) needs a rebuild of the image.
+- The deployment test requires `zmq.addr` `tcp://127.0.0.1:5284` for the
+  libzmq 4.3.4 listener of the `zmq` dispatcher.
 
 #### Railway settings of the service `telemetry`
 
-The lead sets these values without a deployment, before the merge
-(`docs/ingest-release.md`, section 1). This table is the one documented
-place of the values. The deployment test
+This table is the one documented place of the values. The lead sets them
+without a deployment before the merge (`docs/ingest-release.md`, section
+1); the next deployment uses them. The deployment test
 (`crates/ingest/tests/deployment.rs`, module `railway`) holds them as
-constants, checks them against the image and the code (the pre-deploy
-command and timeout against the binary and the migrate deadline, the
-draining time against the shutdown budget, the health path against the
-router, the watch paths against the `COPY` inputs), and checks that this
-table holds the same values.
-Railway sources (read on 27 November 2026): config as code
-(<https://docs.railway.com/reference/config-as-code>), Dockerfiles
-(<https://docs.railway.com/builds/dockerfiles>), build configuration and
-watch paths (<https://docs.railway.com/builds/build-configuration>),
-healthchecks (<https://docs.railway.com/deployments/healthchecks>),
-pre-deploy command
-(<https://docs.railway.com/deployments/pre-deploy-command>), deployment
-teardown (<https://docs.railway.com/deployments/deployment-teardown>),
-restart policy (<https://docs.railway.com/deployments/restart-policy>),
-start command (<https://docs.railway.com/deployments/start-command>), and
-deployment actions
-(<https://docs.railway.com/deployments/deployment-actions>).
+constants, checks them against the image and the code, and checks that this
+table holds the same values. Source: the Railway documentation
+(<https://docs.railway.com>).
 
 | Setting                 | Value | Where the lead sets it | Reason |
 | ----------------------- | ----- | ---------------------- | ------ |
-| Root directory          | `/` (unchanged) | Service settings | The build context must hold `Cargo.toml`, `crates/`, `db/`, `migrations/`, and `.sqlx/`. |
-| Dockerfile path         | `/ingest/Dockerfile` | Service settings (`dockerfilePath`); not the variable `RAILWAY_DOCKERFILE_PATH` | The service already had the setting `dockerfilePath` (`Dockerfile`). On 27 November 2026 the lead set it to `ingest/Dockerfile`, the same file relative to the root directory `/`, and did not set the variable, so that one mechanism names the path. The value column keeps the absolute form that the deployment test holds. Without the setting, Railway looks for `Dockerfile` in the root, and the Railway builder (Railpack) builds the Rust workspace and no image of ADR 0001. |
-| Watch paths             | `/ingest/**`, `/crates/**`, `/db/**`, `/migrations/**`, `/.sqlx/**`, `/.cargo/**`, `/Cargo.toml`, `/Cargo.lock`, `/rust-toolchain.toml`, `/.dockerignore` | Service settings, one pattern each line | Each input of the image (`.dockerignore` and the `COPY` lines; the deployment test checks the list). "Any changes that don't match the patterns will skip creating a new deployment", so a documentation merge does not disconnect the vehicle. The patterns operate from `/`. |
-| Custom start command    | None | Service settings | The image `CMD` runs `/entrypoint.sh`. A start command replaces the image `ENTRYPOINT` in exec form. |
-| Pre-deploy command      | `/usr/local/bin/ingest migrate` | Service settings | Migrations are a separate release step (ADR 0002). The schema allows one string or an array with one string, not one argument for each element. It runs in its own container with the service variables. A failure stops the deployment. Since issue #29 it runs as root, because the image has no `USER` line (accepted, bounded change below). |
-| Pre-deploy timeout      | 1200 s | Service settings (appears after the pre-deploy command is set) | Longer than the 15-minute client deadline of `ingest migrate`, so it never cuts a migration. It ends a pre-deploy command that never ends, for example the image before ADR 0001, whose `ENTRYPOINT` would start the server. By default, Railway sets no time limit (the allowed range is 1 to 3600 s). |
-| Healthcheck path        | `/health` | Service settings | A deployment becomes active only after a 2xx answer. `/health` answers 200 only when the gate is open and the start-up check passed. |
+| Root directory          | `/` (unchanged) | Service settings | The build context holds `Cargo.toml`, `crates/`, `db/`, `migrations/`, and `.sqlx/`. |
+| Dockerfile path         | `/ingest/Dockerfile` | Service settings (`dockerfilePath`, relative form `ingest/Dockerfile`), not `RAILWAY_DOCKERFILE_PATH` | Without it, Railpack builds the workspace and no image of ADR 0001. |
+| Watch paths             | `/ingest/**`, `/crates/**`, `/db/**`, `/migrations/**`, `/.sqlx/**`, `/.cargo/**`, `/Cargo.toml`, `/Cargo.lock`, `/rust-toolchain.toml`, `/.dockerignore` | Service settings, one pattern each line | Each input of the image; another change starts no deployment. |
+| Custom start command    | None | Service settings | The image `CMD` runs `/entrypoint.sh`; a start command would replace the `ENTRYPOINT`. |
+| Pre-deploy command      | `/usr/local/bin/ingest migrate` | Service settings | Migrations as a separate release step (ADR 0002); one string; runs as root in its own container; a failure stops the deployment. |
+| Pre-deploy timeout      | 1200 s | Service settings | Longer than the 15-minute deadline of `ingest migrate`; ends a command that never ends. |
+| Healthcheck path        | `/health` | Service settings | 200 only when the gate is open and the start-up check passed. |
 | Healthcheck timeout     | 300 s (the default) | Variable `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`, or unset | Includes the first Neon wake-up and the settle time. |
-| `PORT`                  | `8080` | Variable `PORT` | The port of `/health` and of the healthcheck. Railway injects `PORT` when it is not set; a fixed value keeps it apart from the ports 4443, 4444, 5284, and 9090. |
-| Draining time           | 30 s | Variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | The time from SIGTERM to SIGKILL. The shutdown budget is 26 s (`crates/ingest/src/lifecycle.rs`). |
-| Overlap time            | 0 s | Variable `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` | The vehicle reconnects by itself (ADR 0001). |
-| Restart policy          | Always | Service settings | No limit of 10 restarts. The documentation limits "Always" only for Free and trial users. Assumption: the Hobby plan counts as a paid plan; the setting shows it. |
+| `PORT`                  | `8080` | Variable `PORT` | The port of `/health` and the healthcheck, apart from 4443, 4444, 5284, and 9090. |
+| Draining time           | 30 s | Variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | SIGTERM to SIGKILL; the shutdown budget is 26 s. |
+| Overlap time            | 0 s | Variable `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` | The vehicle reconnects by itself. |
+| Restart policy          | Always | Service settings | No limit of 10 restarts (assumption: Hobby counts as a paid plan). |
 | TCP proxy               | `zephyr.proxy.rlwy.net:57438` to port 4443 (unchanged) | Service settings | The vehicle config names port 57438. |
 
-Changes without a deployment: a variable with `railway variable set
---skip-deploys` ("Skip triggering deploys",
-<https://docs.railway.com/cli/variable>) or the API mutation
-`variableUpsert` with `skipDeploys: true` ("Don't trigger a redeploy
-after change", <https://docs.railway.com/integrations/api/manage-variables>);
-a service setting in the dashboard as a staged change, applied with Alt
-and "Deploy", which "commit[s] the changes without triggering a redeploy"
-(<https://docs.railway.com/deployments/staged-changes>); or a service
-setting through the Railway API without staging (the lead's tool
-`update-service` of the Railway MCP server; its answer says "Config
-changes apply on the service's next deployment"). The release of
-27 November 2026 used the API way, and no deployment started. The next
-deployment, for example the deployment of a merge, then uses them.
-
-The service variables `DATABASE_URL`, `MIGRATION_DATABASE_URL`,
-`TLS_CERT`, and `TLS_KEY` hold secrets. The image `ENV` lines hold the
-other settings of `ingest run` (README.md, "Configuration"); do not set
-those names as service variables, because a service variable replaces
-the image value. A Dockerfile build sees only the variables that an `ARG`
-line names ("you must specify them in the Dockerfile using the `ARG`
-command"), and `ingest/Dockerfile` has no `ARG`, so no secret reaches a
+The service variables `DATABASE_URL`, `MIGRATION_DATABASE_URL`, `TLS_CERT`,
+and `TLS_KEY` hold secrets. The image `ENV` lines hold the other settings
+(README.md, "Configuration"). Do not set these names as service variables:
+a service variable replaces the image value. `ingest/Dockerfile` has no `ARG` line, so no secret reaches a
 build step.
 
-Owner decisions of 26 November 2026 (lead authority):
+### Lead authority (ADR 0004, ADR 0007)
 
-- The lead may change and send the vehicle telemetry config without a
-  separate owner approval when the estimated Tesla usage of the new config
-  stays below 3 USD each month. Record the estimate in the PR. A config with
-  a higher estimate needs the owner's approval.
+- The lead may change and send the vehicle telemetry config when the
+  estimated Tesla usage stays below 3 USD each month; the PR records the
+  estimate.
 - The lead may create a second Railway service in project `calmdonut` when
-  the architecture needs it. The expected cost is about 1 to 2 USD each
-  month.
+  the architecture needs it.
 - The lead may create Neon branches of project `telemetry` as isolated test
-  databases, and an application role with limited privileges.
+  databases, and an application role with limited privileges
+  (`telemetry_ingest`; the migration role `telemetry_migrator`, ADR 0001,
+  lead decision 2).
+- The lead may ask Codex for a read-only second review of a single
+  security-critical PR (ADR 0007).
 
-Owner decisions of 27 November 2026 (lead authority):
+### Operating values
 
-- Codex: the repository has no `AGENTS.md`. Claude Code is the only agent
-  with a contract in the repository. The lead may ask Codex for a
-  read-only second review of a single security-critical PR. The task text
-  of the lead states the rules of that review. Codex gets no secret and no
-  production data. The review sends the code of the PR to OpenAI; the
-  repository is public. The Codex review is a second review. It does not
-  replace the independent review that `CLAUDE.md` requires.
+The production compute is fixed at 0.25 CU without a connection pool, the
+flush interval is 900 s, the vehicle config has no `delivery_policy`, and
+`zeromq` stays at 0.7.0 with the stall detection (ADR 0001, "Lead
+decisions" and "Decisions of the pipeline change").
 
-Lead decisions of 26 November 2026, within delegated authority (ADR 0001,
-section "Lead decisions"):
+### Accepted risks
 
-- Neon roles: besides the application role `telemetry_ingest`, a second
-  least-privilege role `telemetry_migrator` owns schema `raw` and runs the
-  migrations. It serves the owner's intent and keeps `neondb_owner` out of
-  Railway. The lead reports this decision to the owner. Accepted risk: the
-  migrator URL is a service variable, so Railway gives it to every
-  container of the service. Since issue #14, `ingest/entrypoint.sh` unsets
-  it before the `exec`, so the environments of `ingest` and
-  `fleet-telemetry` do not hold it; the deployment test and `image-check`
-  check this. Until issue #29 this gave no protection on Railway: the init
-  (PID 1, UID 10001) kept the URL in `/proc/1/environ`, and every process
-  of UID 10001 could read it. Since issue #29 the init runs as root
-  (observed at the release of PR #30; next entry). It stays readable
-  in the pre-deploy container (which needs it), and to anything that reads
-  the service variables: the Railway
-  dashboard, the API, and possibly a `railway ssh` session. Owner decision
-  of 27 November 2026: the owner accepts this risk.
-  `MIGRATION_DATABASE_URL` stays a Railway service variable, `ingest
-  migrate` stays the pre-deploy command and runs as root, and the
-  migrations do not move outside Railway. Reassess when
-  Railway can limit a variable to the pre-deploy command, when the
-  migration step can run outside the service, or after a security
-  finding in the running container.
-- Environment of the init on Railway (observed at the release of
-  27 November 2026; ADR 0001, "Process tree on Railway"). Before issue
-  #29, the init `/run/podman-init` (PID 1) ran as UID 10001
-  (`/proc/1/status`: `Uid: 10001 10001 10001 10001`) and held every
-  service variable in `/proc/1/environ`. By the kernel rule for the same
-  UID, every process of UID 10001 could read that file: `ingest`,
-  `fleet-telemetry`, and any process that they start. A probe in the
-  production container on 27 November 2026 confirmed the read (exit code
-  only). Exposure of that state:
-  - `MIGRATION_DATABASE_URL`: the role `telemetry_migrator` owns schema
-    `raw`. A holder can read, change, and drop each table of `raw`,
-    including the stored locations. Neon keeps 6 hours of restore
-    history.
-  - `DATABASE_URL`: the role `telemetry_ingest` has `SELECT` and `INSERT`
-    on `raw`. A holder can read the stored raw history and insert rows.
-    `ingest` also holds this URL in its own environment (next entry,
-    note N1).
-  - `TLS_KEY` (and the public `TLS_CERT`): a holder can impersonate the
-    server to the vehicle, if the holder can also take the DNS name or
-    the network path. `fleet-telemetry` reads the key file anyway,
-    because it terminates mTLS; the environment of PID 1 adds a second
-    copy, not a new reader.
-  - Precondition: code execution in `fleet-telemetry` (for example a
-    fault after the mTLS handshake, `docs/security/image-advisories.md`,
-    fact 2) or in `ingest`. No path from outside the container reads the
-    file.
-  Owner decision of 27 November 2026 (issue #29, option 1 of ADR 0001,
-  "Process tree on Railway"): the image has no `USER` line, so the
-  container and the init start as root. The entrypoint writes the TLS
-  files, gives them to UID 10001, removes the TLS variables and the
-  migrator URL, and starts `ingest run` through `setpriv` as UID and GID
-  10001 with no supplementary groups, no capabilities, and
-  `no_new_privs`. A process of UID 10001 then cannot read
-  `/proc/1/environ`: the kernel needs the same UID or `CAP_SYS_PTRACE`,
-  and `ingest` and `fleet-telemetry` have no capabilities. The CI job
-  `image-check` checks this under the init of Docker (`docker run
-  --init`). Observed at the release of PR #30 (27 November 2026, merge
-  `8080e2c`, deployment `dcda346d-1934-4054-a25b-5a32cc286c6d`;
-  `docs/ingest-release.md`, section 3.1): the init of Railway follows the
-  image user. PID 1 `/run/podman-init -- /entrypoint.sh` has
-  `Uid: 0 0 0 0`. `ingest` (PID 2) and `fleet-telemetry` (PID 15) have
-  `Uid` and `Gid` 10001, empty `Groups`, all capability sets 0, and
-  `NoNewPrivs: 1`. A process of UID 10001 reads `/proc/self/environ`
-  (exit code 0) but not `/proc/1/environ` (exit code 1). So the exposure
-  above is closed on Railway. What stays after the change:
-  - `DATABASE_URL` in the environment of `ingest` (next entry, note N1).
-  - The entrypoint runs as root before the drop. A fault in it runs as
-    root. The script is short, has a strict allowlist (`vuln`), takes no
-    input except the service variables, and writes only the two TLS
-    files. It removes old TLS files with `rm -f` and then writes with
-    noclobber (`set -C`). The noclobber of dash is not a plain `O_EXCL`
-    open: for an existing target that is not a regular file, the write
-    can succeed (a probe wrote through a symbolic link to a FIFO). So the
-    defence against a link that a process of UID 10001 left in a
-    container filesystem that is used again rests on the `rm -f` before
-    the write, and on the premise that no process of UID 10001 runs while
-    the root part of the entrypoint runs.
-  - The entrypoint copies the TLS variables to the shell variables `cert`
-    and `key`. If the container environment already holds a variable with
-    one of these names, the shell keeps it exported, and the key reaches
-    the environment of `ingest`. Precondition: a Railway service variable
-    named `cert` or `key`. Issue #31 tracks the fix; it has no schedule
-    (owner decision of 27 November 2026), because the fix changes a watch
-    path and so releases the service again.
-  - The pre-deploy command runs as root (next entry).
-  Reassess when a release check shows a `Uid` other than 0 for PID 1,
-  or with a change of the user model of the image.
-- Accepted, bounded change (issue #29): the Railway pre-deploy command
-  stays `/usr/local/bin/ingest migrate`, and it now runs as root, because
-  the image has no `USER` line. A wrapper that drops to UID 10001 would
-  change a Railway setting, and a rollback to an earlier image without
-  that wrapper would then fail its pre-deploy step. Bounds: the
-  pre-deploy container is short-lived and separate from the running
-  service; it holds `MIGRATION_DATABASE_URL` anyway, because the command
-  needs it; `ingest migrate` opens no listener, takes no input except the
-  answers of the database, and ends; the pre-deploy timeout ends it at
-  the latest. Root in that container adds no network exposure. The owner
-  accepted this change on 27 November 2026. Reassess
-  when Railway can set the user of the pre-deploy command, or when
-  `ingest migrate` gets a listener or another input.
-- Accepted risk (issue #14, review round 1 of PR #23, note N1):
-  `fleet-telemetry` runs as the same user (10001) as `ingest`, so it can
-  read the environment of `ingest` (`/proc/<pid of ingest>/environ`: PID 2
-  on Railway, PID 1 under Docker), which holds `DATABASE_URL` of the role
-  `telemetry_ingest` (`SELECT` and `INSERT` on `raw`). Only a
-  code-execution fault in `fleet-telemetry` after the mTLS handshake
-  (`docs/security/image-advisories.md`, fact 2) could use it. Such a
-  fault already reaches the records in flight in memory; with the URL it
-  could also read the stored raw history (`SELECT` on `raw`, with the
-  locations) and insert rows. A bounded fix exists but is not done: the
-  entrypoint would write the URL to a 0600 file and unset it, and
-  `ingest` would read and delete the file at start. Whether the child
-  could then still read the memory of `ingest` depends on the kernel:
-  reading `/proc/<pid>/mem` needs ptrace-level access, which Yama
-  `ptrace_scope` 1 or higher denies to a child towards its parent, while
-  `/proc/<pid>/environ` needs only the same user. Observed on Railway on
-  27 November 2026: `ptrace_scope` 0, so the weaker case applies there:
-  the child could read the memory of `ingest` as well, and the file
-  variant would not help. Issue #29 does not change this: it closes the
-  environment of the init (entry above), not the environment of `ingest`.
-  Only a separate user for the child (option 2 of ADR 0001, "Process tree
-  on Railway"; it needs root or a capability to start the child) closes
-  this exposure on every kernel. Owner decision of 27 November 2026: the
-  owner accepts this risk. No separate user for the child and no
-  `PR_SET_DUMPABLE` change. Reassess
-  with a security finding in the handshake path of `fleet-telemetry`, a
-  change of the user model of the image, or when the role
-  `telemetry_ingest` gets more privileges.
-- The production compute has a fixed size of 0.25 CU. Applied on
-  26 November 2026 (table above). Verify the effective size after the first
-  week of ingest. The owner confirmed on 27 November 2026: the compute
-  stays fixed at 0.25 CU, and the storage keeps no connection pool.
-- The ingest flush interval defaults to 900 s. Owner decision of
-  27 November 2026: the interval stays 900 s. Reassess after the one-week
-  follow-up, with the measured awake hours (this replaces the earlier
-  condition of 30 days). A value of 300 s or less keeps the Neon compute
-  active for the whole awake time, because the compute suspends only
-  after 5 minutes without activity.
-- The vehicle config does not set `delivery_policy` for now. Owner
-  decision of 27 November 2026: `delivery_policy` stays unset. Reassess
-  with the `is_resend` data of the first week, or with Tesla
-  documentation.
-- Accepted gate risk (ADR 0001, lead decision 6): the ingest gate does not
-  read TLS. A live peer that stalls inside the TLS handshake holds a
-  connection until it closes it. A flood that fills the bound of 1024
-  connections blocks the vehicle while it lasts, plus the dead-peer bound:
-  about 150 s for an idle gone peer (TCP keep-alive), about 925 to 1,045 s
-  for a gone peer with unacknowledged data (retransmission timeout with the
-  default `tcp_retries2` of 15). Both bounds equal the present upstream
-  server and are below the vehicle buffer of at least 2,500 s, on which
-  the vehicle then relies. `TCP_USER_TIMEOUT` was considered and not
-  adopted (ADR 0001). Owner decision of 27 November 2026: the owner
-  accepts this risk. The gate gets no handshake deadline. Reassess at
-  the first `gate_full` event or on evidence of handshake-stalling peers.
-
-Record a purpose-based reason for each inapplicable obligation. The responsible
-lead verifies the integrated result within task authority. Main remains
-production-ready. Added cost, new providers or external data transfers,
-material lock-in or product changes, and irreversible data changes outside
-approved policy require owner approval. Required owner tests block merge.
-On release failure, use only an authorized recovery path. Stop at the agreed
-outcome and report unverified work explicitly.
+- **Migrator URL as a service variable.** It stays readable in the
+  pre-deploy container and to anything that reads the service variables
+  (ADR 0002, "Roles and privileges").
+- **Environment of the init.** The init runs as root; an image that starts
+  as user 10001 exposes the service variables in `/proc/1/environ` again
+  (ADR 0001, "Process tree on Railway").
+- **Note N1.** `fleet-telemetry` can read `DATABASE_URL` in the environment
+  of `ingest` (ADR 0001, "Process tree on Railway").
+- **Entrypoint and pre-deploy command as root** (ADR 0001, "Process tree on
+  Railway"). Open issue #31: a service variable named `cert` or `key` would
+  reach the environment of `ingest`.
+- **Gate.** No handshake deadline; a flood that fills the 1024 connections
+  blocks the vehicle while it lasts plus the dead-peer bound, below the
+  vehicle buffer (ADR 0001, lead decision 6).
+- **Queue loss** at a restart during a long database outage (§9).

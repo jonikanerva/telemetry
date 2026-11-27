@@ -1,8 +1,7 @@
 # ADR 0001: Ingestion architecture
 
 - Status: Accepted, 26 November 2026 (issue #4). Amended by issues #13, #14,
-  and #29, and by the owner decisions of 27 November 2026. The PRs of these
-  issues hold the review history.
+  and #29, and by the owner decisions of 27 November 2026.
 - Scope: the path from the vehicle to PostgreSQL. ADR 0002 owns the tables.
 
 ## Context
@@ -333,7 +332,7 @@ the owner:
    implemented by issue #29.
 2. **A separate UID for the child**, with `CAP_SETUID` in `ingest`.
    Declined on 27 November 2026: the owner accepts that the child can read
-   `DATABASE_URL` of `ingest` (`STACK.md` §15, note N1).
+   `DATABASE_URL` of `ingest` (note N1 below).
 3. **Keep the accepted risk.** Not chosen.
 
 **Decision of issue #29 (option 1).** The image has no `USER` line. The
@@ -341,7 +340,74 @@ entrypoint runs as root, removes the TLS and migrator variables, writes the
 TLS files (mode 0600, owner 10001), and starts `ingest run` through
 `setpriv` as UID and GID 10001 with no groups, no capabilities, and
 `no_new_privs`. Observed at the release of PR #30: PID 1 has UID 0, and UID
-10001 cannot read `/proc/1/environ`. `STACK.md` §15 records what stays.
+10001 cannot read `/proc/1/environ`. A process of UID 10001 reads
+`/proc/self/environ` but not `/proc/1/environ`.
+
+**Exposure of an init that runs as UID 10001.** It applies again after a
+rollback to an image that starts as user 10001 (`docs/ingest-release.md`,
+"Recovery"). Precondition: code execution in `fleet-telemetry` (for example
+after the mTLS handshake, `docs/security/image-advisories.md`, fact 2) or
+in `ingest`. No path from outside the container reads the file.
+
+- `MIGRATION_DATABASE_URL`: the role `telemetry_migrator` owns schema
+  `raw`. A holder can read, change, and drop each table of `raw`, with the
+  stored locations. Neon keeps 6 hours of restore history.
+- `DATABASE_URL`: `SELECT` and `INSERT` on `raw` (role
+  `telemetry_ingest`).
+- `TLS_KEY`: a holder can impersonate the server to the vehicle, if the
+  holder can also take the DNS name or the network path. `fleet-telemetry`
+  reads the key file anyway; the init adds a second copy, not a new
+  reader.
+
+**Residual risks of option 1.** These items stay after the owner decision
+for option 1 (27 November 2026). The owner accepted note N1 and the
+pre-deploy command as root explicitly on that date, and decided that
+issue #31 has no schedule.
+
+- **Note N1: the child can read the environment of `ingest`.**
+  `fleet-telemetry` runs as user 10001, as `ingest` does, so it can read
+  `/proc/<pid of ingest>/environ` (PID 2 on Railway, PID 1 under Docker)
+  with `DATABASE_URL` (`SELECT` and `INSERT` on `raw`). Only a
+  code-execution fault in `fleet-telemetry` after the mTLS handshake can
+  use it. Such a fault already reaches the records in flight; with the URL
+  it can also read the stored raw history and insert rows. A file for the
+  URL (mode 0600, read and deleted by `ingest` at start) does not help on
+  Railway: `ptrace_scope` is 0 there, so the child can also read the
+  memory of `ingest`. Only a separate user for the child (option 2) closes
+  the exposure on every kernel. Decision: no separate user and no
+  `PR_SET_DUMPABLE` change. Reassess with a security finding in the
+  handshake path of `fleet-telemetry`, a change of the user model of the
+  image, or more privileges for the role `telemetry_ingest`.
+- **The entrypoint runs as root before the drop.** A fault in the
+  entrypoint runs as root. The script is short, takes no input except the
+  service variables, and writes only the two TLS files. `vuln` pins its
+  git blob ID. It removes old TLS files with `rm -f` and then writes with
+  noclobber (`set -C`). The noclobber of dash is not an `O_EXCL` open: for
+  an existing target that is not a regular file, the write can succeed
+  (for example through a symbolic link to a FIFO). So the defence against
+  a link that a process of UID 10001 left in a reused container
+  filesystem rests on the `rm -f`, and on the premise that no process of
+  UID 10001 runs during the root part of the entrypoint.
+- **The shell variables `cert` and `key`.** The entrypoint copies the TLS
+  variables to them. If the container environment already holds a
+  variable with one of these names, the shell keeps it exported, and the
+  key reaches the environment of `ingest`. Precondition: a Railway service
+  variable named `cert` or `key`. Issue #31 tracks the fix. It has no
+  schedule, because the fix changes a watch path and so releases the
+  service again.
+- **The pre-deploy command runs as root.** It stays
+  `/usr/local/bin/ingest migrate`. A wrapper that drops to UID 10001 would
+  change a Railway setting, and a rollback to an earlier image without the
+  wrapper would then fail its pre-deploy step. Bounds: the pre-deploy
+  container is short-lived and separate from the service; it holds
+  `MIGRATION_DATABASE_URL` anyway; `ingest migrate` opens no listener,
+  takes no input except the answers of the database, and ends at the
+  latest at the pre-deploy timeout. Root there adds no network exposure.
+  Reassess when Railway can set the user of the pre-deploy command, or
+  when `ingest migrate` gets a listener or another input.
+
+Reassess option 1 when a release check shows a `Uid` other than 0 for
+PID 1, or with a change of the user model of the image.
 
 ## Key alternatives
 
@@ -362,7 +428,10 @@ TLS files (mode 0600, owner 10001), and starts `ingest run` through
   nothing. Rejected for now: with a volume each redeploy has a downtime,
   and a broken release stops ingest; the pre-deploy command has no volume
   [R8]. The spool is the known measure against a loss above the 15-minute
-  budget at a restart during a long outage. Reassess when a crash or an
+  budget at a restart during a long outage. Owner decision of 27 November
+  2026: the owner accepts that a restart during a database outage longer
+  than 15 minutes can lose the whole in-memory queue (at most 64 MiB), and
+  there is no durable spool for now. Reassess when a crash or an
   outage restart shows a real gap, or when Railway keeps the old deployment
   when a new deployment with a volume fails. The earlier condition, a
   container build check before merge, is met (CI job `image-check`).
@@ -399,7 +468,10 @@ protocol server would replace the gate and the child and keep the writer.
 ## Lead decisions
 
 1. **Flush interval: default 900 s.** A used-up CU-hour quota suspends Neon
-   until the next month. Owner decision of 27 November 2026: it stays 900 s.
+   until the next month. An interval of 300 s or less keeps the Neon
+   compute active for the whole awake time, because the compute suspends
+   only after 5 minutes without activity. Owner decision of 27 November
+   2026: it stays 900 s.
    Reassess after the one-week follow-up with the measured awake hours.
    Lower the interval only if the measured awake hours keep a month below
    60 CU-hours at the always-on rate.
@@ -407,10 +479,13 @@ protocol server would replace the gate and the child and keep the writer.
    `neondb_owner` stays out of Railway.
 3. **Fixed compute of 0.25 CU** for production (endpoint
    `ep-young-dawn-bgyaj83l`) and `test`, confirmed by the owner on 27
-   November 2026.
+   November 2026, together with a storage without a connection pool.
+   Verify the effective size and the consumption after the first week of
+   ingest.
 4. **`delivery_policy` stays unset.** Tesla documents neither the default
    nor the billing effect. Confirmed by the owner on 27 November 2026.
-   Reassess with the `is_resend` data of the first week.
+   Reassess with the `is_resend` data of the first week, or with Tesla
+   documentation.
 5. **`jiff` and `jiff-sqlx` line 1.**
 6. **Accepted gate risk.** A live peer that stalls inside the TLS handshake
    holds a connection, and a flood that fills the 1024 bound blocks the
@@ -420,13 +495,16 @@ protocol server would replace the gate and the child and keep the writer.
    `gate_full` event or on evidence of stalling peers.
 7. **Railway settings by hand; Infrastructure as Code waits.** Railway
    deprecated config as code [R9]. The owner decided on 27 November 2026: no
-   `railway.json`. The blocking facts for Infrastructure as Code
+   `railway.json` and no file in its place; Infrastructure as Code
+   (`.railway/railway.ts`) when it is possible and safe. The blocking facts for Infrastructure as Code
    (`.railway/railway.ts`) [R11][R12]: the reference does not document the
    Dockerfile path, watch paths, pre-deploy timeout, draining and overlap
    time, restart policy, or TCP proxy, nor whether an apply keeps port
    57438 or starts a deployment. The December 2026 reassessment is a
-   separate task with a `railway config plan` dry run (owner decision). A
-   plan cannot show whether an apply starts a deployment.
+   separate task with a `railway config plan` dry run (owner decision).
+   Adopt Infrastructure as Code only if the plan does not touch the TCP
+   proxy port and starts no deployment. A plan cannot show whether an
+   apply starts a deployment.
 
 ## To verify at first deployment
 

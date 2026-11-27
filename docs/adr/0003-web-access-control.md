@@ -23,8 +23,8 @@
   you will not be charged." [CF]
 - The web application runs on Railway behind the Railway proxy. An IP
   address of a request is therefore not a reliable identity for a limit.
-- `STACK.md` §2.5 names OIDC with an approved provider as the profile
-  default for accounts. A first-party session system needs a demonstrated
+- `docs/stack-web-profile.md` §2.5 names OIDC with an approved provider
+  as the profile default for accounts. A first-party session system needs a demonstrated
   need, a threat model, an independent security review, and end-to-end
   evidence.
 
@@ -44,10 +44,10 @@
 - Where the server keeps session data is a technical choice of the first
   web PR.
 - The demonstrated need for a first-party session system under
-  `STACK.md` §2.5: the owner does not use Cloudflare Access now, because
-  it needs a payment method. The product has one user and no accounts, so
-  an OIDC provider adds an external provider for one person. The other requirements of
-  §2.5 (threat model, independent security review, end-to-end evidence,
+  `docs/stack-web-profile.md` §2.5: the owner does not use Cloudflare
+  Access now, because it needs a payment method. The product has one user
+  and no accounts, so an OIDC provider adds an external provider for one
+  person. The other requirements of §2.5 (threat model, independent security review, end-to-end evidence,
   and the cookie, CSRF, rotation, fixation, expiry, revocation, and logout
   rules) apply to the first web PR.
 
@@ -57,8 +57,8 @@
   possible. It needs a payment method on the Cloudflare account, also for
   the free plan [CF]. Not used now. It can go in front of the application
   later without an application change.
-- **OIDC with a provider.** The `STACK.md` §2.5 default. It adds an
-  external provider and a login flow for one user. Rejected.
+- **OIDC with a provider.** The `docs/stack-web-profile.md` §2.5 default.
+  It adds an external provider and a login flow for one user. Rejected.
 - **HTTP basic authentication.** Simple, but the browser sends the
   password with each request, has no real logout, and keeps no session
   with an expiry. Rejected.
@@ -67,7 +67,8 @@
 
 - The login page is reachable from the internet.
 - The login, the session, and the throttle are first-party security code.
-  They need the evidence of `STACK.md` §2.5 in the first web PR.
+  They need the evidence of `docs/stack-web-profile.md` §2.5 in the first
+  web PR.
 - There is no second factor. The protection depends on the length and the
   secrecy of the password.
 - A global throttle also slows down the owner's own login while somebody
