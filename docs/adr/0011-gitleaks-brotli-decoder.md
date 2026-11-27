@@ -1,8 +1,10 @@
 # ADR 0011: Gitleaks 8.30.1 with the brotli decoder of CVE-2026-111497
 
-- Status: Proposed. The lead proposes the decision, 28 November 2026. The
-  approving independent reviewer is open. The status becomes Accepted
-  when an independent reviewer approves the PR of this ADR.
+- Status: Accepted. Decided by the lead within delegated authority
+  (`DOCTRINE.md` "Exceptions"), 28 November 2026, with approval by an
+  independent reviewer (qa-enforcer) in PR #47: the review of head
+  `bd5aac5834b8c9070ff5790bd76158d48aad5e29`,
+  <https://github.com/jonikanerva/telemetry/pull/47#pullrequestreview-6091806244>.
 - Responsible lead: the lead agent of the delivery task.
 - Scope: the pinned Gitleaks 8.30.1 (`mise.toml`), which runs as the secret
   scan in `mise run verify` and in the CI job `ci`. Only CVE-2026-111497
@@ -61,11 +63,20 @@
 
 - The guard finds the literal flag name only. It does not find a flag
   that a command builds at run time: from a variable, with quotes inside
-  the name, or split over lines. Such a change is deliberate, and the
-  review of the PR is the control.
+  the name, or split over lines. It also does not find an escape of the
+  file format inside the name, for example a TOML or YAML Unicode escape:
+  the tool that reads the file gives Gitleaks the real flag. Such a change
+  is deliberate, and the review of the PR is the control.
 - The guard reads tracked files only. An untracked file that mise or a
   shell runs is not checked, for example `mise.local.toml`, a global mise
-  config, or a local task file. CI runs only tracked files.
+  config, a local task file, or the untracked target of a tracked
+  symlink. CI runs only tracked files.
+- For a tracked file with the assume-unchanged or skip-worktree bit,
+  `git grep` reads the index copy, not the work tree file. The bits are
+  local index state, so the effect is local only; CI has a fresh
+  checkout.
+- The guard searches from the directory where it runs; the task `checks`
+  runs it at the repository root.
 - The repository has no submodules; the guard does not read submodules.
 - At tag v8.30.1, only the command line flag sets the depth: no config
   key and no `GITLEAKS_*` environment variable sets it. The version check
