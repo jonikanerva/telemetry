@@ -9,6 +9,12 @@
 //! | `PORT`                   | Required. TCP port of the server, from 1 to 65535. Railway sets it. |
 //! | `WEB_STATIC_DIR`         | Required. Directory of the built SPA: `index.html` and `assets/`. |
 //! | `RAILWAY_GIT_COMMIT_SHA` | Optional. The commit of the deployment, 7 to 40 lowercase hex digits. Without it, the version is `unknown`. |
+//! | `WEB_TEST_TLS_CERT`      | `serve-test` only (feature `test-server`). Required. Path of a PEM file with the certificate chain, at most 64 KiB. |
+//! | `WEB_TEST_TLS_KEY`       | `serve-test` only (feature `test-server`). Required. Path of a PEM file with the private key of the certificate, at most 64 KiB. |
+//!
+//! `serve` reads no TLS variable: the Railway proxy ends TLS. `serve-test`
+//! reads the two TLS variables with `test_tls_from_env` and serves HTTPS
+//! (`crate::tls`).
 //!
 //! `index.html` must hold [`VERSION_PLACEHOLDER`] exactly once. The server
 //! replaces it with the version at startup, so the SPA can compare its own
@@ -170,6 +176,74 @@ impl StaticFiles {
         self.index_template
             .replacen(VERSION_PLACEHOLDER, version.as_str(), 1)
     }
+}
+
+/// The largest certificate or key file that `serve-test` reads. A
+/// self-signed certificate and its key are below 2 KiB.
+#[cfg(feature = "test-server")]
+pub const MAX_TLS_FILE_BYTES: u64 = 64 * 1024;
+
+/// Reads the TLS certificate and key of `serve-test` from the process
+/// environment.
+///
+/// # Errors
+///
+/// Returns [`ConfigError`] as [`test_tls_from_vars`] does.
+#[cfg(feature = "test-server")]
+pub fn test_tls_from_env() -> Result<crate::tls::TestTls, ConfigError> {
+    test_tls_from_vars(|name| std::env::var_os(name))
+}
+
+/// Reads the TLS certificate and key of `serve-test`: the PEM files that
+/// `WEB_TEST_TLS_CERT` and `WEB_TEST_TLS_KEY` name.
+///
+/// # Errors
+///
+/// Returns [`ConfigError`] when a variable is missing or empty, a file
+/// cannot be read or is larger than [`MAX_TLS_FILE_BYTES`], or rustls
+/// cannot use the certificate and the key. The error holds no path and no
+/// file content.
+#[cfg(feature = "test-server")]
+pub fn test_tls_from_vars(
+    var: impl Fn(&str) -> Option<OsString>,
+) -> Result<crate::tls::TestTls, ConfigError> {
+    use crate::tls::{HANDSHAKE_TIMEOUT, TestTls, TlsFileError, server_config};
+
+    const CERT: &str = "WEB_TEST_TLS_CERT";
+    const KEY: &str = "WEB_TEST_TLS_KEY";
+    let cert = read_tls_file(&var, CERT)?;
+    let key = read_tls_file(&var, KEY)?;
+    let config = server_config(&cert, &key).map_err(|err| match err {
+        TlsFileError::CertificateNotPem => invalid(CERT, "the file is not valid PEM"),
+        TlsFileError::NoCertificate => invalid(CERT, "the file holds no PEM certificate"),
+        TlsFileError::NoKey => invalid(KEY, "the file holds no PEM private key"),
+        TlsFileError::KeyRejected => invalid(
+            KEY,
+            "the key is not supported or does not match the certificate",
+        ),
+    })?;
+    Ok(TestTls::new(Arc::new(config), HANDSHAKE_TIMEOUT))
+}
+
+#[cfg(feature = "test-server")]
+fn read_tls_file(
+    var: &impl Fn(&str) -> Option<OsString>,
+    name: &'static str,
+) -> Result<Vec<u8>, ConfigError> {
+    let path = var(name).ok_or(ConfigError::Missing { name })?;
+    if path.is_empty() {
+        return Err(invalid(name, "expected a file path"));
+    }
+    let unreadable = || invalid(name, "cannot read the file");
+    let file = File::open(PathBuf::from(path)).map_err(|_| unreadable())?;
+    let mut bytes = Vec::new();
+    file.take(MAX_TLS_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unreadable())?;
+    if u64::try_from(bytes.len()).map_or(true, |len| len > MAX_TLS_FILE_BYTES) {
+        return Err(invalid(name, "the file is larger than 64 KiB"));
+    }
+    Ok(bytes)
 }
 
 fn read_index(path: &Path) -> Result<String, ConfigError> {
@@ -441,6 +515,144 @@ mod tests {
             config(&dir, &[]).unwrap_err().reason(),
             "index.html is not UTF-8"
         );
+    }
+
+    #[cfg(feature = "test-server")]
+    mod test_tls {
+        use super::*;
+        use crate::tls::tests::pem;
+
+        fn tls(dir: &TempDir, cert: Option<&str>, key: Option<&str>) -> ConfigError {
+            let cert = cert.map(|name| dir.path().join(name).to_str().unwrap().to_owned());
+            let key = key.map(|name| dir.path().join(name).to_str().unwrap().to_owned());
+            let mut pairs = Vec::new();
+            if let Some(cert) = cert.as_deref() {
+                pairs.push(("WEB_TEST_TLS_CERT", cert));
+            }
+            if let Some(key) = key.as_deref() {
+                pairs.push(("WEB_TEST_TLS_KEY", key));
+            }
+            test_tls_from_vars(vars(&pairs)).unwrap_err()
+        }
+
+        #[test]
+        fn requires_both_variables() {
+            let dir = TempDir::new();
+            dir.write("cert.pem", &pem("CERTIFICATE", "AAAA"));
+            dir.write("key.pem", &pem("PRIVATE KEY", "AAAA"));
+            assert_eq!(
+                tls(&dir, None, Some("key.pem")),
+                ConfigError::Missing {
+                    name: "WEB_TEST_TLS_CERT"
+                }
+            );
+            assert_eq!(
+                tls(&dir, Some("cert.pem"), None),
+                ConfigError::Missing {
+                    name: "WEB_TEST_TLS_KEY"
+                }
+            );
+            let err =
+                test_tls_from_vars(vars(&[("WEB_TEST_TLS_CERT", ""), ("WEB_TEST_TLS_KEY", "")]))
+                    .unwrap_err();
+            assert_eq!(
+                err,
+                ConfigError::Invalid {
+                    name: "WEB_TEST_TLS_CERT",
+                    reason: "expected a file path",
+                }
+            );
+        }
+
+        #[test]
+        fn rejects_a_missing_or_too_large_file() {
+            let dir = TempDir::new();
+            dir.write("cert.pem", &pem("CERTIFICATE", "AAAA"));
+            assert_eq!(
+                tls(&dir, Some("missing.pem"), Some("cert.pem")),
+                ConfigError::Invalid {
+                    name: "WEB_TEST_TLS_CERT",
+                    reason: "cannot read the file",
+                }
+            );
+            assert_eq!(
+                tls(&dir, Some("cert.pem"), Some("missing.pem")),
+                ConfigError::Invalid {
+                    name: "WEB_TEST_TLS_KEY",
+                    reason: "cannot read the file",
+                }
+            );
+            // A directory cannot be read as a file.
+            dir.write("sub/x", b"x");
+            assert_eq!(
+                tls(&dir, Some("sub"), Some("cert.pem")).reason(),
+                "cannot read the file"
+            );
+            let large = vec![b' '; usize::try_from(MAX_TLS_FILE_BYTES).unwrap() + 1];
+            dir.write("large.pem", &large);
+            assert_eq!(
+                tls(&dir, Some("large.pem"), Some("cert.pem")),
+                ConfigError::Invalid {
+                    name: "WEB_TEST_TLS_CERT",
+                    reason: "the file is larger than 64 KiB",
+                }
+            );
+        }
+
+        #[test]
+        fn rejects_files_without_a_usable_certificate_and_key() {
+            let dir = TempDir::new();
+            dir.write("cert.pem", &pem("CERTIFICATE", "AAAA"));
+            dir.write("key.pem", &pem("PRIVATE KEY", "AAAA"));
+            dir.write("empty.pem", b"");
+            assert_eq!(
+                tls(&dir, Some("empty.pem"), Some("key.pem")),
+                ConfigError::Invalid {
+                    name: "WEB_TEST_TLS_CERT",
+                    reason: "the file holds no PEM certificate",
+                }
+            );
+            assert_eq!(
+                tls(&dir, Some("cert.pem"), Some("empty.pem")),
+                ConfigError::Invalid {
+                    name: "WEB_TEST_TLS_KEY",
+                    reason: "the file holds no PEM private key",
+                }
+            );
+            // The key file and the certificate file are swapped.
+            assert_eq!(
+                tls(&dir, Some("key.pem"), Some("cert.pem")).name(),
+                "WEB_TEST_TLS_CERT"
+            );
+            assert_eq!(
+                tls(&dir, Some("cert.pem"), Some("key.pem")),
+                ConfigError::Invalid {
+                    name: "WEB_TEST_TLS_KEY",
+                    reason: "the key is not supported or does not match the certificate",
+                }
+            );
+        }
+
+        #[test]
+        fn the_error_text_never_holds_the_path_or_the_content() {
+            // A marker in the key file: base64 of "MARKER".
+            const MARKER: &str = "TUFSS0VS";
+            let dir = TempDir::new();
+            dir.write("cert.pem", &pem("CERTIFICATE", "AAAA"));
+            dir.write("key.pem", &pem("PRIVATE KEY", MARKER));
+            let errors = [
+                tls(&dir, Some("cert.pem"), Some("key.pem")),
+                tls(&dir, Some("key.pem"), Some("cert.pem")),
+                tls(&dir, Some("missing.pem"), Some("key.pem")),
+            ];
+            let path = dir.path().to_str().unwrap();
+            for err in errors {
+                let text = format!("{err} {err:?}");
+                assert!(!text.contains(path), "{text}");
+                assert!(!text.contains(MARKER), "{text}");
+                assert!(!text.contains("AAAA"), "{text}");
+            }
+        }
     }
 
     #[test]

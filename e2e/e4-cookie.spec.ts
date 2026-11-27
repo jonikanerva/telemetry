@@ -1,21 +1,23 @@
-// Experiment E4: does each browser engine keep a `__Host-` cookie with the
-// Secure attribute over http://localhost? The session cookie of the login
-// (S2) depends on the answer for the local test server.
+// Experiment E4: each browser engine keeps a `__Host-` cookie with the
+// Secure attribute on the test server. The session cookie of the login
+// (S2) depends on it.
+//
+// Over plain http://localhost, the webkit engine drops the cookie, so the
+// test server serves HTTPS (playwright.config.ts). Every engine must keep
+// the cookie over https://localhost.
 //
 // The requests run inside the page with fetch, so the cookie store of the
 // engine decides. The `request` fixture of Playwright has its own cookie
 // store and would give the same answer in every engine.
-//
-// The test records the result of each engine as an annotation. It fails
-// only when Chromium or Firefox does not return the cookie. The WebKit
-// result is recorded for the lead and does not fail the test.
 import { expect, test } from '@playwright/test';
 
 type Outcome = { readonly setStatus: number; readonly checkStatus: number; readonly body: unknown };
 
-test('E4: a __Host- Secure cookie over http://localhost', async ({ page, browserName }, testInfo) => {
+test('E4: a __Host- Secure cookie over https://localhost', async ({ page, browserName }) => {
   await page.goto('/');
-  expect(new URL(page.url()).hostname).toBe('localhost');
+  const url = new URL(page.url());
+  expect(url.protocol).toBe('https:');
+  expect(url.hostname).toBe('localhost');
 
   const outcome = await page.evaluate(async (): Promise<Outcome> => {
     const set = await fetch('/test-only/e4/cookie/set', { credentials: 'same-origin' });
@@ -29,15 +31,6 @@ test('E4: a __Host- Secure cookie over http://localhost', async ({ page, browser
   if (typeof body !== 'object' || body === null || !('present' in body) || typeof body.present !== 'boolean') {
     throw new Error('the check route returned no {"present": boolean} body');
   }
-  const present = body.present;
-
-  testInfo.annotations.push({
-    type: 'E4',
-    description: `${browserName}: the __Host- Secure cookie ${present ? 'came back' : 'did not come back'} over http://localhost`,
-  });
-  console.log(`E4 ${browserName}: present=${String(present)}`);
-
-  if (browserName !== 'webkit') {
-    expect(present, `${browserName} must keep the cookie`).toBe(true);
-  }
+  console.log(`E4 ${browserName}: present=${String(body.present)}`);
+  expect(body.present, `${browserName} must keep the __Host- cookie over HTTPS`).toBe(true);
 });

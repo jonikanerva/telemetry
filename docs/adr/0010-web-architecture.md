@@ -78,6 +78,18 @@
    `serve-test` with test-only routes on the loopback interface. The
    Playwright journeys run against it with the real router, middleware,
    and built SPA. The release image does not build the feature.
+   `serve-test` serves HTTPS (rustls with the aws-lc-rs provider, TLS 1.2
+   and 1.3, a 10 s handshake deadline) in the accept loop of `serve`, with
+   a self-signed certificate for `localhost` that `e2e/tls-cert.sh` makes
+   for each run. Reason: experiment E4 showed that WebKit drops a
+   `__Host-` `Secure` cookie over `http://localhost`, and the session
+   cookie of the login needs that prefix in all three engines. rustls and
+   tokio-rustls are optional dependencies of the feature, so the release
+   binary has no TLS code; `serve` stays plain HTTP behind the Railway
+   proxy. Alternatives: a session cookie without the `__Host-` prefix or
+   without `Secure` in the tests only (the tests would not check the
+   production cookie); a TLS proxy in front of the test server (one more
+   tool to pin and run).
 6. **Image and service.** `webapp/Dockerfile` has a Node builder, a Rust
    builder, and a `debian:trixie-slim` final stage with `apt-get upgrade`
    and `USER 10001:10001`. A `USER` line is safe here, unlike the ingest
@@ -156,6 +168,19 @@
   fractional digits; the pattern of `wire::Instant` limits them to 6.
 - The output does not depend on the output directory
   (`output.tsConfigPath: null`).
+
+## Result of experiment E4
+
+- Question: do the three Playwright engines keep a
+  `__Host-e4=1; Path=/; Secure; HttpOnly; SameSite=Strict` cookie over
+  `http://localhost`?
+- Playwright 1.65.1, on the CI runner `ubuntu-26.04` (linux/amd64) and on
+  macOS arm64: chromium and firefox keep the cookie; webkit drops it.
+- Consequence: the test server serves HTTPS (decision 5). Over
+  `https://localhost` with the certificate of `e2e/tls-cert.sh`, all three
+  engines keep the cookie; the E4 test asserts this in each engine.
+- All three engines run on the CI runner with the system packages of
+  `playwright install --with-deps`.
 
 ## Key alternatives
 

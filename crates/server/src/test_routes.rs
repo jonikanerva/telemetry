@@ -5,7 +5,8 @@
 //! `OpenAPI` document.
 //!
 //! Experiment E4 checks that each browser of the Playwright tests keeps a
-//! `Secure` cookie with the `__Host-` prefix on `http://localhost`:
+//! `Secure` cookie with the `__Host-` prefix on `https://localhost` (the
+//! test server serves HTTPS, `crate::tls`):
 //!
 //! - `GET /test-only/e4/cookie/set`: 204 with
 //!   `Set-Cookie: __Host-e4=1; Path=/; Secure; HttpOnly; SameSite=Strict`.

@@ -11,19 +11,21 @@ use telemetry_web_server::cli::{self, Command};
 use telemetry_web_server::config::Config;
 use telemetry_web_server::server::{self, LIMITS, ServeOutcome};
 use telemetry_web_server::shutdown::{self, ShutdownCause};
+#[cfg(feature = "test-server")]
+use telemetry_web_server::tls::TestTls;
 use telemetry_web_server::{logging, openapi};
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
 const EXIT_USAGE: u8 = 2;
 
-/// Which router and address a serve command uses.
+/// Which router, address, and transport a serve command uses.
 #[derive(Clone, Copy)]
 enum Mode {
-    /// `serve`: the production router on all interfaces.
+    /// `serve`: the production router on all interfaces, plain HTTP.
     Production,
     /// `serve-test`: the router with the test-only routes on the loopback
-    /// interface.
+    /// interface, HTTPS.
     #[cfg(feature = "test-server")]
     Test,
 }
@@ -66,6 +68,21 @@ fn serve(mode: Mode) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    #[cfg(feature = "test-server")]
+    let tls = match mode {
+        Mode::Production => None,
+        Mode::Test => match telemetry_web_server::config::test_tls_from_env() {
+            Ok(tls) => Some(tls),
+            Err(err) => {
+                error!(
+                    name = err.name(),
+                    reason = err.reason(),
+                    "invalid_configuration"
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+    };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -76,6 +93,9 @@ fn serve(mode: Mode) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    #[cfg(feature = "test-server")]
+    let code = runtime.block_on(run(config, mode, tls));
+    #[cfg(not(feature = "test-server"))]
     let code = runtime.block_on(run(config, mode));
     // Dropping a runtime waits without a limit for its blocking tasks.
     // `server::serve` has already applied the shutdown deadline, so stop
@@ -84,7 +104,11 @@ fn serve(mode: Mode) -> ExitCode {
     code
 }
 
-async fn run(config: Config, mode: Mode) -> ExitCode {
+async fn run(
+    config: Config,
+    mode: Mode,
+    #[cfg(feature = "test-server")] tls: Option<TestTls>,
+) -> ExitCode {
     let state = AppState::new(config.version.clone());
     let (address, router): (IpAddr, _) = match mode {
         Mode::Production => (
@@ -111,6 +135,12 @@ async fn run(config: Config, mode: Mode) -> ExitCode {
         let cause = shutdown::signal_received().await;
         cause_tx.send(cause).ok();
     };
+    #[cfg(feature = "test-server")]
+    let outcome = match tls {
+        Some(tls) => server::serve_tls(listener, router, shutdown, LIMITS, tls).await,
+        None => server::serve(listener, router, shutdown, LIMITS).await,
+    };
+    #[cfg(not(feature = "test-server"))]
     let outcome = server::serve(listener, router, shutdown, LIMITS).await;
     let cause = cause_rx.await.ok();
     match (outcome, cause) {

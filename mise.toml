@@ -141,6 +141,7 @@ run = [
   "sh -n scripts/image-check-web.sh",
   "sh -n scripts/contract-check.sh",
   "sh -n scripts/bundle-size.sh",
+  "sh -n e2e/tls-cert.sh",
   "! git ls-files | grep -E '(^|/)(\\.env|secrets/|\\.bin/|node_modules/)'",
 ]
 

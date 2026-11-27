@@ -225,14 +225,21 @@ mise run contract
 ```
 
 The web server reads `PORT`, `WEB_STATIC_DIR` (the image sets it), and the
-optional `RAILWAY_GIT_COMMIT_SHA` (the version). To run the test server
-with the built SPA locally:
+optional `RAILWAY_GIT_COMMIT_SHA` (the version). The test server serves
+HTTPS and also reads `WEB_TEST_TLS_CERT` and `WEB_TEST_TLS_KEY`: the PEM
+files of its certificate and key. `e2e/tls-cert.sh` makes a self-signed
+certificate for `localhost` that is valid for 2 days, in the ignored
+directory `e2e/.tls/`. To run the test server with the built SPA locally:
 
 ```sh
 cargo build --locked -p telemetry-web-server --features test-server
 pnpm run build:web
-PORT=4173 WEB_STATIC_DIR=web/dist target/debug/telemetry-web-server serve-test
+sh e2e/tls-cert.sh e2e/.tls
+PORT=4173 WEB_STATIC_DIR=web/dist WEB_TEST_TLS_CERT=e2e/.tls/cert.pem \
+  WEB_TEST_TLS_KEY=e2e/.tls/key.pem target/debug/telemetry-web-server serve-test
 ```
+
+Then open <https://localhost:4173> and accept the self-signed certificate.
 
 The GitHub Actions workflow `.github/workflows/ci.yml` also runs
 `mise run ci` and `mise run vuln` on linux/amd64 for each pull request and

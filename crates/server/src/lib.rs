@@ -18,6 +18,7 @@
 //! - [`shutdown`]: the signals and the shutdown deadline.
 //! - `test_routes`: test-only routes for the browser tests (feature
 //!   `test-server`).
+//! - `tls`: the TLS of the command `serve-test` (feature `test-server`).
 //! - [`cli`]: the command line.
 //!
 //! The ingest image (`ingest/Dockerfile`) does not build this crate. It
@@ -39,6 +40,8 @@ pub mod server;
 pub mod shutdown;
 #[cfg(feature = "test-server")]
 pub mod test_routes;
+#[cfg(feature = "test-server")]
+pub mod tls;
 pub mod wire;
 
 #[cfg(test)]

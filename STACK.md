@@ -404,9 +404,13 @@ of the web server. A feature that only the web server uses is in
 | utoipa-axum, web | 0.3.0 | none | Ties the documented routes to the registered routes | MIT OR Apache-2.0 |
 | tower-http, web | 0.7.1 | server crate: `catch-panic`, `fs` | Panic containment; static files with precompressed gzip | MIT |
 | tower, web dev | 0.5.3 | server tests: `util` | `oneshot` in the HTTP tests | MIT |
+| rustls, web test server | 0.23.46 | server crate, optional (feature `test-server`): `aws_lc_rs`, `std`, `tls12` | TLS 1.2 and 1.3 of `serve-test` with the explicit aws-lc-rs provider; PEM parser of `rustls-pki-types` | Apache-2.0 OR ISC OR MIT |
+| tokio-rustls, web test server | 0.26.6 | server crate, optional (feature `test-server`): none | Tokio TLS acceptor of `serve-test` | MIT OR Apache-2.0 |
 
 The web server adds the axum features `json` and `matched-path` and, in the
 tests, the tokio feature `test-util`, in `crates/server/Cargo.toml`.
+Only the feature `test-server` enables rustls and tokio-rustls, so the
+release image has no TLS code; the Railway proxy ends TLS.
 
 ### Pinned npm packages
 

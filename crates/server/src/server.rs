@@ -25,6 +25,11 @@
 //! ends TLS and HTTP/2 at its edge. A request that hyper rejects before
 //! the router (for example a malformed head, status 400 or 431) gets the
 //! plain hyper response, without a problem body or the security headers.
+//!
+//! The test server (feature `test-server`) serves HTTPS with the same loop
+//! and limits: `serve_tls` does the TLS handshake in the connection task,
+//! with the permit, within the handshake deadline of `crate::tls`. A
+//! shutdown ends an open handshake at once.
 
 use std::future::Future;
 use std::pin::pin;
@@ -35,6 +40,7 @@ use axum::Router;
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::{JoinError, JoinSet};
@@ -74,6 +80,16 @@ pub enum ServeOutcome {
     DeadlineExceeded(usize),
 }
 
+/// How a connection reaches the router.
+#[derive(Clone)]
+enum Transport {
+    /// Plain HTTP: the Railway proxy ends TLS.
+    Plain,
+    /// HTTPS of the test server.
+    #[cfg(feature = "test-server")]
+    Tls(crate::tls::TestTls),
+}
+
 /// Serves `router` on `listener` until `shutdown` completes. Then stops
 /// as [`crate::shutdown`] describes.
 pub async fn serve(
@@ -81,6 +97,29 @@ pub async fn serve(
     router: Router,
     shutdown: impl Future<Output = ()>,
     limits: ServerLimits,
+) -> ServeOutcome {
+    serve_with(listener, router, shutdown, limits, Transport::Plain).await
+}
+
+/// Serves `router` over TLS, as [`serve`] does over plain HTTP. Only the
+/// test server uses it.
+#[cfg(feature = "test-server")]
+pub async fn serve_tls(
+    listener: TcpListener,
+    router: Router,
+    shutdown: impl Future<Output = ()>,
+    limits: ServerLimits,
+    tls: crate::tls::TestTls,
+) -> ServeOutcome {
+    serve_with(listener, router, shutdown, limits, Transport::Tls(tls)).await
+}
+
+async fn serve_with(
+    listener: TcpListener,
+    router: Router,
+    shutdown: impl Future<Output = ()>,
+    limits: ServerLimits,
+    transport: Transport,
 ) -> ServeOutcome {
     let permits = Arc::new(Semaphore::new(limits.max_connections));
     let (stop_tx, stop_rx) = watch::channel(false);
@@ -112,6 +151,7 @@ pub async fn serve(
         };
         connections.spawn(serve_connection(
             stream,
+            transport.clone(),
             router.clone(),
             limits,
             stop_rx.clone(),
@@ -144,26 +184,52 @@ pub async fn serve(
     outcome
 }
 
+/// Serves one connection. The permit is held until the connection
+/// closes, also during a TLS handshake.
 async fn serve_connection(
     stream: TcpStream,
+    transport: Transport,
     router: Router,
     limits: ServerLimits,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     _permit: OwnedSemaphorePermit,
 ) {
+    match transport {
+        Transport::Plain => serve_http(stream, router, limits, stop).await,
+        #[cfg(feature = "test-server")]
+        Transport::Tls(tls) => {
+            let mut stop = stop;
+            let accepted = tokio::select! {
+                accepted = tls.accept(stream) => accepted,
+                () = stopped(&mut stop) => return,
+            };
+            match accepted {
+                Ok(stream) => serve_http(stream, router, limits, stop).await,
+                Err(cause) => info!(cause, "connection_failed"),
+            }
+        }
+    }
+}
+
+/// Completes when the server stops.
+async fn stopped(stop: &mut watch::Receiver<bool>) {
+    // `wait_for` returns a guard that is not `Send`. Map it to `()` before
+    // the next await.
+    stop.wait_for(|stop| *stop).await.ok();
+}
+
+async fn serve_http<I>(io: I, router: Router, limits: ServerLimits, mut stop: watch::Receiver<bool>)
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let mut builder = http1::Builder::new();
     builder
         .timer(TokioTimer::new())
         .header_read_timeout(limits.header_read_timeout);
-    let connection =
-        builder.serve_connection(TokioIo::new(stream), TowerToHyperService::new(router));
+    let connection = builder.serve_connection(TokioIo::new(io), TowerToHyperService::new(router));
     let mut connection = pin!(connection);
 
-    // `wait_for` returns a guard that is not `Send`. Map it to `()` before
-    // the next await.
-    let stopped = async move {
-        stop.wait_for(|stop| *stop).await.ok();
-    };
+    let stopped = stopped(&mut stop);
     let result = tokio::select! {
         result = connection.as_mut() => result,
         () = stopped => {
@@ -321,6 +387,94 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         let (outcome, _) = server.stop().await;
         assert_eq!(outcome, ServeOutcome::Drained);
+    }
+
+    /// The TLS tests use a configuration without a certificate, so every
+    /// handshake fails: the repository holds no key, and the Rust tests
+    /// make none. The Playwright journeys test a complete handshake
+    /// (`e2e/playwright.config.ts`).
+    #[cfg(feature = "test-server")]
+    mod tls {
+        use super::*;
+        use crate::tls::TestTls;
+        use crate::tls::tests::config_without_certificate;
+
+        async fn start(limits: ServerLimits, handshake_timeout: Duration) -> TestServer {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let started = Arc::new(Notify::new());
+            let (stop, stopped) = oneshot::channel::<()>();
+            let tls = TestTls::new(config_without_certificate(), handshake_timeout);
+            let task = tokio::spawn(serve_tls(
+                listener,
+                router(Arc::clone(&started)),
+                async move { stopped.await.unwrap() },
+                limits,
+                tls,
+            ));
+            TestServer {
+                address,
+                started,
+                stop,
+                task,
+            }
+        }
+
+        /// Reads until the server closes the connection; fails after 5 s.
+        async fn read_until_closed(stream: &mut TcpStream) -> Vec<u8> {
+            let mut rest = Vec::new();
+            tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest))
+                .await
+                .expect("the server did not close the connection")
+                .ok();
+            rest
+        }
+
+        #[tokio::test]
+        async fn closes_a_connection_without_a_handshake_at_the_deadline() {
+            let handshake_timeout = Duration::from_millis(300);
+            let server = start(TEST_LIMITS, handshake_timeout).await;
+            let mut stream = TcpStream::connect(server.address).await.unwrap();
+            let started = Instant::now();
+            assert_eq!(read_until_closed(&mut stream).await, b"");
+            let elapsed = started.elapsed();
+            assert!(elapsed >= handshake_timeout, "{elapsed:?}");
+            assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+            let (outcome, _) = server.stop().await;
+            assert_eq!(outcome, ServeOutcome::Drained);
+        }
+
+        #[tokio::test]
+        async fn a_failed_handshake_frees_the_connection_slot() {
+            let limits = ServerLimits {
+                max_connections: 1,
+                ..TEST_LIMITS
+            };
+            let server = start(limits, Duration::from_millis(300)).await;
+            // Plain HTTP on the TLS port: the handshake fails, and the
+            // client gets no HTTP response.
+            let mut plain = send(server.address, "/fast").await;
+            let response = read_until_closed(&mut plain).await;
+            assert!(!response.starts_with(b"HTTP/"), "{response:?}");
+            // The one slot is free again: the server accepts the next
+            // connection and closes it at the handshake deadline.
+            let mut next = TcpStream::connect(server.address).await.unwrap();
+            assert_eq!(read_until_closed(&mut next).await, b"");
+            let (outcome, _) = server.stop().await;
+            assert_eq!(outcome, ServeOutcome::Drained);
+        }
+
+        #[tokio::test]
+        async fn the_shutdown_ends_an_open_handshake_at_once() {
+            let server = start(TEST_LIMITS, Duration::from_secs(60)).await;
+            let mut stream = TcpStream::connect(server.address).await.unwrap();
+            // Let the server accept the connection and start the handshake.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let (outcome, elapsed) = server.stop().await;
+            assert_eq!(outcome, ServeOutcome::Drained);
+            assert!(elapsed < TEST_LIMITS.shutdown_deadline, "{elapsed:?}");
+            assert_eq!(read_until_closed(&mut stream).await, b"");
+        }
     }
 
     #[test]
