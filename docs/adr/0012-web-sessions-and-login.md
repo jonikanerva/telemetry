@@ -1,8 +1,10 @@
 # ADR 0012: Web sessions and login
 
-- Status: Proposed, 28 November 2026. Lead decision under the owner
-  decision of ADR 0003. It becomes Accepted when the independent security
-  reviewer of the PR approves it.
+- Status: Accepted, 28 November 2026. Decided by the lead within the
+  choice that ADR 0003 delegates to the first web PR. Approved by the
+  independent reviewer in PR #48, round 3
+  (<https://github.com/jonikanerva/telemetry/pull/48#pullrequestreview-6092966735>),
+  with the correction of the two-cookie row of the threat model.
 - Scope: the session system, the login, the logout, the CSRF rule, and
   the login throttle of the web service `telemetry-web`. ADR 0003 holds
   the owner decision (one password, an Argon2id hash, a session cookie,
@@ -138,7 +140,7 @@ history behind the API.
 | Neon CU-hour exhaustion by unauthenticated requests | The guard runs before every handler; `/health` needs no database | None. |
 | Cross-site request forgery | Origin rule, JSON content type, `SameSite=Strict` | None known. |
 | Session fixation | `__Host-` prefix; a login always makes a new token and ends the presented session | None known. |
-| A second `__Host-telemetry_session` pair in the request | The guard refuses the request (decision 5). The `__Host-` prefix makes the browser refuse a `Set-Cookie` of that name with a `Domain` attribute, without `Secure`, from an origin without HTTPS, or with a `Path` other than `/`, so a sibling subdomain of `calmdonut.com` cannot set or replace the cookie, and the browser keeps at most one cookie of the name for the host. | A party that can add a second pair locks the owner out of every API route, also login and logout, until the owner deletes the cookies of the site in the browser. A server restart does not help: the guard refuses the request by the number of pairs, not by the store. The prefix does not stop a script on the origin itself (see XSS). A browser without the RFC 6265bis rule against nameless cookies can accept a nameless cookie from a sibling subdomain whose value is `__Host-telemetry_session=…`, which reaches the server as a second pair. Which current browsers have that rule is not verified in this work (WebKit, Firefox, and Chromium). The owner controls the sibling subdomains, so the attack needs a compromised sibling service or an XSS. Accepted for a single-user product: the effect is a denial of service of one browser, and the recovery is to delete the site cookies. |
+| A second `__Host-telemetry_session` pair in the request | The guard refuses the request (decision 5). The `__Host-` prefix makes the browser refuse a `Set-Cookie` of that name with a `Domain` attribute, without `Secure`, from an origin without HTTPS, or with a `Path` other than `/`, so a sibling subdomain of `calmdonut.com` cannot set or replace the cookie, and the browser keeps at most one cookie of the name for the host. | A party that can add a second pair locks the owner out of every API route, also login and logout, until the owner deletes the cookies of the site in the browser. A server restart does not help: the guard refuses the request by the number of pairs, not by the store. The prefix does not stop a script on the origin itself (see XSS). A browser without the RFC 6265bis rule against nameless cookies can accept a nameless cookie for the domain `calmdonut.com` whose value is `__Host-telemetry_session=…`, which reaches the server as a second pair. Which current browsers have that rule is not verified in this work (WebKit, Firefox, and Chromium). The attack needs one of these: a compromised sibling service, an XSS, or a network attacker who answers a plain-HTTP request to a name under `calmdonut.com`. The parent domain sends no HSTS, and a nameless cookie needs no HTTPS: on 27 November 2026 at 20:15 UTC, `http://calmdonut.com/` answered `301 Moved Permanently` to `https://calmdonut.com/`, and neither `https://calmdonut.com/` (200) nor `https://www.calmdonut.com/` (302) sent a `Strict-Transport-Security` header. Accepted for a single-user product: the effect is a denial of service of one browser, and the recovery is to delete the site cookies. |
 | Cookie theft by script (XSS) | `HttpOnly`; the CSP `script-src 'self'` of ADR 0010; no inline script | A script injection in the SPA could still send requests while the page is open. |
 | Cookie theft on the network | HTTPS only through the Cloudflare DNS record and the Railway certificate; HSTS; `Secure` | None known. |
 | A stolen cookie after logout or expiry | Server-side revocation and lifetimes; the server holds the only valid copy | A stolen cookie works until logout, expiry, or a restart. |
@@ -191,3 +193,8 @@ service changes no stored data and no client code.
 - The owner wants a second factor (ADR 0003).
 - Railway changes the deploy overlap so that two processes serve at the
   same time: sessions would then depend on the process that answers.
+- Mitigation outside this product: HSTS with `includeSubDomains` on the
+  apex domain `calmdonut.com` (a Cloudflare setting of the owner's
+  domain) would remove the plain-HTTP route of the two-cookie lockout.
+  Reassess the two-cookie row when the owner sets it or decides against
+  it.
