@@ -5,8 +5,9 @@
 // tests (playwright.config.ts runs one worker). Call `resetAuth` before a
 // test that logs in, so the test starts with no session, a full throttle
 // bucket, and the real clock.
-import { expect } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
+
+import { expect } from './support.js';
 
 /**
  * The password of the test server. It is a test-only value: the test

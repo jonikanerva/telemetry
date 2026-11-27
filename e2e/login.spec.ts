@@ -8,11 +8,18 @@
 import process from 'node:process';
 
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
 import type { APIRequestContext, BrowserContext, Page } from '@playwright/test';
 
 import { SESSION_COOKIE, TEST_PASSWORD, advanceClock, authStats, loginByApi, resetAuth } from './auth-support.js';
-import { WCAG_AA_TAGS, cspViolations, recordCspViolations, recordForeignRequests } from './support.js';
+import {
+  WCAG_AA_TAGS,
+  cspViolations,
+  expect,
+  newRequestContext,
+  recordCspViolations,
+  recordForeignRequests,
+  test,
+} from './support.js';
 
 const SEVEN_DAYS = 7 * 86_400;
 
@@ -96,7 +103,7 @@ test('a stolen copy of the cookie stops working after logout', async ({ page, co
   const cookie = await sessionCookie(context);
   expect(cookie).toBeDefined();
   const copy = `${SESSION_COOKIE}=${cookie?.value ?? ''}`;
-  const thief = await playwright.request.newContext({
+  const thief = await newRequestContext(playwright.request, {
     baseURL: baseURL ?? '',
     ignoreHTTPSErrors: true,
     extraHTTPHeaders: { cookie: copy },
