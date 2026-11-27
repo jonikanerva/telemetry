@@ -83,6 +83,7 @@ run = [
   { task = "lint" },
   "cargo deny --locked check",
   "cargo shear",
+  "scripts/gitleaks-guard.sh",
   "gitleaks git --redact --no-banner .",
   "jq empty ingest/server_config.json config/telemetry_config.json",
   "sh -n ingest/entrypoint.sh",
