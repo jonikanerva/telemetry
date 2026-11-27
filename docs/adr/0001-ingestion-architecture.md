@@ -186,6 +186,10 @@ keeps the worst case inside the plan. The arithmetic needs a fixed 0.25 CU
 compute (lead decision 3). The cost is the accepted loss budget: a crash
 loses up to one flush interval. A restart during a long outage can lose
 more (the whole queue, "Delivery guarantee"), and the gap stays visible.
+Two cases leave no stored event of the loss. A crash in degraded mode: the
+`started` and `degraded_mode` events wait in the memory queue. A database
+that refuses every record with class `Data` (known limit N6): the gate
+opens and closes in cycles, and no record is stored.
 
 ### Shutdown on SIGTERM or SIGINT
 
@@ -267,7 +271,13 @@ and truncates lines at 8 KiB.
     for about 0.5 s.
   - **Keep `zeromq` 0.7.0.** Owner decision of 27 November 2026: the stall
     detection stays. Reassess after the one-week follow-up or at a second
-    defect of this class.
+    defect of this class. No report of the reconnect defect goes upstream
+    without the owner.
+- **Reader and event bounds** (`Limits` in `pipeline.rs`). A connect
+  attempt of the reader has 5 s. A socket rebuild has `rebuild_drain` 1 s,
+  `rebuild_quiet` 200 ms, and a backoff of 100 ms to 5 s. The process keeps
+  the events in memory until the writer stores them, at most 10,000. A
+  metrics response has at most 1 MiB.
 - **Writer rules.** SQLSTATE classes `08` and `57P` count as no answer. A
   write that stored records resets the cadence. After a statement timeout
   the next batch is half the size. The writer also flushes when the queue
@@ -309,8 +319,8 @@ and truncates lines at 8 KiB.
 
 PID 1 is `/run/podman-init -- /entrypoint.sh`, an init that Railway adds;
 `ingest run` is PID 2, and `fleet-telemetry` is its child. Assumption: the
-init is catatonit [P1][P2]. It forwards signals except `SIGCHLD` to
-`ingest`, reaps orphans, and exits with `ingest`. So SIGTERM reaches
+init is catatonit [P1][P2]. It forwards signals, except `SIGCHLD`, the
+terminal stop signals, and its own fault signals, to `ingest`, reaps orphans, and exits with `ingest`. So SIGTERM reaches
 `ingest` (observed at the release of PR #30), and a forced end of `ingest`
 ends the container. `ingest` is not PID 1, so a forwarded signal without a
 handler ends it.
@@ -351,7 +361,11 @@ TLS files (mode 0600, owner 10001), and starts `ingest run` through
 - **A durable spool on a Railway volume.** A crash would lose almost
   nothing. Rejected for now: with a volume each redeploy has a downtime,
   and a broken release stops ingest; the pre-deploy command has no volume
-  [R8]. Reassess when a crash or an outage restart shows a real gap.
+  [R8]. The spool is the known measure against a loss above the 15-minute
+  budget at a restart during a long outage. Reassess when a crash or an
+  outage restart shows a real gap, or when Railway keeps the old deployment
+  when a new deployment with a volume fails. The earlier condition, a
+  container build check before merge, is met (CI job `image-check`).
 
 ## Consequences
 
@@ -387,6 +401,8 @@ protocol server would replace the gate and the child and keep the writer.
 1. **Flush interval: default 900 s.** A used-up CU-hour quota suspends Neon
    until the next month. Owner decision of 27 November 2026: it stays 900 s.
    Reassess after the one-week follow-up with the measured awake hours.
+   Lower the interval only if the measured awake hours keep a month below
+   60 CU-hours at the always-on rate.
 2. **Second database role `telemetry_migrator`** (ADR 0002), so
    `neondb_owner` stays out of Railway.
 3. **Fixed compute of 0.25 CU** for production (endpoint
@@ -409,7 +425,8 @@ protocol server would replace the gate and the child and keep the writer.
    Dockerfile path, watch paths, pre-deploy timeout, draining and overlap
    time, restart policy, or TCP proxy, nor whether an apply keeps port
    57438 or starts a deployment. The December 2026 reassessment is a
-   separate task with a `railway config plan` dry run (owner decision).
+   separate task with a `railway config plan` dry run (owner decision). A
+   plan cannot show whether an apply starts a deployment.
 
 ## To verify at first deployment
 

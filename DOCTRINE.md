@@ -270,7 +270,7 @@ Apply this boundary by impact, not file type. A typo, clarifying documentation,
 or another low-impact change does not require a separate reviewer unless the
 owner or local rules require it. Required automated checks still apply.
 
-The reviewer runs the verification itself only for a change to the data
+The reviewer's own verification run is required only for a change to the data
 path (ingest, gate, queue, writer), the database schema or roles, security (secrets,
 access, TLS, privileges, the vulnerability tooling), or the release path
 (image, entrypoint, Railway settings, CI gates). For such a change, the
