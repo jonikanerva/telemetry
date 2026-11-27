@@ -110,6 +110,72 @@ test('a stolen copy of the cookie stops working after logout', async ({ page, co
   await thief.dispose();
 });
 
+test('a logout that does not reach the server says so, hides the data, and can be retried', async ({
+  page,
+  baseURL,
+}) => {
+  await recordCspViolations(page);
+  await loginByApi(page, baseURL ?? '');
+  await page.goto('/');
+  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+
+  // The DELETE never reaches the server.
+  await page.route('**/api/v1/session', (route) =>
+    route.request().method() === 'DELETE' ? route.abort('failed') : route.fallback(),
+  );
+  await page.getByRole('button', { name: 'Kirjaudu ulos' }).click();
+  await expect(page).toHaveURL(/\/logout$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Uloskirjautuminen ei onnistunut' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Palvelin ei vahvistanut uloskirjautumista. Istunto voi olla yhä voimassa tällä laitteella.',
+  );
+  // No protected data and no logout button of the header in this state.
+  await expect(page.getByText('Palvelu toimii.')).toHaveCount(0);
+  await expect(page.getByText(/Istunto päättyy viimeistään/)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Kirjaudu ulos' })).toHaveCount(0);
+  // The page tells the truth: the server session is still valid.
+  expect(await serverSessionStatus(page.request)).toBe(200);
+  expect(await cspViolations(page)).toEqual([]);
+  await expectNoAxeViolations(page);
+
+  // A retry that fails again keeps the page.
+  const retry = page.getByRole('button', { name: 'Yritä uloskirjautumista uudelleen' });
+  await retry.click();
+  await expect(page.getByRole('alert')).toContainText('Palvelin ei vahvistanut uloskirjautumista.');
+  await expect(page).toHaveURL(/\/logout$/);
+  expect(await serverSessionStatus(page.request)).toBe(200);
+
+  // With the server reachable, one retry ends the session.
+  await page.unroute('**/api/v1/session');
+  await retry.click();
+  await expect(page).toHaveURL(/\/login/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Kirjaudu sisään' })).toBeVisible();
+  expect(await serverSessionStatus(page.request)).toBe(401);
+});
+
+test('Back after a logout in another tab and a full page load shows no data', async ({ page, context, baseURL }) => {
+  await loginByApi(page, baseURL ?? '');
+  await page.goto('/');
+  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+  // A full page load of another document, so Back is a cross-document
+  // navigation that a back-forward cache can serve from memory.
+  await page.goto('/no-such-page');
+  await expect(page.getByRole('heading', { level: 1, name: 'Sivua ei löydy' })).toBeVisible();
+
+  // Another tab of the same browser logs out.
+  const other = await context.newPage();
+  const logout = await other.request.delete('/api/v1/session', {
+    headers: { origin: new URL(baseURL ?? '').origin },
+  });
+  expect(logout.status()).toBe(204);
+  await other.close();
+
+  await page.goBack();
+  await expect(page.getByRole('heading', { level: 1, name: 'Kirjaudu sisään' })).toBeVisible();
+  await expect(page.getByText('Palvelu toimii.')).toHaveCount(0);
+  await expect(page.getByText(/Istunto päättyy viimeistään/)).toHaveCount(0);
+});
+
 test('a wrong password shows an announced error and clears the field', async ({ page }) => {
   await page.goto('/login');
   await submitPassword(page, 'wrong password, test only');
@@ -161,12 +227,18 @@ test('an expired session leads to the login page and back to the page', async ({
   await page.reload();
   await expect(page).toHaveURL(/\/login\?redirect=%2F$/);
   await expect(page.getByText('Palvelu toimii.')).toHaveCount(0);
-  // The server also removed the dead cookie from the browser.
-  expect(await sessionCookie(context)).toBeUndefined();
+  // A 401 changes no cookie (ADR 0012): the dead cookie stays, and the
+  // server refuses it.
+  const dead = await sessionCookie(context);
+  expect(dead).toBeDefined();
+  expect(await serverSessionStatus(page.request)).toBe(401);
 
   await submitPassword(page, TEST_PASSWORD);
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+  // The login replaced the dead cookie with a new one.
+  const fresh = await sessionCookie(context);
+  expect(fresh?.value).not.toBe(dead?.value);
 });
 
 test('a login with a hostile redirect stays on this origin', async ({ page, baseURL }) => {
@@ -179,7 +251,12 @@ test('a login with a hostile redirect stays on this origin', async ({ page, base
 test.describe('requests from another origin', () => {
   const attacker = 'https://attacker.test';
 
-  test('a cross-site request cannot log in or end the session', async ({ page, context, baseURL, browserName }) => {
+  test('a cross-site request starts no password check and keeps the session (server 403 in firefox and webkit; chromium blocks it before the server)', async ({
+    page,
+    context,
+    baseURL,
+    browserName,
+  }) => {
     // The victim has a session.
     await loginByApi(page, baseURL ?? '');
     const victim = await sessionCookie(context);
