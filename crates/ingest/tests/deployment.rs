@@ -13,6 +13,9 @@
 //!   in the module `railway`) agree with the image, the code, the shutdown
 //!   budget, and the settings table of STACK.md §15. Each input that the
 //!   image build copies has a watch path and an entry in `.dockerignore`.
+//!   The sources of the other workspace members match no watch path and
+//!   do not enter the build context: the image build reads only their
+//!   `Cargo.toml` files and makes a stub target for each.
 //! - The image has no `USER` line, so the container starts as root.
 //!   `ingest/entrypoint.sh` writes the TLS files with mode 0600, gives them
 //!   to user 10001, and starts `ingest run` through `setpriv` as user 10001
@@ -290,14 +293,16 @@ mod railway {
     pub const HEALTHCHECK_TIMEOUT_SECONDS: u64 = 300;
     /// The port of `/health` and of the healthcheck (`PORT`).
     pub const PORT: u16 = 8080;
-    /// Every input of the image, and nothing else: a web or documentation
-    /// merge does not redeploy ingest.
+    /// Every input of the image, and nothing else: a change of the sources
+    /// of another workspace member or of the documentation does not
+    /// redeploy ingest. The manifest of each member is an input, because
+    /// Cargo loads the whole workspace.
     pub const WATCH_PATHS: [&str; 10] = [
         "/ingest/**",
-        "/crates/**",
+        "/crates/ingest/**",
+        "/crates/*/Cargo.toml",
         "/db/**",
         "/migrations/**",
-        "/.sqlx/**",
         "/.cargo/**",
         "/Cargo.toml",
         "/Cargo.lock",
@@ -306,11 +311,25 @@ mod railway {
     ];
 }
 
+/// The heading of the settings table of the ingest service in STACK.md §15.
+const STACK_SETTINGS_HEADING: &str = "#### Railway settings of the service `telemetry`";
+
 /// The row of the settings table of STACK.md §15 that starts with `name`.
+/// The search reads only the subsection of the ingest service, up to the
+/// next heading, so that the table of another service can use the same
+/// row names.
 fn stack_row(name: &str) -> String {
     let stack = read("STACK.md");
+    let headings: Vec<&str> = stack
+        .lines()
+        .filter(|line| *line == STACK_SETTINGS_HEADING)
+        .collect();
+    assert_eq!(headings.len(), 1, "STACK.md has no single settings heading");
     let rows: Vec<&str> = stack
         .lines()
+        .skip_while(|line| *line != STACK_SETTINGS_HEADING)
+        .skip(1)
+        .take_while(|line| !line.starts_with('#'))
         .filter(|line| line.starts_with(&format!("| {name} ")))
         .collect();
     assert_eq!(rows.len(), 1, "STACK.md has no single row {name:?}");
@@ -439,51 +458,270 @@ fn context_inputs() -> Vec<String> {
         .collect()
 }
 
+/// True when the glob `pattern` matches the relative `path`. Both are
+/// split at `/`. A `**` item matches zero or more path items; a `*` inside
+/// an item matches any characters except `/`. Railway watch paths and
+/// `.dockerignore` rules use these two forms. This is a model of their
+/// matchers, not their code: the test cannot run Railway or Docker.
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    fn items(pattern: &[&str], path: &[&str]) -> bool {
+        match (pattern.first(), path.first()) {
+            (None, None) => true,
+            (Some(&"**"), _) => {
+                items(&pattern[1..], path) || (!path.is_empty() && items(pattern, &path[1..]))
+            }
+            (Some(item), Some(name)) => {
+                item_matches(item, name) && items(&pattern[1..], &path[1..])
+            }
+            _ => false,
+        }
+    }
+    fn item_matches(item: &str, name: &str) -> bool {
+        match item.split_once('*') {
+            None => item == name,
+            Some((head, rest)) => {
+                name.starts_with(head)
+                    && (head.len()..=name.len()).any(|at| item_matches(rest, &name[at..]))
+            }
+        }
+    }
+    let pattern: Vec<&str> = pattern.trim_matches('/').split('/').collect();
+    let path: Vec<&str> = path.split('/').collect();
+    items(&pattern, &path)
+}
+
+/// True when a Railway watch path matches the file at the relative `path`.
+fn watched(path: &str) -> bool {
+    railway::WATCH_PATHS
+        .iter()
+        .any(|pattern| glob_matches(pattern, path))
+}
+
+/// True when the `.dockerignore` rules send the file at the relative `path`
+/// into the build context. The last rule that matches the path, or a
+/// parent directory of the path, decides; a rule with `!` includes.
+fn in_build_context(path: &str) -> bool {
+    let ignore = read(".dockerignore");
+    let items: Vec<&str> = path.split('/').collect();
+    let mut included = true;
+    for rule in ignore
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    {
+        let (include, pattern) = match rule.strip_prefix('!') {
+            Some(pattern) => (true, pattern),
+            None => (false, rule),
+        };
+        if (1..=items.len()).any(|end| glob_matches(pattern, &items[..end].join("/"))) {
+            included = include;
+        }
+    }
+    included
+}
+
 #[test]
 fn every_build_input_has_a_watch_path_and_a_context_entry() {
     let inputs = context_inputs();
-    assert_eq!(
-        inputs,
+    let mut expected: Vec<String> = ["Cargo.toml", "Cargo.lock", ".cargo", "crates/ingest"]
+        .map(str::to_owned)
+        .to_vec();
+    expected.extend(
+        stub_members()
+            .iter()
+            .map(|member| format!("{member}/Cargo.toml")),
+    );
+    expected.extend(
         [
-            "Cargo.toml",
-            "Cargo.lock",
-            ".cargo",
-            "crates",
             "db",
             "migrations",
-            ".sqlx",
             "ingest/server_config.json",
             "ingest/entrypoint.sh",
         ]
+        .map(str::to_owned),
     );
-    let watch = railway::WATCH_PATHS;
-    let ignore = read(".dockerignore");
-    let included: Vec<&str> = ignore
-        .lines()
-        .filter_map(|line| line.strip_prefix('!'))
-        .collect();
+    assert_eq!(inputs, expected);
     for input in &inputs {
         let path = repository().join(input);
-        let (pattern, entry) = if path.is_dir() {
-            (format!("/{input}/**"), format!("{input}/"))
+        // A file of the input: the file itself, or a file in the directory.
+        let file = if path.is_dir() {
+            if input == ".cargo" {
+                ".cargo/config.toml".to_owned()
+            } else {
+                format!("{input}/any/file")
+            }
         } else {
-            (format!("/{input}"), input.clone())
+            input.clone()
         };
-        let parent = input.split('/').next().unwrap();
+        assert!(watched(&file), "no watch path for {input}");
         assert!(
-            watch.contains(&pattern.as_str()) || watch.contains(&format!("/{parent}/**").as_str()),
-            "no watch path for {input}"
-        );
-        assert!(
-            included.contains(&entry.as_str())
-                || included.contains(&format!("{parent}/").as_str())
-                || (input == ".cargo" && included.contains(&".cargo/config.toml")),
+            in_build_context(&file),
             "no .dockerignore entry for {input}"
         );
     }
     // The Dockerfile itself and the context rules also start a deployment.
-    assert!(watch.contains(&"/ingest/**"));
-    assert!(watch.contains(&"/.dockerignore"));
+    assert!(watched("ingest/Dockerfile"));
+    assert!(watched(".dockerignore"));
+    assert!(watched("crates/ingest/.sqlx/query-any.json"));
+    assert!(in_build_context("crates/ingest/.sqlx/query-any.json"));
+}
+
+/// The sources and the query metadata of the other workspace members, and
+/// the files outside the image inputs, match no watch path and do not enter
+/// the build context. So a merge that changes only these files does not
+/// redeploy ingest, and the image build cannot read them.
+#[test]
+fn other_members_and_documents_are_not_image_inputs() {
+    for path in [
+        "crates/server/src/main.rs",
+        "crates/server/src/battery/mod.rs",
+        "crates/server/.sqlx/query-any.json",
+        "crates/server/tests/battery.rs",
+        "crates/domain/src/lib.rs",
+        ".sqlx/query-any.json",
+        "web/src/main.tsx",
+        "docs/ingest-release.md",
+        "STACK.md",
+        "README.md",
+    ] {
+        assert!(!watched(path), "a watch path matches {path}");
+        assert!(!in_build_context(path), "the build context holds {path}");
+    }
+    // Control cases of the model: a member manifest is an input.
+    for path in ["crates/server/Cargo.toml", "crates/domain/Cargo.toml"] {
+        assert!(watched(path), "no watch path matches {path}");
+        assert!(in_build_context(path), "the build context lacks {path}");
+    }
+    for path in [
+        "crates/ingest/.env",
+        "crates/ingest/target/x",
+        "crates/server/secrets/key",
+    ] {
+        assert!(!in_build_context(path), "the build context holds {path}");
+    }
+}
+
+/// The first-party packages of the workspace, from `cargo metadata`.
+fn cargo_metadata() -> Value {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--no-deps",
+            "--format-version",
+            "1",
+            "--offline",
+        ])
+        .current_dir(repository())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "cargo metadata failed");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// The workspace members other than `crates/ingest`, as paths relative to
+/// the repository, from `cargo metadata`.
+fn workspace_members() -> BTreeSet<String> {
+    let metadata = cargo_metadata();
+    let root = Path::new(metadata["workspace_root"].as_str().unwrap());
+    metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|package| {
+            let manifest = Path::new(package["manifest_path"].as_str().unwrap());
+            manifest
+                .parent()
+                .unwrap()
+                .strip_prefix(root)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The name of each first-party package, from `cargo metadata`.
+fn package_names() -> Vec<String> {
+    let metadata = cargo_metadata();
+    metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|package| package["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// osv-scanner reads each `Cargo.lock` package by its name as a crates.io
+/// package, also a first-party package without a `source`. A first-party
+/// package with the name of a crates.io crate gets the advisories of that
+/// crate (the name `domain` got RUSTSEC-2026-0310). So each first-party
+/// package name other than `ingest` starts with `telemetry-`. `ingest` is
+/// also a crates.io name, but the Railway pre-deploy command, the image,
+/// and `-p ingest` use it; it has no advisory now.
+#[test]
+fn first_party_package_names_have_the_project_prefix() {
+    let names = package_names();
+    assert!(names.iter().any(|name| name == "ingest"));
+    for name in names.iter().filter(|name| *name != "ingest") {
+        assert!(
+            name.starts_with("telemetry-"),
+            "the package name {name} has no telemetry- prefix"
+        );
+    }
+}
+
+/// The members that the Dockerfile copies as a manifest with a stub target,
+/// in the order of its `COPY` lines.
+fn stub_members() -> Vec<String> {
+    context_inputs()
+        .iter()
+        .filter_map(|input| input.strip_suffix("/Cargo.toml"))
+        .filter(|member| member.starts_with("crates/"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The image build reads the manifest of each other workspace member and
+/// makes an empty `src/lib.rs` for it, so that Cargo can load the
+/// workspace. A member that the list does not name would stop the build
+/// (`--locked` cannot load the workspace); a member that the list names
+/// but the workspace does not have would also stop the build.
+#[test]
+fn the_dockerfile_stubs_every_other_workspace_member() {
+    let mut others = workspace_members();
+    assert!(others.remove("crates/ingest"));
+    let stubs = stub_members();
+    assert_eq!(stubs.iter().cloned().collect::<BTreeSet<_>>(), others);
+    assert_eq!(stubs.len(), others.len());
+    // The one RUN line that makes the stubs names the same members.
+    let runs: Vec<String> = instructions()
+        .into_iter()
+        .filter(|line| line.starts_with("RUN for member in "))
+        .collect();
+    assert_eq!(
+        runs,
+        [format!(
+            "RUN for member in {}; do mkdir -p \"$member/src\" && : > \"$member/src/lib.rs\"; done",
+            stubs.join(" ")
+        )]
+    );
+    // A stub `src/lib.rs` works only with the automatic target discovery
+    // of Cargo: an explicit target or build script path would name a file
+    // that the image does not have.
+    for member in &stubs {
+        let manifest = read(&format!("{member}/Cargo.toml"));
+        for line in manifest.lines().map(str::trim) {
+            assert!(
+                !(line.starts_with("[lib]")
+                    || line.starts_with("[[")
+                    || line.starts_with("path")
+                    || line.starts_with("build ")
+                    || line.starts_with("build=")),
+                "{member}/Cargo.toml declares a target or build script: {line}"
+            );
+        }
+    }
 }
 
 /// The `.dockerignore` rules, in order (an allowlist: `*` first, then the
@@ -508,10 +746,10 @@ fn the_build_context_excludes_secrets_and_build_output() {
             "!Cargo.toml",
             "!Cargo.lock",
             "!.cargo/config.toml",
-            "!crates/",
+            "!crates/ingest/",
+            "!crates/*/Cargo.toml",
             "!db/",
             "!migrations/",
-            "!.sqlx/",
             "!ingest/",
             "**/.env*",
             "**/secrets",
