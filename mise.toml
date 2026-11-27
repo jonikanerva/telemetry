@@ -56,13 +56,17 @@ run = [
   { task = "doctest" },
 ]
 
-[tasks.test-without-database]
-description = "Run the tests that need no database, and the doctests (for CI)"
-# CI has no database (STACK.md §3). Only the `ci` task uses this task;
-# `verify` uses `test`, which runs all tests. The filter excludes the
-# database tests: the test binary `storage` (`crates/ingest/tests/storage/`).
+[tasks.test-ci]
+description = "Run the tests of CI against the PostgreSQL server of the runner, and the doctests"
+# Only the `ci` task uses this task; `verify` uses `test`, which runs all
+# tests against the Neon branch `test`. scripts/ci-postgres.sh sets
+# TEST_DATABASE_URL. The filter excludes the database tests that need Neon
+# (STACK.md §3): the end-to-end tests of `tests/storage/pipeline.rs` (the
+# binary trusts only the Mozilla roots, not the test CA), and the two role
+# tests that read the membership of the Neon role `neon_superuser`.
 run = [
-  "cargo nextest run --workspace --locked -E 'not binary_id(ingest::storage)'",
+  "test -n \"${TEST_DATABASE_URL:-}\" || { echo 'test-ci: TEST_DATABASE_URL is not set. In CI, scripts/ci-postgres.sh sets it.' >&2; exit 1; }",
+  "cargo nextest run --workspace --locked --no-fail-fast -E 'not (binary_id(ingest::storage) and (test(/^pipeline::/) or test(=roles::the_roles_get_the_privileges_of_adr_0002) or test(=roles::the_role_script_is_idempotent)))'",
   { task = "doctest" },
 ]
 
@@ -107,12 +111,14 @@ run = [
 
 [tasks.ci]
 description = "Run the checks of the GitHub Actions workflow; stops at the first failure"
-# The same checks as `verify`, but the tests that need a database do not
-# run (STACK.md §3). `ci` does not replace the local `verify`.
+# The same checks as `verify`, against the PostgreSQL server of the runner
+# instead of Neon, without the tests that need Neon (STACK.md §3). `ci`
+# does not replace the local `verify`.
 run = [
   { task = "checks" },
+  { task = "sqlx-check" },
   { task = "build" },
-  { task = "test-without-database" },
+  { task = "test-ci" },
 ]
 
 [tasks.image-check]
@@ -152,11 +158,13 @@ run = [
   #   a new directory (for example a composite action in
   #   `.github/actions/`) fails until this check covers it in the same PR.
   # - In `ci.yml`, each line with a `uses`, `version`, or `runs-on` key
-  #   must have the one allowed form. A line with a `container`,
-  #   `services`, or `image` key always fails (no container image is
-  #   allowed yet). Each mise action step must have a `version` input,
-  #   each job must have one `runs-on`, and YAML anchors and aliases are
-  #   not allowed.
+  #   must have the one allowed form. The only allowed image is the
+  #   PostgreSQL image of the database tests: one `postgres_image` line
+  #   with a PostgreSQL 18 tag and an index digest, which must be the
+  #   digest of that tag. Any other line with a `container`, `services`,
+  #   or `image` key fails. Each mise action step must have a `version`
+  #   input, each job must have one `runs-on`, and YAML anchors and
+  #   aliases are not allowed.
   # Anything else fails, and the check must change together with the
   # workflow. Limits: STACK.md §3, "Dependency freshness check".
   '''
@@ -179,16 +187,17 @@ run = [
   uses_form=' +- uses: [a-z0-9-]+/[a-z0-9._-]+@[0-9a-f]{40} # v[0-9]+[.][0-9]+[.][0-9]+'
   version_form=' +version: [0-9]+[.][0-9]+[.][0-9]+'
   runs_form=' +runs-on: ubuntu-[0-9]+[.]04'
+  postgres_form=' +postgres_image: postgres:18[.][0-9]+-[a-z]+@sha256:[0-9a-f]{64}'
   # Every line with one of the keys (also quoted, also without "- ") and
-  # every anchor or alias must be an allowed line. The keys container,
-  # services, and image have no allowed form.
+  # every anchor or alias must be an allowed line. The keys container and
+  # services have no allowed form; an image key only the postgres_image form.
   bad="$(grep -nE '(uses|version|runs-on|container|services|image).?[[:space:]]*:|^[^#]*[&*][A-Za-z0-9_-]' "$workflow" |
-    grep -vE "^[0-9]+:($uses_form|$version_form|$runs_form)$" | sed 's/^\([0-9]*\):/\1: /' || true)"
+    grep -vE "^[0-9]+:($uses_form|$version_form|$runs_form|$postgres_form)$" | sed 's/^\([0-9]*\):/\1: /' || true)"
   if [ -n "$bad" ]; then
     printf '%s\n' "$bad" | while IFS= read -r line; do
       echo "deps: $workflow line $line"
     done
-    echo "deps: the lines above are outside the allowlist. Allowed: '- uses: <owner>/<repo>@<40 lowercase hex> # vX.Y.Z' (a full release tag), 'version: X.Y.Z' (the mise action input), and 'runs-on: ubuntu-NN.04'. No container, services, or image key is allowed. $fix"
+    echo "deps: the lines above are outside the allowlist. Allowed: '- uses: <owner>/<repo>@<40 lowercase hex> # vX.Y.Z' (a full release tag), 'version: X.Y.Z' (the mise action input), 'runs-on: ubuntu-NN.04', and 'postgres_image: postgres:18.N-<variant>@sha256:<64 lowercase hex>'. No container or services key and no other image key is allowed. $fix"
     status=1
   fi
   # Each mise action step: the next two lines are "with:" and "version:".
@@ -229,6 +238,26 @@ run = [
     echo "deps: cannot read the mise pin of $workflow or the mise tags"; status=1
   else
     echo "pinned CI mise: $mise_pin; latest tag: ${mise_latest#v}"
+  fi
+  # The PostgreSQL image of the database tests: exactly one pin, and its
+  # digest must be the index digest of its tag. crane reads anonymously
+  # (an empty config.json, as for the images of ingest/Dockerfile).
+  if [ "$(grep -cE "^$postgres_form$" "$workflow" || true)" -ne 1 ]; then
+    echo "deps: $workflow needs exactly one postgres_image line. $fix"
+    status=1
+  else
+    pg="$(sed -n 's/^ *postgres_image: postgres:\(.*\)$/\1/p' "$workflow")"
+    pg_tag="${pg%@*}"; pg_digest="${pg#*@}"
+    work="$(mktemp -d)"; printf '{}' > "$work/config.json"
+    pg_latest="$(DOCKER_CONFIG="$work" crane ls postgres | grep -E "^18[.][0-9]+-${pg_tag#*-}\$" | sort -V | tail -1)"
+    pg_tag_digest="$(DOCKER_CONFIG="$work" crane digest "postgres:$pg_tag" || true)"
+    rm -rf "$work"
+    if [ -z "$pg_latest" ] || [ -z "$pg_tag_digest" ]; then
+      echo "deps: cannot read the postgres image tags or the digest of postgres:$pg_tag"; status=1
+    else
+      echo "pinned CI postgres image: postgres:$pg_tag ($pg_digest); latest PostgreSQL 18 tag: $pg_latest"
+      [ "$pg_tag_digest" = "$pg_digest" ] || { echo "deps: postgres_image pins $pg_digest, but postgres:$pg_tag is $pg_tag_digest"; status=1; }
+    fi
   fi
   runners="$(sed -n 's/^ *runs-on: //p' "$workflow" | sort -u | paste -sd ' ' -)"
   ubuntu="$(tags actions/runner-images | sed -n 's#.*refs/tags/ubuntu\([0-9][0-9]\)/.*#\1#p' | sort -n | tail -1)"
