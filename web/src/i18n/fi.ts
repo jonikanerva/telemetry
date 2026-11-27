@@ -30,5 +30,8 @@ export const fi = {
   loginUnavailable: 'Kirjautuminen ei onnistunut. Palvelu ei vastannut. Yritä hetken kuluttua uudelleen.',
   logout: 'Kirjaudu ulos',
   logoutPending: 'Kirjaudutaan ulos…',
+  logoutFailedTitle: 'Uloskirjautuminen ei onnistunut',
+  logoutFailedBody: 'Palvelin ei vahvistanut uloskirjautumista. Istunto voi olla yhä voimassa tällä laitteella.',
+  logoutRetry: 'Yritä uloskirjautumista uudelleen',
   sessionEnds: (end: string): string => `Istunto päättyy viimeistään ${end}`,
 } as const;

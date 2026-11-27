@@ -3,6 +3,8 @@
 //
 // Tree:
 // - `/login` (routes/login.tsx): public.
+// - `/logout` (routes/logout.tsx): public; the page after a logout that
+//   the server did not confirm.
 // - `protected` (routes/protected.tsx): a pathless layout that checks the
 //   session. Its children: `/` (routes/index.tsx).
 //
@@ -14,10 +16,11 @@ import { createRouter } from '@tanstack/react-router';
 import { RouteUnavailable } from './auth/RouteUnavailable.js';
 import { indexRoute } from './routes/index.js';
 import { loginRoute } from './routes/login.js';
+import { logoutRoute } from './routes/logout.js';
 import { protectedRoute } from './routes/protected.js';
 import { rootRoute } from './routes/root.js';
 
-const routeTree = rootRoute.addChildren([loginRoute, protectedRoute.addChildren([indexRoute])]);
+const routeTree = rootRoute.addChildren([loginRoute, logoutRoute, protectedRoute.addChildren([indexRoute])]);
 
 export function createAppRouter(queryClient: QueryClient) {
   return createRouter({

@@ -186,6 +186,15 @@ code {
   margin-top: var(--space-2);
 }
 
+/* The logout failure page (auth/LogoutFailureView.tsx). */
+.logout-failure {
+  max-width: 32rem;
+}
+
+.logout-failure-alert p {
+  margin: 0 0 var(--space-3);
+}
+
 /* The logout button of the header (auth/LogoutButton.tsx): a secondary
    action, so it uses the page colours instead of the primary fill. */
 .logout-button {

@@ -9,6 +9,7 @@ import { createRoot } from 'react-dom/client';
 
 import { LOGIN_PATH } from './auth/safe-redirect.js';
 import { createSessionLossHandler } from './auth/session-loss.js';
+import { createPageShowHandler } from './page-show.js';
 import { createQueryClient } from './query-client.js';
 import type { CacheErrorHandler } from './query-client.js';
 import { createAppRouter } from './router.js';
@@ -36,6 +37,15 @@ onSessionLoss = createSessionLossHandler({
     void router.navigate({ to: LOGIN_PATH, search: { redirect } });
   },
 });
+
+// A page that the back-forward cache restores can show protected data of
+// an ended session (rule: page-show.ts).
+window.addEventListener(
+  'pageshow',
+  createPageShowHandler(() => {
+    window.location.reload();
+  }),
+);
 
 createRoot(container).render(
   <StrictMode>

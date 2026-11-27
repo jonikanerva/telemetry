@@ -8,7 +8,6 @@ import { api } from 'telemetry-web-api-client';
 
 import { fi } from '../i18n/fi.js';
 import { performLogout } from './logout.js';
-import { LOGIN_PATH } from './safe-redirect.js';
 
 export function LogoutButton() {
   const queryClient = useQueryClient();
@@ -30,7 +29,7 @@ export function LogoutButton() {
         void performLogout({
           logout: async () => api.logout(),
           queryClient,
-          navigateToLogin: async () => navigate({ to: LOGIN_PATH }),
+          navigate: async (target) => navigate(target),
         }).finally(() => {
           setPending(false);
         });
