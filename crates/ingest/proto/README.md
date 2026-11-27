@@ -6,7 +6,7 @@ These files are unchanged copies of the protobuf schema of Tesla's
 
 - Source: <https://github.com/teslamotors/fleet-telemetry/tree/6689adb831691b1de211b4aa8220babf7309f31c/protos>
 - Tag: `v0.10.1`. The deployed image is `tesla/fleet-telemetry:v0.10.1`
-  (`Dockerfile`).
+  (`ingest/Dockerfile`).
 - Commit: `6689adb831691b1de211b4aa8220babf7309f31c`. The GitHub API
   showed on 26 November 2026 that tag `v0.10.1` points to this commit.
 - Licence: Apache License 2.0. `LICENSE` is the licence file of the
@@ -26,7 +26,7 @@ dispatches only the record types `V`, `alerts`, `errors`, and
 ## Update
 
 Change these files only together with the `fleet-telemetry` image tag in
-`Dockerfile`:
+`ingest/Dockerfile`:
 
 1. Copy the four files from `protos/` of the new tag without changes.
 2. Copy `LICENSE` of the new tag.

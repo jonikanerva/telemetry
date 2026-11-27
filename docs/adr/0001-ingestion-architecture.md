@@ -235,16 +235,17 @@ The service `telemetry` runs one image with two processes.
   the client's TCP connection through or terminates it is not documented;
   if it terminates it, the close of a dead client depends on the proxy,
   today and with the gate (a deployment check).
-  The deployment PR records `ulimit -n` of the container. If the soft
-  open-file limit is below 2048 plus a margin, `entrypoint.sh` raises it to
-  the hard limit (`ulimit -n`) before the `exec`, as Go does for itself.
+  `ingest/entrypoint.sh` raises the soft open-file limit to the hard limit
+  before the `exec`, as Go does for itself (issue #14). The release
+  records `ulimit -n` of the container (`docs/ingest-release.md`).
 
-Start order: `entrypoint.sh` writes the TLS files and replaces itself with
-`ingest run` (`exec`). `ingest` starts the child, connects SUB, runs the
-start-up check, and opens the gate. The image uses `CMD`, not `ENTRYPOINT`,
-so that the pre-deploy command replaces the start command. The deployment PR
-moves `Dockerfile`, `entrypoint.sh`, and `config/server_config.json` to
-`ingest/`.
+Start order: `ingest/entrypoint.sh` writes the TLS files and replaces
+itself with `ingest run` (`exec`). `ingest` starts the child, connects SUB,
+runs the start-up check, and opens the gate. The image uses `CMD`, not
+`ENTRYPOINT`, so that the pre-deploy command replaces the start command.
+The deployment change (issue #14) moved `Dockerfile`, `entrypoint.sh`, and
+`config/server_config.json` to `ingest/` (the config is now
+`ingest/server_config.json`).
 
 When the child exits: close the gate, record a gap event (ADR 0002),
 restart the child after 1 s, doubling to at most 30 s. The queue stays in
@@ -305,17 +306,23 @@ see these drops directly. It detects them:
 - The ingest PR confirmed the metric name and labels in the upstream
   source; the deployment PR confirms them on the real binary.
 
-Railway configuration as code in `/ingest/railway.json`:
+Railway settings of the service. The lead applies them as service settings
+and `RAILWAY_*` variables (lead decision 7). The table "Railway settings of
+the service `telemetry`" in `STACK.md` §15 is the one documented place of
+the values, and the deployment test checks it. Issue #14 corrected the
+Dockerfile path, the watch patterns, and the pre-deploy command (see
+"Decisions of the deployment change"):
 
 | Setting                      | Value                                   | Reason                                            |
 | ---------------------------- | --------------------------------------- | ------------------------------------------------- |
-| `build.dockerfilePath`       | `ingest/Dockerfile`                     | The build needs the repository root as context.   |
-| `build.watchPatterns`        | `ingest/**`, `crates/ingest/**`, `migrations/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` | A web merge does not redeploy ingest. |
-| `deploy.preDeployCommand`    | `["/usr/local/bin/ingest", "migrate"]`  | Migrations are a separate release step.           |
-| `deploy.healthcheckPath`     | `/health` on `PORT`                     | A broken release does not replace a working one.  |
-| `deploy.drainingSeconds`     | `30`                                    | Time for the shutdown sequence below.             |
-| `deploy.overlapSeconds`      | `0`                                     | The vehicle reconnects by itself.                 |
-| `deploy.restartPolicyType`   | `ALWAYS`                                | No limit of 10 restarts.                          |
+| Dockerfile path              | `/ingest/Dockerfile`                    | The build needs the repository root as context.   |
+| Watch paths                  | The build inputs, `/ingest/**`, `/rust-toolchain.toml`, and `/.dockerignore` (`STACK.md` §15) | A web or documentation merge does not redeploy ingest. |
+| Pre-deploy command           | `/usr/local/bin/ingest migrate`         | Migrations are a separate release step. The Railway schema allows one string or an array with one string. |
+| Pre-deploy timeout           | 1200 s                                  | Ends a pre-deploy command that never ends; longer than the 15-minute deadline of `ingest migrate`. |
+| Healthcheck path             | `/health` on `PORT`                     | A broken release does not replace a working one.  |
+| Draining time                | 30 s                                    | Time for the shutdown sequence below.             |
+| Overlap time                 | 0 s                                     | The vehicle reconnects by itself.                 |
+| Restart policy               | Always                                  | No limit of 10 restarts.                          |
 
 `/health` returns 200 only when the gate is open and the start-up check
 passed. Degraded mode does not count, so a deploy during a database outage
@@ -327,9 +334,15 @@ fails its healthcheck and the old deployment keeps running.
 `connectivity` to `["zmq"]`, `zmq.addr` `tcp://127.0.0.1:5284`,
 `transmit_decoded_records` `false`, `log_level` `info` (`debug` logs raw
 payloads, [`telemetry/record.go#L130`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/telemetry/record.go#L130)), `rate_limit.message_limit`
-10000 in 30 s (above the vehicle buffer of 5000), no `reliable_ack`,
+10000 in 30 s (above the vehicle buffer of 5000), no `reliable_ack_sources`,
 `monitoring.prometheus_metrics_port` 9090 on the default host `127.0.0.1`
-(for the shortfall check).
+(for the shortfall check). Issue #14 checked each key name against the
+JSON tags of the tag `v0.10.1`
+([`config/config.go#L42-L141`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L42-L141),
+[`datastore/zmq/zmq.go#L18-L32`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/zmq/zmq.go#L18-L32),
+[`metrics/metrics.go#L17-L37`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/metrics/metrics.go#L17-L37)).
+Upstream has no key `reliable_ack`; the earlier config had one without
+effect, and `ingest/server_config.json` drops it.
 
 The vehicle telemetry config stays as merged in PR #6. It does not set
 `delivery_policy` (lead decision 4). Tesla documents neither the default
@@ -549,7 +562,12 @@ sections above leave open. Each point has a test.
   deployment change must check the image binary: a start with
   `INGEST_TEST_QUEUE_BYTES=1` does not stop with `invalid_configuration`,
   and no log line is `test_overrides`. After each release, the deployment
-  log must hold no `test_overrides` line.
+  log must hold no `test_overrides` line. Update (issue #14): the CI job
+  `image-check` starts the image with `INGEST_TEST_QUEUE_BYTES=1` and
+  `INGEST_TEST_DEGRADED_AFTER_MS=1000`, and fails when the process stops
+  at the start, logs `test_overrides`, or enters degraded mode before
+  110 s; the deployment test requires the one build line
+  `cargo build --release --locked -p ingest`.
 - **ZMQ messages.** The first frame is the topic, the second frame the
   payload. A message with one frame has an empty payload; a message with
   more frames has the other frames joined, so no received byte is lost.
@@ -902,6 +920,91 @@ sections above leave open. Each point has a test.
   leaves records or events unstored logs `flush_incomplete` with the
   counts, and the process exits with code 1.
 
+### Decisions of the deployment change (issue #14)
+
+The deployment change builds the image of "Layout" (`ingest/Dockerfile`)
+and records these points. `crates/ingest/tests/deployment.rs` checks that
+the files agree; the CI job `image-check` checks the running container
+(`STACK.md` §3).
+
+- **TLS files: a minimal entrypoint, not Rust code.**
+  `ingest/entrypoint.sh` writes `TLS_CERT` and `TLS_KEY` to
+  `/etc/fleet-telemetry/tls/`, removes both variables, raises the soft
+  open-file limit, and replaces itself with `ingest run` (`exec`), so
+  `ingest` is PID 1. Reasons: the start order above already names the
+  entrypoint; a shell builtin (`printf`) writes the key, so no process
+  argument holds it; `umask 077` gives mode 0600; `unset` before the `exec`
+  keeps the key out of the environment of `ingest` (`/proc/1/environ`),
+  and `ingest` starts the child with an empty environment. In Rust, the
+  removal of a variable (`std::env::remove_var`) is `unsafe` in edition
+  2024, which the workspace forbids, and the raise of the limit needs
+  `unsafe` code or a new crate. The deployment test runs a copy of the
+  script with temporary paths and checks the modes, the environment, and
+  the failure without a variable.
+- **Non-root user.** The final stage runs as user and group 10001. No part
+  needs root: all ports are above 1023, and only the entrypoint writes
+  files, into `/etc/fleet-telemetry/tls/` (mode 0700, owner 10001).
+  Upstream runs `fleet-telemetry` as a non-root user too
+  (`gcr.io/distroless/cc-debian12:nonroot`). A numeric user needs no
+  `useradd` step.
+- **Fixed settings in the image.** The `ENV` lines of the Dockerfile set
+  the ports and the child paths. The Railway service variables hold only
+  `PORT` (8080) and the secrets. So the settings change with the code,
+  and the deployment test checks them against `ingest/server_config.json`.
+- **Builder image.** `rust:1.100.0-slim-trixie`: the official Rust image,
+  the version of `rust-toolchain.toml`, on the Debian release of the final
+  stage, so that the binary links against the same glibc. It has gcc and
+  libc6-dev for `aws-lc-sys`, which builds with `cc` and pregenerated
+  bindings on `x86_64-unknown-linux-gnu`. The build does not copy
+  `rust-toolchain.toml`: the file also names rustfmt and Clippy, which the
+  slim image does not have, and rustup would download them during the
+  build. The `vuln` allowlist ties the tag to the file instead. The
+  builder image is not scanned (`STACK.md` §13, proposed exception).
+- **Build inputs.** The `COPY` lines name each input: `Cargo.toml`,
+  `Cargo.lock`, `.cargo/`, `crates/`, `db/` (`include_str!` of
+  `db/roles.sql`), `migrations/` (`sqlx::migrate!`), and `.sqlx/`. A
+  build of exactly these paths from `git archive` passed locally with
+  `--release --locked` and `SQLX_OFFLINE=true`. `.dockerignore` is an
+  allowlist of the same paths. The watch paths are the same paths plus
+  `ingest/**`, `rust-toolchain.toml`, and `.dockerignore`.
+- **Railway config as code is deprecated.** The Railway documentation
+  (read on 27 November 2026) says: "Existing `railway.json` /
+  `railway.toml` files continue to work for services that already use
+  them until 2026-12-01 (hard cutoff). New services cannot opt into Config
+  as Code." The service `telemetry` has no config file. So the lead sets
+  each value of the table above as a service setting or a `RAILWAY_*`
+  variable (`STACK.md` §15; lead decision 7). The repository holds no
+  Railway settings file. The deployment test holds the values as
+  constants and checks them against the image, the code, and the table
+  of `STACK.md` §15. The lead applies the
+  settings without a deployment before the merge, so the deployment of the
+  merge is the first one with them (`docs/ingest-release.md`, section 1).
+- **Release build only.** Only `cfg(debug_assertions)` keeps a build from
+  reading `INGEST_TEST_*` ("Decisions of the pipeline change"). The
+  deployment test requires the one build line `cargo build --release
+  --locked -p ingest` and the copy from `target/release/`, and the CI job
+  `image-check` starts the image with `INGEST_TEST_QUEUE_BYTES=1` and `INGEST_TEST_DEGRADED_AFTER_MS=1000`
+  and fails when the process stops at the start, degraded mode comes before 110 s, or a `test_overrides`
+  line appears.
+- **Pre-deploy command.** One string, `/usr/local/bin/ingest migrate`. The
+  Railway schema allows a string or an array with at most one string, so
+  the earlier value with two elements was not valid. Pre-deploy timeout
+  1200 s: longer than the client deadline of `ingest migrate` (15
+  minutes), so it never cuts a migration, but it ends a command that
+  never ends, for example an image whose `ENTRYPOINT` starts a server
+  and gets the command as arguments.
+- **Healthcheck timeout.** The default of 300 s.
+- **Recovery.** A rollback restores the image and the custom variables of
+  the earlier deployment. A rollback to the image before this decision
+  needs the pre-deploy command and the healthcheck path cleared first, and
+  it writes the VIN and the location to the log again
+  (`docs/ingest-release.md`).
+- **Shortfall check on the real binary.** A series of `dispatch_total`
+  that never grew is absent and counts as 0
+  (`crates/ingest/src/pipeline/metrics.rs`). So a renamed metric would
+  make the check report no shortfall without an error. The release reads
+  the metrics of the real binary once (`docs/ingest-release.md`).
+
 ## Key alternatives
 
 - **MQTT.** Needs a broker process or service. The per-field messages lose
@@ -1050,14 +1153,83 @@ authority.
    tested on the development machine, and Go sets none either, so it goes
    beyond parity with upstream. Reassessment: the first `gate_full` event,
    or evidence of peers that stall inside the handshake.
+7. **Railway settings by hand; Infrastructure as Code waits** (27
+   November 2026, issue #14). Railway deprecated config as code and
+   accepts no new config file [R9]; the lead confirmed the text. Owner
+   decisions of 27 November 2026 (chat with the lead): no `railway.json`
+   and no file in its place; Infrastructure as Code (IaC,
+   `.railway/railway.ts`) if it is possible and safe, otherwise wait until
+   December 2026. The assessment below found IaC not safe to adopt now, so
+   the service settings and `RAILWAY_*` variables of the table in
+   `STACK.md` §15 carry the release. The release does not wait for IaC.
+   Evidence (read on 27 November 2026: [R11], [R12], the Railway CLI
+   5.75.0 help, and the npm package `railway` 3.19.0):
+   - **Scope (safe with a named partial).** "One project definition, one
+     apply, and omitting a resource means deleting it" [R11]. With a named
+     partial: "A named partial only deletes resources it owns. Resources
+     owned by other partials, or not yet owned by any partial, are left
+     alone when they're missing from your file" [R11]. `railway config
+     plan` previews without a change and has `--detailed-exit-code`; an
+     apply runs a plan first and asks for confirmation [R11]. So a partial
+     `telemetry` would leave the other services of `calmdonut` alone. Not
+     documented: how a partial takes ownership of an existing service (the
+     page says only "declare the resources in a named partial and use the
+     ordinary plan/apply workflow"), and what the file changes at the
+     project level. `railway config pull` imports the whole linked
+     project and has no option for one service (CLI help).
+   - **Coverage (blocking).** The reference [R12] documents the build and
+     start commands, `healthcheck`, `healthcheckTimeout`, `preDeploy`,
+     the source with `rootDirectory`, domains, and `env` with
+     `preserve()` for an existing value. It does not document the
+     Dockerfile path, the watch paths, the pre-deploy timeout, the
+     draining time, the overlap time, the restart policy, or a TCP proxy.
+     The type declarations of the npm package `railway` 3.19.0 have these
+     fields (`build.dockerfilePath`, `build.watchPatterns`,
+     `deploy.preDeployTimeoutSeconds`, `deploy.drainingSeconds`,
+     `deploy.overlapSeconds`, `deploy.restartPolicyType`, `tcpProxies`
+     keyed by the container port), but no documentation says how an apply
+     treats them. In particular, nothing says that a declared or omitted
+     TCP proxy keeps the existing public port 57438, which the signed
+     vehicle config holds.
+   - **Effects of an apply (blocking).** Not documented: whether an apply
+     that changes build or deploy settings starts a deployment. The page
+     says only that a change of `tracing.enabled` "redeploys the service"
+     [R12]. A deployment before the merge would build `main` with the new
+     settings; an unknown proxy change could disconnect the vehicle.
+   - **Tooling (cost).** The CLI applies the file from a developer
+     machine or from CI with a project token (`RAILWAY_TOKEN`); "Railway
+     doesn't read `.railway/` during deploys" [R11]. The file needs the npm
+     package `railway` (3.19.0, MIT, Node 22 or newer, dependencies
+     `graphql` and `@graphql-typed-document-node/core`; releases 3.17.0, 3.18.0, and 3.19.0 between 13 and 26 November 2026).
+     That adds Node, a `package.json`, a lockfile, and their freshness and
+     vulnerability checks to a phase that has no Node tooling (`STACK.md`
+     §0), and a CI apply needs a repository secret, which is an owner
+     setting.
+   Reassessment: in December 2026, or earlier when the IaC reference
+   documents a per-service scope for an existing service, the Dockerfile
+   path, watch paths, pre-deploy timeout, draining and overlap time,
+   restart policy, and TCP proxy (with the rule that keeps an existing
+   public port), and whether an apply starts a deployment.
 
 ## To verify at first deployment
 
 The deployment PR must produce evidence for each point. If a point fails,
-the PR changes the design and updates this ADR.
+the PR changes the design and updates this ADR. Update (issue #14):
+`docs/ingest-release.md` gives the command and the expected result of
+each point. Before the merge, the CI job `image-check` checks in the built
+image, without Railway, a vehicle, or a database: `ingest` is PID 1
+through the `CMD` and the entrypoint, and the binary is a release build
+(it ignores `INGEST_TEST_*`, "Test overrides"); the SUB socket settles on
+the libzmq PUB socket of the real binary; each metrics read of the real
+binary succeeds for about two minutes (no `shortfall_read_failed`, no
+`metrics_unreadable`, no `subscriber_stalled`); after each of three
+child exits the reader ends its socket, connects to the new child,
+settles, and the gate opens again; and Linux checks 2 (without a stored
+`stopped` event), 3, and 6 below. Each point still needs its evidence on
+Railway.
 
-- Railway runs the image `CMD` (through `entrypoint.sh` and `exec`) so that
-  `ingest` is PID 1 in the container.
+- Railway runs the image `CMD` (through `ingest/entrypoint.sh` and `exec`)
+  so that `ingest` is PID 1 in the container.
 - Railway runs the healthcheck on `PORT` for a service that has only a TCP
   proxy and no HTTP domain, and keeps the old deployment when the
   healthcheck fails.
@@ -1069,6 +1241,11 @@ the PR changes the design and updates this ADR.
   PUB socket of the `zeromq` crate, not libzmq. The real binary needs
   libzmq through cgo and was not built. The deployment PR checks it: no
   `zmq_shortfall` event after the first vehicle connection of a start.
+  Update (issue #14): the CI job `image-check` checks that the SUB socket
+  connects to the libzmq PUB socket of the real binary and settles. It
+  cannot show that the subscription is applied, because no record flows
+  without a vehicle. The release checks it (`docs/ingest-release.md`,
+  "Settle time of 250 ms").
 - The SUB socket defences against the real binary (review round 3 of PR
   #22, note N10):
   - An exit of `fleet-telemetry` gives the end of the stream, and so the
@@ -1119,7 +1296,12 @@ the PR changes the design and updates this ADR.
 - The `dispatch_total` metric name and labels on the real binary, and that
   the shortfall check reports zero in normal use. Update (issue #13): the
   name and the label are confirmed in the upstream source ("Decisions of
-  the pipeline change"), not on the real binary.
+  the pipeline change"), not on the real binary. Update (issue #14): the
+  CI job `image-check` checks that the metrics of the real binary answer
+  on 127.0.0.1:9090. The series appears only after the first dispatch, so
+  the release reads it after the first records (`docs/ingest-release.md`,
+  "`dispatch_total` on the real binary"). An absent series counts as 0, so
+  this read is the only evidence that the name matches.
 - Linux runtime of `ingest` (PR #18 tested on macOS only; `STACK.md` §13).
   Before the first deployment that starts `ingest`:
   1. `cargo nextest run --workspace --locked` passes one time on
@@ -1130,18 +1312,24 @@ the PR changes the design and updates this ADR.
      `shutdown_started` with reason `SIGTERM`, `gate_stopped`,
      `child_killed` with `exit_signal` 9, the `stopped` event, and
      `shutdown_complete` within `drainingSeconds`, and no
-     `task_stop_timeout`.
+     `task_stop_timeout` and no `gate_connections_open` (PR #24).
   3. After at least three child exits and restarts, the process table of
      the container has no zombie (`ps` state `Z`).
   4. After a forced end of PID 1 (a watchdog exit or SIGKILL of `ingest`),
      the container ends, Railway restarts it, a new `started` event
      follows, and no `fleet-telemetry` process survives without `ingest`.
+     Update (issue #14): a process inside the container cannot end PID 1
+     on purpose (the kernel ignores a signal to PID 1 from its own PID
+     namespace when PID 1 has no handler for it [K]), and Railway has no
+     command for a SIGKILL. The check waits for the first natural watchdog
+     exit or crash.
   5. Every `gate_connection_closed` event of a normal connection has
      `socket_options` `set`, `keepalive` `15/15/9` (read back from the
      socket), and `nodelay` `true` (none has `failed`), and the idle
      dead-peer case above closes in about 150 s. If the Railway proxy
      terminates TCP, `ss -tio` in the container shows the keep-alive
-     timers, or check 1 covers them.
+     timers, or check 1 covers them. The image has no `ss`; the timer
+     column of `/proc/net/tcp` shows the same timers.
   6. `fleet-telemetry` starts with an empty environment, and
      `/proc/<child pid>/fd` has no listener of `ingest`.
 - The false-positive rate of `unknown_fields` on real vehicle payloads.
@@ -1180,6 +1368,10 @@ the PR changes the design and updates this ADR.
 - [R6] Railway, Private networking: <https://docs.railway.com/networking/private-networking>
 - [R7] Railway, Plans and pricing (volume storage 0.15 USD for each GB each month): <https://docs.railway.com/pricing/plans>
 - [R8] Railway, Volumes (not mounted during pre-deploy): <https://docs.railway.com/volumes>
+- [R9] Railway, Config as code (deprecated; existing files work until 2026-12-01; new services cannot opt in), read 27 November 2026: <https://docs.railway.com/guides/config-as-code>, and the schema <https://railway.com/railway.schema.json> (`preDeployCommand`: a string or an array with at most one item)
+- [R11] Railway, Infrastructure as Code, read 27 November 2026: <https://docs.railway.com/infrastructure-as-code>
+- [R12] Railway, Infrastructure as Code reference, read 27 November 2026: <https://docs.railway.com/infrastructure-as-code/reference>
+- [R10] Railway, Dockerfiles (`RAILWAY_DOCKERFILE_PATH`; build variables only through `ARG`), build configuration (watch paths operate from `/`), start command, and deployment actions (a rollback restores the image and the custom variables), read 27 November 2026: <https://docs.railway.com/builds/dockerfiles>, <https://docs.railway.com/builds/build-configuration>, <https://docs.railway.com/deployments/start-command>, <https://docs.railway.com/deployments/deployment-actions>
 - [L] Linux kernel at tag `v6.12`: `net/ipv4/tcp_timer.c` (no keep-alive probe while data is unacknowledged) and `Documentation/networking/ip-sysctl.rst` (`tcp_retries2`, default 15, about 924.6 s as a lower bound): <https://github.com/torvalds/linux/tree/v6.12>. The container's kernel version is a deployment check.
 - [G] Go 1.19 release notes: programs that import `os` raise the `RLIMIT_NOFILE` soft limit to the hard limit: <https://go.dev/doc/go1.19>. Go TLS, HTTP server, and TCP keep-alive source at tag `go1.27.4` (upstream builds with Go 1.27): <https://github.com/golang/go/tree/go1.27.4/src>
 - [K] Linux `pid_namespaces(7)`: <https://man7.org/linux/man-pages/man7/pid_namespaces.7.html>

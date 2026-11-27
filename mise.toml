@@ -80,9 +80,11 @@ run = [
   "cargo deny --locked check",
   "cargo shear",
   "gitleaks git --redact --no-banner .",
-  "jq empty config/server_config.json config/telemetry_config.json",
-  "sh -n entrypoint.sh",
+  "jq empty ingest/server_config.json config/telemetry_config.json",
+  "sh -n ingest/entrypoint.sh",
   "sh -n scripts/sqlx-metadata.sh",
+  "sh -n scripts/image-check.sh",
+  "scripts/vuln-premise-test.sh",
   "! git ls-files | grep -E '^(\\.env|secrets/|\\.bin/)'",
 ]
 
@@ -114,6 +116,12 @@ run = [
   { task = "test-without-database" },
 ]
 
+[tasks.image-check]
+description = "Build the ingest image and check the running container (needs Docker; the CI job image-check runs it)"
+# STACK.md §3. The development machine has no container runtime, so this
+# task runs in CI on linux/amd64. It pushes no image and uses no secret.
+run = "scripts/image-check.sh"
+
 [tasks.deps]
 description = "Dependency freshness check (STACK.md §3); reads crates.io, the Rust release channel, the image tags, and the tags of the CI pins"
 run = [
@@ -123,13 +131,16 @@ run = [
   "mise outdated --bump --no-global",
   "echo \"pinned Rust: $(grep '^channel' rust-toolchain.toml)\"",
   "curl -fsS https://static.rust-lang.org/dist/channel-rust-stable.toml | grep -A1 '^\\[pkg.rust\\]'",
-  # Images of the Dockerfile: the pinned FROM lines, the newest upstream
-  # release tag, and the current Debian stable release. crane reads its
+  # Images of ingest/Dockerfile: the pinned FROM lines, the newest upstream
+  # release tag, the newest Rust builder tag on the Debian release of the
+  # final stage, and the current Debian stable release. crane reads its
   # credentials from $DOCKER_CONFIG/config.json when that file exists. An
   # empty config.json in a temporary directory makes the read anonymous.
-  "awk '/^FROM/ { print \"pinned image: \" $2 }' Dockerfile",
+  "awk '/^FROM/ { print \"pinned image: \" $2 }' ingest/Dockerfile",
   # An unreadable tag list fails the task: a missing check is not a pass.
   "work=\"$(mktemp -d)\"; printf '{}' > \"$work/config.json\"; tag=\"$(DOCKER_CONFIG=\"$work\" crane ls tesla/fleet-telemetry | grep -E '^v[0-9]+[.][0-9]+[.][0-9]+$' | sort -V | tail -1)\"; rm -rf \"$work\"; test -n \"$tag\" || { echo 'deps: cannot read the tesla/fleet-telemetry tags'; exit 1; }; echo \"latest tesla/fleet-telemetry tag: $tag\"",
+  # The builder tag is <Rust version>-slim-<Debian codename> (vuln task).
+  "codename=\"$(sed -n 's/^FROM debian:\\([a-z]*\\).*$/\\1/p' ingest/Dockerfile)\"; test -n \"$codename\" || { echo 'deps: cannot read the Debian codename of ingest/Dockerfile'; exit 1; }; work=\"$(mktemp -d)\"; printf '{}' > \"$work/config.json\"; tag=\"$(DOCKER_CONFIG=\"$work\" crane ls rust | grep -E \"^[0-9]+[.][0-9]+[.][0-9]+-slim-$codename\\$\" | sort -V | tail -1)\"; rm -rf \"$work\"; test -n \"$tag\" || { echo 'deps: cannot read the rust image tags'; exit 1; }; echo \"latest rust builder tag: $tag\"",
   "curl -fsS https://deb.debian.org/debian/dists/stable/Release | grep -E '^(Codename|Version):'",
   # Pins of the CI workflow (STACK.md §15): each action, the mise version,
   # and the runner label, with the newest release tags. git ls-remote reads
@@ -232,39 +243,57 @@ run = [
 ]
 
 [tasks.vuln]
-description = "Vulnerability check (STACK.md §3): Rust dependencies and the FROM images of the Dockerfile"
+description = "Vulnerability check (STACK.md §3): Rust dependencies and the runtime FROM images of ingest/Dockerfile"
 # Runs every scan and fails when one scan fails or finds a vulnerability.
-# crane downloads each FROM image for linux/amd64 as a Docker archive, so
-# no container runtime is needed. crane reads its credentials from
-# $DOCKER_CONFIG/config.json when that file exists. The task points
+# crane downloads each runtime FROM image for linux/amd64 as a Docker
+# archive, so no container runtime is needed. crane reads its credentials
+# from $DOCKER_CONFIG/config.json when that file exists. The task points
 # DOCKER_CONFIG at a temporary directory with an empty config.json, so the
 # pulls are anonymous and the local credential files are not read.
 # Each image scan reads the reviewed ignore file
 # docs/security/osv-scanner-<repository with / as ->.toml. The entries rely
-# on premises of the Dockerfile, entrypoint.sh, and config/server_config.json
-# (docs/security/image-advisories.md). The task checks these premises first
-# and fails when one breaks, so that the triage is done again.
+# on premises of ingest/Dockerfile, ingest/entrypoint.sh, and
+# ingest/server_config.json (docs/security/image-advisories.md). The task
+# checks these premises first and fails when one breaks, so that the
+# triage is done again.
+# The builder image (FROM rust:... AS build) is not scanned: no file of it
+# reaches the final image except the ingest binary (STACK.md §13). The
+# allowlist pins its tag to rust-toolchain.toml and to the Debian release
+# of the final stage.
 # The script is a TOML literal string: backslashes reach the shell as written.
 run = '''
 status=0
+dockerfile=ingest/Dockerfile
+entrypoint=ingest/entrypoint.sh
 # Dockerfile premise: a strict allowlist, not a parser. The instruction
-# lines must equal the expected lines of this project. Only the two image
+# lines must equal the expected lines of this project. Only the three image
 # tags may change. Any other change fails, and the allowlist below must be
 # updated in the same change as the Dockerfile, with a new triage.
 dockerfile_fail() {
-  echo "vuln: $1. Update the Dockerfile allowlist of the vuln task (mise.toml) and docs/security/image-advisories.md together with the Dockerfile."
+  echo "vuln: $1. Update the Dockerfile allowlist of the vuln task (mise.toml) and docs/security/image-advisories.md together with $dockerfile."
   status=1
 }
-if LC_ALL=C grep -q "$(printf '[^\t -~]')" Dockerfile; then
+if LC_ALL=C grep -q "$(printf '[^\t -~]')" "$dockerfile"; then
   dockerfile_fail "the Dockerfile has a byte outside printable ASCII, tab, and newline"
 fi
-if grep -qiE '^#[[:space:]]*[a-z]+[[:space:]]*=' Dockerfile; then
+if grep -qiE '^#[[:space:]]*[a-z]+[[:space:]]*=' "$dockerfile"; then
   dockerfile_fail "the Dockerfile has a parser directive (# name=value)"
 fi
-instructions="$(grep -vE '^(#.*)?$' Dockerfile || true)"
-upstream_tag="$(printf '%s\n' "$instructions" | sed -n '1s/^FROM tesla\/fleet-telemetry:\([A-Za-z0-9._-]*\) AS upstream$/\1/p')"
-base_tag="$(printf '%s\n' "$instructions" | sed -n '2s/^FROM debian:\([A-Za-z0-9._-]*\)$/\1/p')"
+instructions="$(grep -vE '^(#.*)?$' "$dockerfile" || true)"
+rust_tag="$(printf '%s\n' "$instructions" | sed -n '1s/^FROM rust:\([A-Za-z0-9._-]*\) AS build$/\1/p')"
+upstream_tag="$(printf '%s\n' "$instructions" | sed -n '11s/^FROM tesla\/fleet-telemetry:\([A-Za-z0-9._-]*\) AS upstream$/\1/p')"
+base_tag="$(printf '%s\n' "$instructions" | sed -n '12s/^FROM debian:\([A-Za-z0-9._-]*\)$/\1/p')"
 expected="$(printf '%s\n' \
+  "FROM rust:$rust_tag AS build" \
+  'WORKDIR /build' \
+  'ENV SQLX_OFFLINE=true' \
+  'COPY Cargo.toml Cargo.lock ./' \
+  'COPY .cargo .cargo' \
+  'COPY crates crates' \
+  'COPY db db' \
+  'COPY migrations migrations' \
+  'COPY .sqlx .sqlx' \
+  'RUN cargo build --release --locked -p ingest' \
   "FROM tesla/fleet-telemetry:$upstream_tag AS upstream" \
   "FROM debian:$base_tag" \
   'RUN apt-get update \' \
@@ -272,23 +301,68 @@ expected="$(printf '%s\n' \
   '    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \' \
   '    && rm -rf /var/lib/apt/lists/*' \
   'COPY --from=upstream /fleet-telemetry /fleet-telemetry' \
-  'COPY config/server_config.json /etc/fleet-telemetry/config.json' \
-  'COPY entrypoint.sh /entrypoint.sh' \
-  'RUN chmod +x /entrypoint.sh' \
+  'COPY --from=build /build/target/release/ingest /usr/local/bin/ingest' \
+  'COPY ingest/server_config.json /etc/fleet-telemetry/config.json' \
+  'COPY ingest/entrypoint.sh /entrypoint.sh' \
+  'RUN chmod 0755 /entrypoint.sh \' \
+  '    && install -d -m 0700 -o 10001 -g 10001 /etc/fleet-telemetry/tls' \
+  'ENV INGEST_GATE_PORT=4443' \
+  'ENV INGEST_UPSTREAM_PORT=4444' \
+  'ENV INGEST_ZMQ_PORT=5284' \
+  'ENV INGEST_METRICS_PORT=9090' \
+  'ENV INGEST_CHILD_PROGRAM=/fleet-telemetry' \
+  'ENV INGEST_CHILD_CONFIG=/etc/fleet-telemetry/config.json' \
+  'USER 10001:10001' \
   'EXPOSE 4443' \
-  'ENTRYPOINT ["/entrypoint.sh"]')"
-if [ -z "$upstream_tag" ] || [ -z "$base_tag" ] || [ "$instructions" != "$expected" ]; then
+  'CMD ["/entrypoint.sh"]')"
+if [ -z "$rust_tag" ] || [ -z "$upstream_tag" ] || [ -z "$base_tag" ] || [ "$instructions" != "$expected" ]; then
   dockerfile_fail "the instruction lines of the Dockerfile differ from the allowlist"
+fi
+# The builder runs the Rust version of rust-toolchain.toml on the Debian
+# release of the final stage, so that the binary links against the glibc
+# of the final image.
+channel="$(sed -n 's/^channel = "\([0-9.]*\)"$/\1/p' rust-toolchain.toml)"
+if [ -z "$channel" ] || [ "$rust_tag" != "$channel-slim-${base_tag%%-*}" ]; then
+  dockerfile_fail "the builder tag rust:$rust_tag is not <channel of rust-toolchain.toml>-slim-<Debian codename of the final stage>"
 fi
 images=""
 if [ -n "$upstream_tag" ] && [ -n "$base_tag" ]; then
   images="tesla/fleet-telemetry:$upstream_tag debian:$base_tag"
 fi
-# The server reads the config that the Dockerfile copies (allowlist above).
-if [ "$(grep -c -- '-config' entrypoint.sh || true)" -ne 1 ] ||
-  ! grep -qx 'exec /fleet-telemetry -config /etc/fleet-telemetry/config.json' entrypoint.sh; then
-  echo "vuln: entrypoint.sh must start the server with -config /etc/fleet-telemetry/config.json and no other -config"
+# The server reads the config that the Dockerfile copies: the allowlist
+# above fixes the copy and INGEST_CHILD_CONFIG, ingest starts the server
+# with -config and that path (crates/ingest/src/child.rs), and the
+# entrypoint starts ingest run and nothing else. Entrypoint premise: a
+# strict allowlist like the Dockerfile check. The first line is the
+# shebang #!/bin/sh; after removal of empty lines and of lines that start
+# with #, the lines must equal the expected lines; printable ASCII only.
+entrypoint_fail() {
+  echo "vuln: $1. Update the entrypoint allowlist of the vuln task (mise.toml) together with $entrypoint."
   status=1
+}
+if LC_ALL=C grep -q "$(printf '[^\t -~]')" "$entrypoint"; then
+  entrypoint_fail "$entrypoint has a byte outside printable ASCII, tab, and newline"
+fi
+if [ "$(sed -n '1p' "$entrypoint")" != '#!/bin/sh' ]; then
+  entrypoint_fail "the first line of $entrypoint is not #!/bin/sh"
+fi
+entrypoint_lines="$(grep -vE '^(#.*)?$' "$entrypoint" || true)"
+expected_entrypoint="$(cat <<'EOF'
+set -eu
+: "${TLS_CERT:?Set TLS_CERT to the full certificate chain in PEM format}"
+: "${TLS_KEY:?Set TLS_KEY to the private key in PEM format}"
+umask 077
+printf '%s\n' "$TLS_CERT" > /etc/fleet-telemetry/tls/tls.crt
+printf '%s\n' "$TLS_KEY" > /etc/fleet-telemetry/tls/tls.key
+unset TLS_CERT TLS_KEY MIGRATION_DATABASE_URL
+if ! ulimit -S -n "$(ulimit -H -n)"; then
+  echo '{"level":"WARN","message":"entrypoint_open_file_limit_not_raised"}' >&2
+fi
+exec /usr/local/bin/ingest run
+EOF
+)"
+if [ "$entrypoint_lines" != "$expected_entrypoint" ]; then
+  entrypoint_fail "the lines of $entrypoint differ from the allowlist"
 fi
 # fleet-telemetry decodes its config with Go encoding/json: keys match
 # without letter case, a repeated key decodes again into the same field (a
@@ -297,12 +371,17 @@ fi
 # equal keys. So the check requires lowercase keys, exactly one JSON value,
 # and the same leaf paths in the token stream and in the parsed value; a
 # repeated key of any kind breaks the last rule.
-config=config/server_config.json
+# The zmq dispatcher makes libzmq 4.3.4 listen. Its address must be the
+# literal loopback address 127.0.0.1, so that no other host can connect
+# (docs/security/image-advisories.md, "Static C libraries").
+config=ingest/server_config.json
 if ! jq -e '
   def lower_keys: keys | all(test("^[a-z0-9_]+$"));
   lower_keys
   and ((.monitoring // {}) | lower_keys)
   and ((.tls // {}) | lower_keys)
+  and ((.zmq // {}) | lower_keys)
+  and (.zmq == null or ((.zmq.addr // "") | test("^tcp://127\\.0\\.0\\.1:[0-9]+$")))
   and ([(.records // {}) | .[][]] | all(. == "logger" or . == "zmq"))
   and ((.use_default_eng_ca // false) == false)
   and ((.tls.ca_file // "") == "")
@@ -313,7 +392,7 @@ if ! jq -e '
   ! jq -s -e 'length == 1' "$config" > /dev/null ||
   [ "$(jq -n -c --stream '[inputs | select(length == 2) | .[0]] | sort' "$config")" != \
     "$(jq -c '[path(.. | select((type != "object" and type != "array") or length == 0))] | sort' "$config")" ]; then
-  echo "vuln: $config breaks a premise of the ignore files (key case, one JSON value, repeated keys, dispatchers, client CAs, or listeners)"
+  echo "vuln: $config breaks a premise of the ignore files (key case, one JSON value, repeated keys, dispatchers, client CAs, listeners, or the zmq address)"
   status=1
 fi
 cargo deny --locked check advisories || status=1
@@ -343,8 +422,9 @@ for image in $images; do
   rm -f "$work/image.tar"
 done
 if [ "$scanned" -ne 2 ]; then
-  echo "vuln: scanned $scanned images, but the Dockerfile allowlist has 2 FROM lines"
+  echo "vuln: scanned $scanned images, but the Dockerfile allowlist has 2 runtime FROM lines"
   status=1
 fi
+echo "vuln: not scanned: the builder image rust:$rust_tag (STACK.md §13)"
 exit "$status"
 '''

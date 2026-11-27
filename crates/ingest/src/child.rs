@@ -31,7 +31,7 @@
 //! background. A process that another process leaves behind is adopted by
 //! PID 1 and is not reaped: the first-party Go source of `fleet-telemetry`
 //! v0.10.1 starts no process (no `os/exec`, `syscall.ForkExec`, or
-//! `os.StartProcess`), and `entrypoint.sh` ends with `exec`, so no such
+//! `os.StartProcess`), and `ingest/entrypoint.sh` ends with `exec`, so no such
 //! process exists in the deployment. Reaping any process with
 //! `waitpid(-1)` would need `unsafe` code or another crate, and it would
 //! race with the wait of Tokio. The lead decided for no general reaping (PR

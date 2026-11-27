@@ -386,10 +386,18 @@ cannot create objects in `raw` or `public`.
   the first, `ingest migrate` only the second. Both use
   `sslmode=verify-full`.
 - The child process `fleet-telemetry` gets a cleared environment with only
-  the values it needs.
+  the values it needs. Limit (issue #14): the child runs as the same user
+  as `ingest`, so it can still read `/proc/1/environ` of `ingest`. That
+  file holds `DATABASE_URL`, but not `MIGRATION_DATABASE_URL` or the TLS
+  variables: `ingest/entrypoint.sh` unsets them before the `exec`
+  (`STACK.md` §15, accepted risks).
 - Accepted risk: the pre-deploy command needs the migrator URL, and Railway
-  gives the same variables to the running container [R]. A compromised
-  `ingest` process can therefore change or drop tables in `raw`. It cannot
+  gives the same variables to the running container [R]. Update (issue
+  #14): `ingest/entrypoint.sh` unsets `MIGRATION_DATABASE_URL` before it
+  starts `ingest`, so no running process of the container holds it; the
+  risk remains for the pre-deploy container and for any access to the
+  service variables. Before that change, a compromised `ingest` process
+  could change or drop tables in `raw`. It cannot
   touch roles or other schemas. Neon keeps 6 hours of restore history [N1].
   Reassessment: when Railway can give a variable to the pre-deploy command
   only, when the migration step can run outside the service, or when a

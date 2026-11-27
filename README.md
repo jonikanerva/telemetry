@@ -13,8 +13,8 @@ application that stores and shows the data is planned.
 | Part                | State                                                             |
 | ------------------- | ----------------------------------------------------------------- |
 | Ingest service      | Deployed. The vehicle connects. The config selects 20 fields ([usage estimate](docs/telemetry-usage-estimate.md)). |
-| Storage             | Schema, migrations, and writer exist in `crates/ingest` (ADR 0002). Not deployed: the ingest service writes the records to its log only. |
-| Rust ingest process | `ingest run` receives the records over ZMQ, queues them, and writes them to PostgreSQL (ADR 0001). Not deployed: the deployment change (issue #14) puts it into the image. |
+| Rust ingest process | `ingest/Dockerfile` builds the image of ADR 0001: `ingest` is PID 1, starts `fleet-telemetry`, receives the records over ZMQ, and writes them to PostgreSQL. A merge to `main` releases it; [STACK.md](STACK.md) section 15 has the release steps and the post-release checks. |
+| Storage             | Schema `raw`, migrations, and writer in `crates/ingest` (ADR 0002). `ingest migrate` runs as the Railway pre-deploy command. |
 | Application and web | Planned. See [VISION.md](VISION.md) for the product direction.    |
 
 ## How it works
@@ -26,10 +26,13 @@ Tesla vehicle
 telemetry.calmdonut.com  (DNS only, CNAME to the Railway TCP proxy)
    │  raw TCP; the proxy does not terminate TLS
    ▼
-fleet-telemetry          (Tesla's upstream server in a small wrapper image)
-   │
+ingest                   (Rust, PID 1: the gate on port 4443)
+   │  127.0.0.1:4444
    ▼
-log                      (planned: Rust application → PostgreSQL → web)
+fleet-telemetry          (Tesla's upstream server, child of ingest)
+   │  ZMQ on 127.0.0.1:5284
+   ▼
+ingest → PostgreSQL      (Neon; planned: application and web)
 ```
 
 - The vehicle authenticates with a client certificate from Tesla. The ingest
@@ -39,7 +42,7 @@ log                      (planned: Rust application → PostgreSQL → web)
 - A telemetry config tells the vehicle where to connect and which signals to
   send. The config is signed with the Tesla application private key.
 
-### The Rust ingest process (not deployed yet)
+### The Rust ingest process
 
 ADR 0001 replaces the log with the Rust process `ingest`. It runs as PID 1,
 starts `fleet-telemetry` as its child, and owns the public port:
@@ -82,14 +85,18 @@ vehicle ──TCP──▶ gate (ingest, port 4443) ──▶ fleet-telemetry (1
 
 | Path                           | Content                                                        |
 | ------------------------------ | -------------------------------------------------------------- |
-| `Dockerfile`, `entrypoint.sh`  | Wrapper image for the upstream `fleet-telemetry` binary        |
-| `config/server_config.json`    | Ingest service configuration                                   |
+| `ingest/Dockerfile`            | Image of the service: `ingest` and `fleet-telemetry` (ADR 0001) |
+| `ingest/entrypoint.sh`         | Start command: writes the TLS files, then starts `ingest run`  |
+| `ingest/server_config.json`    | Configuration of `fleet-telemetry`                             |
+| `.dockerignore`                | Allowlist of the build inputs of `ingest/Dockerfile`           |
 | `config/telemetry_config.json` | Telemetry config for the vehicle: host, port, CA, and signals  |
-| `crates/ingest/`               | Rust ingest process. Not deployed yet.                         |
+| `crates/ingest/`               | Rust ingest process                                            |
 | `migrations/`                  | SQLx migrations of the raw schema (ADR 0002)                   |
 | `db/roles.sql`                 | Database roles, schema, and privileges (ADR 0002)              |
 | `.sqlx/`                       | Query metadata of the SQLx macros                              |
 | `scripts/sqlx-metadata.sh`     | Checks or writes `.sqlx/` against a test database              |
+| `scripts/image-check.sh`       | Builds the image and checks the container (CI job `image-check`) |
+| `scripts/vuln-premise-test.sh` | Mutation test of the premise checks of `mise run vuln`         |
 | `Cargo.toml`, `Cargo.lock`     | Rust workspace, lints, and locked dependencies                 |
 | `rust-toolchain.toml`          | Rust toolchain version                                         |
 | `mise.toml`                    | Tool pins and the project commands                             |
@@ -109,34 +116,37 @@ vehicle ──TCP──▶ gate (ingest, port 4443) ──▶ fleet-telemetry (1
 
 ## Configuration
 
-The ingest service reads two variables at start-up. The entrypoint writes
-them to files for the server.
+The start command `ingest/entrypoint.sh` reads two variables. It writes
+them to files with mode 0600 for `fleet-telemetry`, removes them from the
+environment, and starts `ingest run`.
 
 | Variable   | Content                               |
 | ---------- | ------------------------------------- |
 | `TLS_CERT` | Server certificate chain, PEM format  |
 | `TLS_KEY`  | Server private key, PEM format        |
 
-The server listens on port 4443 in the container.
+`ingest run` reads these variables and stops at the start when one is
+missing or not valid (`crates/ingest/src/config.rs`). The `ENV` lines of
+`ingest/Dockerfile` set the fixed values. The Railway service variables
+hold the other values. Do not set an image value as a Railway variable:
+a service variable replaces the value of the image.
 
-`ingest run` (not deployed yet) reads these variables and stops at the
-start when one is missing or not valid (`crates/ingest/src/config.rs`):
-
-| Variable                        | Content                                                        |
-| ------------------------------- | -------------------------------------------------------------- |
-| `PORT`                          | Port of `/health`; Railway sets it                             |
-| `INGEST_GATE_PORT`              | Public port of the gate: 4443                                  |
-| `INGEST_UPSTREAM_PORT`          | Loopback port of `fleet-telemetry`: 4444                       |
-| `INGEST_ZMQ_PORT`               | Loopback port of the ZMQ PUB socket of `fleet-telemetry`: 5284 |
-| `INGEST_METRICS_PORT`           | Loopback port of its Prometheus metrics: 9090                  |
-| `INGEST_CHILD_PROGRAM`          | Absolute path of the `fleet-telemetry` program                 |
-| `INGEST_CHILD_CONFIG`           | Absolute path of its configuration file                        |
-| `DATABASE_URL`                  | URL of the role `telemetry_ingest`; a secret                   |
-| `INGEST_FLUSH_INTERVAL_SECONDS` | Optional: the flush interval, 1 to 900, default 900            |
+| Variable                        | Content                                                        | Source           |
+| ------------------------------- | -------------------------------------------------------------- | ---------------- |
+| `PORT`                          | Port of `/health`: 8080                                        | Railway variable |
+| `INGEST_GATE_PORT`              | Public port of the gate: 4443                                  | Image            |
+| `INGEST_UPSTREAM_PORT`          | Loopback port of `fleet-telemetry`: 4444                       | Image            |
+| `INGEST_ZMQ_PORT`               | Loopback port of the ZMQ PUB socket of `fleet-telemetry`: 5284 | Image            |
+| `INGEST_METRICS_PORT`           | Loopback port of its Prometheus metrics: 9090                  | Image            |
+| `INGEST_CHILD_PROGRAM`          | Absolute path of the `fleet-telemetry` program                 | Image            |
+| `INGEST_CHILD_CONFIG`           | Absolute path of its configuration file                        | Image            |
+| `DATABASE_URL`                  | URL of the role `telemetry_ingest`; a secret                   | Railway variable |
+| `INGEST_FLUSH_INTERVAL_SECONDS` | Optional: the flush interval, 1 to 900, default 900            | Not set          |
 
 `ingest migrate` reads `MIGRATION_DATABASE_URL`, the URL of the role
-`telemetry_migrator`. Variables that start with `INGEST_TEST_` shorten
-limits for the end-to-end tests; only a debug build reads them.
+`telemetry_migrator` (a Railway variable). Variables that start with
+`INGEST_TEST_` shorten limits for the end-to-end tests. Only a debug build
+reads them, and the image holds a release build.
 
 Local files that must never be committed. `.gitignore` excludes them.
 
@@ -150,12 +160,15 @@ Local files that must never be committed. `.gitignore` excludes them.
 
 ## Deployment
 
-Railway builds the image from `main` and deploys it. A merge to `main` is a
-release. A redeploy disconnects the vehicle for a short time. The vehicle
-reconnects by itself.
+Railway builds `ingest/Dockerfile` from `main` and deploys it. A merge to
+`main` that changes a watch path is a release. The pre-deploy command
+`ingest migrate` applies the migrations first; a failure stops the
+deployment. A redeploy disconnects the vehicle for a short time. The
+vehicle reconnects by itself and buffers its data meanwhile.
 
-[STACK.md](STACK.md) section 15 lists the infrastructure, the release rules,
-the post-release check, and the recovery path.
+[STACK.md](STACK.md) section 15 lists the infrastructure, the Railway
+settings, the release steps, the post-release checks, and the recovery
+path.
 
 ## Change the vehicle telemetry config
 
@@ -192,8 +205,10 @@ mise run verify
 lists the tasks and what each one checks.
 
 The GitHub Actions workflow `.github/workflows/ci.yml` also runs
-`mise run ci` on linux/amd64 for each pull request and each push to
-`main`. It does not replace the local gate.
+`mise run ci` and `mise run vuln` on linux/amd64 for each pull request and
+each push to `main`. Its job `image-check` builds the image and checks the
+running container (`scripts/image-check.sh`), because the development
+machine has no container runtime. CI does not replace the local gate.
 
 The database tests and the SQLx metadata check need `TEST_DATABASE_URL`:
 the URL of the role `neondb_owner` on the Neon branch `test` of the project
@@ -255,7 +270,8 @@ code that the tests use:
 3. Set the Railway variables of the service `telemetry`, with the host of
    the owner URL. Use the direct host, not the `-pooler` host: the
    connections set the `search_path` at start, and `ingest migrate` takes
-   a session lock.
+   a session lock. Set them with `railway variable set --skip-deploys`, so
+   that no deployment starts (`docs/ingest-release.md`, section 1).
 
    - `DATABASE_URL=postgresql://telemetry_ingest:<ingest password>@<host>/neondb?sslmode=verify-full`
    - `MIGRATION_DATABASE_URL=postgresql://telemetry_migrator:<migrator password>@<host>/neondb?sslmode=verify-full`

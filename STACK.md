@@ -47,7 +47,7 @@ build-time, or maintenance benefit.
 
 ```text
 repo/
-  ingest/                # Image, entrypoint, server config, railway.json of the ingest service (ADR 0001; now at the repo root)
+  ingest/                # Dockerfile, entrypoint, and fleet-telemetry config of the ingest service (ADR 0001); the Railway settings are in §15
   crates/
     ingest/src/          # Ingest process: gate, supervisor, ZMQ reader, PostgreSQL writer (ADR 0001)
     ingest/proto/        # Vendored upstream .proto files of the deployed fleet-telemetry tag
@@ -315,12 +315,13 @@ entry cannot replace it.
 | `build`  | `cargo build --workspace --release --locked`                                                                                         |
 | `test`   | Fails at once when `TEST_DATABASE_URL` is not set. Then `cargo nextest run --workspace --locked` (all tests, also the database tests) and `cargo test --doc --workspace --locked` (task `doctest`) |
 | `test-without-database` | For CI only. `cargo nextest run --workspace --locked -E 'not binary_id(ingest::storage)'`: every test except the database tests (the test binary `storage`, which also holds the end-to-end tests of the pipeline with a database), and `doctest`. The end-to-end tests of the pipeline without a database (the test binary `pipeline`) run in CI. |
-| `verify` | Fails at once when `TEST_DATABASE_URL` is not set. Then the static checks (task `checks`): format check without edits, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the JSON syntax of `config/`, the shell syntax of `entrypoint.sh` and `scripts/sqlx-metadata.sh`, no tracked `.env*`, `secrets/`, or `.bin/` path. Then `sqlx-check`, `build`, and `test`. Stops at the first failure. |
+| `verify` | Fails at once when `TEST_DATABASE_URL` is not set. Then the static checks (task `checks`): format check without edits, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the JSON syntax of `ingest/server_config.json` and `config/telemetry_config.json`, the shell syntax of `ingest/entrypoint.sh`, `scripts/sqlx-metadata.sh`, and `scripts/image-check.sh`, the mutation test of the `vuln` premises (`scripts/vuln-premise-test.sh`: 40 cases, each changed input must fail), no tracked `.env*`, `secrets/`, or `.bin/` path. Then `sqlx-check`, `build`, and `test`. Stops at the first failure. |
 | `ci`     | The task of the GitHub Actions workflow (below): `checks`, `build`, and `test-without-database`. No `TEST_DATABASE_URL` and no `sqlx-check`. Stops at the first failure. `ci` does not replace `verify`. |
 | `sqlx-check` | `scripts/sqlx-metadata.sh check`: `cargo sqlx prepare --workspace --check` against a new database on the Neon branch `test`, migrated with `migrations/`, then dropped. |
 | `sqlx-prepare` | `scripts/sqlx-metadata.sh prepare`: writes `.sqlx/` the same way after a change of a query or a migration. |
-| `deps`   | The dependency freshness check below: the crates, the mise tools, the Rust toolchain, the `FROM` images of the `Dockerfile` (newest `tesla/fleet-telemetry` release tag, current Debian stable release), and the CI pins of `.github/workflows/ci.yml` (actions, mise version, runner label). |
-| `vuln`   | `cargo deny --locked check advisories`, `osv-scanner scan source -r .`, and `osv-scanner scan image --archive` for each `FROM` image of the `Dockerfile`. crane downloads each image for `linux/amd64` as a Docker archive, with `DOCKER_CONFIG` set to a temporary directory that holds an empty `config.json`, so the pulls are anonymous and no local credential file is read. No container runtime is needed. Each image scan reads the reviewed ignore file `docs/security/osv-scanner-<repository, / as ->.toml` (`--config`); an image without a file fails. First checks the premises of the ignore files. Dockerfile: a strict allowlist; after removal of empty lines and `#` lines, the lines must equal the expected lines of this project, and only the two image tags may change (printable ASCII only, no parser directive); the expected lines copy only `/fleet-telemetry` from the upstream image and the config only from `config/server_config.json`. `entrypoint.sh`: the server starts with `-config /etc/fleet-telemetry/config.json`, and no other `-config` exists. `config/server_config.json`: exactly one JSON value, the same leaf paths in the `jq --stream` token stream and in the parsed value (no repeated key, also no repeated object), lowercase keys in the root, `monitoring`, and `tls` objects, dispatchers `logger` or `zmq` only, no extra client CA, no status port or profiler, metrics on loopback. Runs every scan; fails when a premise breaks, a scan fails, a scan finds a vulnerability that no entry covers, or the task did not scan the two images of the allowlist. A Dockerfile change needs an allowlist change in the same PR. |
+| `deps`   | The dependency freshness check below: the crates, the mise tools, the Rust toolchain, the `FROM` images of `ingest/Dockerfile` (newest `tesla/fleet-telemetry` release tag, newest `rust:<version>-slim-<Debian codename of the final stage>` tag, current Debian stable release), and the CI pins of `.github/workflows/ci.yml` (actions, mise version, runner label). |
+| `vuln`   | `cargo deny --locked check advisories`, `osv-scanner scan source -r .`, and `osv-scanner scan image --archive` for each runtime `FROM` image of `ingest/Dockerfile` (`tesla/fleet-telemetry` and `debian`). crane downloads each image for `linux/amd64` as a Docker archive, with `DOCKER_CONFIG` set to a temporary directory that holds an empty `config.json`, so the pulls are anonymous and no local credential file is read. No container runtime is needed. Each image scan reads the reviewed ignore file `docs/security/osv-scanner-<repository, / as ->.toml` (`--config`); an image without a file fails. The builder image `rust:...` is not scanned (§13). First checks the premises of the ignore files. `ingest/Dockerfile`: a strict allowlist; after removal of empty lines and `#` lines, the lines must equal the expected lines of this project, and only the three image tags may change (printable ASCII only, no parser directive); the expected lines copy only `/fleet-telemetry` from the upstream image, only the `ingest` binary from the builder, and the config only from `ingest/server_config.json`, and they fix `INGEST_CHILD_CONFIG`. The builder tag must be `<channel of rust-toolchain.toml>-slim-<Debian codename of the final stage>`. `ingest/entrypoint.sh`: a strict allowlist like the Dockerfile check; the first line is `#!/bin/sh`, and after removal of empty lines and `#` lines, the lines must equal the expected lines (printable ASCII only), which write the TLS files, unset `TLS_CERT`, `TLS_KEY`, and `MIGRATION_DATABASE_URL`, and end with `exec /usr/local/bin/ingest run`. `ingest/server_config.json`: exactly one JSON value, the same leaf paths in the `jq --stream` token stream and in the parsed value (no repeated key, also no repeated object), lowercase keys in the root, `monitoring`, `tls`, and `zmq` objects, `zmq.addr` of the form `tcp://127.0.0.1:<port>`, dispatchers `logger` or `zmq` only, no extra client CA, no status port or profiler, metrics on loopback. `scripts/vuln-premise-test.sh` (in `checks`) proves that each premise fails on a changed input. Runs every scan; fails when a premise breaks, a scan fails, a scan finds a vulnerability that no entry covers, or the task did not scan the two runtime images of the allowlist. A Dockerfile change needs an allowlist change in the same PR. |
+| `image-check` | `scripts/image-check.sh`: builds `ingest/Dockerfile` with Docker and checks the running container without a database (port 1 of the loopback interface refuses the connection) and with a self-signed certificate. Checks (each negative check first shows that its input is readable): `ingest` is PID 1 as user 10001, its environment holds `DATABASE_URL` but no TLS variable and no `MIGRATION_DATABASE_URL`, the soft open-file limit equals the hard limit, and `ldd` lists only glibc and `libgcc_s` for the `ingest` binary; `fleet-telemetry` is a child of PID 1 with an empty environment and without a listening socket of `ingest`; the TLS files have mode 0600 in a directory with mode 0700; `/health` answers 503; the SUB socket settles on the libzmq PUB socket of the real server, and its metrics answer on 127.0.0.1:9090; after 120 s, degraded mode opens the gate and a TLS client through the gate verifies the server certificate, although the container gets `INGEST_TEST_QUEUE_BYTES=1` and `INGEST_TEST_DEGRADED_AFTER_MS=1000` (a debug build would stop at once or enter degraded mode after 1 s, so this proves a release build); every metrics read of the real binary succeeds until then (no `shortfall_read_failed`, `metrics_unreadable`, or `subscriber_stalled`); after each of three forced child exits the reader ends its socket, settles on the new child, and the gate opens again, and no zombie remains; SIGTERM ends with exit code 1 within 30 s and the shutdown lines of ADR 0001; the log holds no TLS key and no database password. Needs Docker, so it runs in CI only (job `image-check`). |
 
 Pinned tools: cargo-nextest 0.9.152, cargo-deny 0.22.1, cargo-shear 1.14.1,
 Gitleaks 8.30.1, osv-scanner 2.7.1, SQLx CLI 0.9.1 (features `postgres` and
@@ -341,11 +342,12 @@ so no `.env` file of a parent directory is read.
 
 Scope and gaps of `vuln`:
 
-- The image scan covers the two `FROM` images, not the image that Railway
-  builds. Only `/fleet-telemetry` comes from `tesla/fleet-telemetry`, so
-  the Debian 12 package findings of that image are not in production. The
-  packages that `apt-get` installs or upgrades during the Railway build are
-  not scanned (§13).
+- The image scan covers the two runtime `FROM` images, not the image that
+  Railway builds. Only `/fleet-telemetry` comes from `tesla/fleet-telemetry`,
+  so the Debian 12 package findings of that image are not in production.
+  The packages that `apt-get` installs or upgrades during the Railway build
+  are not scanned (§13). The builder image `rust:<version>-slim-trixie` is
+  not scanned: only the `ingest` binary leaves it (§13).
 - `linux/amd64` is an assumption about the Railway host. It is not
   verified.
 - The Rust toolchain and the mise tools have no scanner (§13). The static
@@ -377,9 +379,10 @@ Scope and gaps of `vuln`:
     task or the scanner pins in `[tools]` of `mise.toml` (cargo-deny,
     osv-scanner, crane, jq), the `vuln` job of `.github/workflows/ci.yml`,
     any lockfile that `osv-scanner scan source -r .` reads, any
-    `osv-scanner.toml` (in the root or next to a lockfile), the
-    `Dockerfile`, `entrypoint.sh`, `config/`, or the ignore files in
-    `docs/security/`.
+    `osv-scanner.toml` (in the root or next to a lockfile),
+    `ingest/Dockerfile`, `ingest/entrypoint.sh`,
+    `ingest/server_config.json`, `rust-toolchain.toml` (the builder tag
+    premise), or the ignore files in `docs/security/`.
   - For any other PR, a red `vuln` job of any cause (a new advisory, an
     expired ignore entry, a broken premise, or a failed image download)
     starts a triage in a `chore/deps-<topic>` PR. It does not block that
@@ -396,7 +399,12 @@ Scope and gaps of `verify`:
   not read uncommitted or ignored files, so it never reads `.env` or
   `secrets/`. Commit the change before the final `verify`.
 - `cargo deny` reads the RustSec advisory database from the network.
-- `verify` does not build or test the ingest image. §13 records this gap.
+- `verify` does not build or test the ingest image: the development
+  machine has no container runtime. The CI job `image-check` builds and
+  checks it (below). `crates/ingest/tests/deployment.rs` (in `test`)
+  checks that the image settings, the server configuration, the Railway
+  settings, and the entrypoint agree, and runs a copy of the entrypoint
+  with temporary paths.
 - `verify` runs on the development machine (macOS arm64). The Linux evidence comes from the CI workflow below, not from `verify`.
 - No web code exists yet. Prettier, Oxlint, `tsc`, Vitest, Playwright, and
   `pnpm audit` join `verify` with the first web change.
@@ -417,12 +425,24 @@ Scope and gaps of `verify`:
   down or the CU-hours of the project are used up, `verify` fails; that
   is a gap, not a pass.
 
-**CI (GitHub Actions).** `.github/workflows/ci.yml` has two jobs on the
+**CI (GitHub Actions).** `.github/workflows/ci.yml` has three jobs on the
 GitHub-hosted runner `ubuntu-26.04` (x86_64, linux/amd64, the production
 platform of §1). The job `ci` runs `mise run setup` and `mise run ci`. The
 job `vuln` runs `mise run setup` and `mise run vuln` (see the scope of
-`vuln` above). The workflow runs for each pull request and for each push
-to `main`.
+`vuln` above). The job `image-check` runs `mise run image-check` with the
+Docker engine of the hosted runner. The workflow runs for each pull
+request and for each push to `main`.
+
+- The job `image-check` builds the image of the PR merge and runs it on
+  the runner. It pushes no image and logs in to no registry; Docker pulls
+  the three `FROM` images of `ingest/Dockerfile` anonymously. The
+  container has no secret and no database: the script makes a
+  self-signed certificate, and the database URL points to a refused port.
+  It does not prove the Railway build (another builder, other caching,
+  the Railway proxy, the Railway healthcheck); the post-release checks of
+  §15 cover those. A green `image-check` job of the current PR head is a
+  merge condition of a PR that changes an input of the image (the watch
+  paths of §15) or the job.
 
 - Each PR has one concurrency group: a new push to the PR cancels the old
   run of that PR. Each push to `main` has a group of its own (`github.sha`
@@ -850,11 +870,12 @@ remain in GitHub.
 
 | Rule / scope | Reason and consequences | Compensating evidence | Responsible lead / reviewer / approval | Expiry or reassessment |
 | ------------ | ----------------------- | --------------------- | -------------------------------------- | ---------------------- |
-| §3, §14: vulnerability check of the built ingest image layer, the Rust toolchain, and the mise tools | The earlier exception for all freshness and vulnerability checks ends with this first application PR. `mise run vuln` now scans the crates in `Cargo.lock` and both `FROM` images of the `Dockerfile` as archives (crane and `osv-scanner scan image --archive`, no container runtime). Three surfaces stay without a scanner. (1) The image that Railway builds: it stays in the Railway registry, and no local container runtime can build it. The packages that `apt-get` adds or upgrades during the build (`ca-certificates`, `libstdc++6`, and the `apt-get upgrade` results) are therefore not scanned. (2) The Rust toolchain and the mise tools: no advisory database that osv-scanner or cargo-deny reads has a record for the Rust toolchain, and no scanner reads the installed tool binaries. (3) The C code that is linked statically into `/fleet-telemetry`: libzmq 4.3.4 (upstream Dockerfile) with its own copies of tweetnacl and SHA-1, and the librdkafka 2.3.0 bundle of `confluent-kafka-go/v2` v2.3.0 with OpenSSL 3.0.11, libcurl 7.86.0, zlib 1.2.13, zstd 1.5.2, and lz4 1.9.3. libsodium is not linked: the upstream Dockerfile builds libsodium 1.0.19, but the libzmq build uses its tweetnacl copy (no `--with-libsodium`). Cyrus SASL is not linked. At each start, in every configuration, the ELF `_init` runs the OpenSSL CPU feature detection `OPENSSL_cpuid_setup` (reads the environment variable `OPENSSL_ia32cap` and the `CPUID` instruction), and the Go package `zmq4` creates a libzmq context (allocation, process ID, one `eventfd`; no random source, no socket, no I/O thread); neither takes network input. All other code of the bundle components runs only behind the `kafka` dispatcher, which the `vuln` premise check rejects (`docs/security/image-advisories.md`, "Static C libraries"). Consequence: a known vulnerability in these surfaces is found only by the manual comparison. | In each PR that runs the vulnerability check, record: the Rust toolchain against the GitHub security advisories of `rust-lang/rust`; each mise tool against OSV (crates.io or Go package) and the GitHub security advisories of its repository; the `apt-get` packages against OSV for `Debian:13`; each static C component of `/fleet-telemetry` against OSV by release commit, or the reason why a component is not compared one by one (`docs/security/image-advisories.md`, "Static C libraries"). Compare the OpenSSL and libcurl records one by one before a change enables the `kafka` dispatcher. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9); surface (3): qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17). | Reassess when the repository gets a container build check, when the built image can be downloaded, or when a scanner covers the toolchain, the tools, or the static C libraries. |
-| §3: reviewed ignore files of the image scan | `osv-scanner scan image` reports advisories that do not affect this deployment, or that have no fix. The ignore files `docs/security/osv-scanner-tesla-fleet-telemetry.toml` (33 Go groups and the Debian 12 packages of the upstream image) and `docs/security/osv-scanner-debian.toml` (69 Debian 13 groups) hide them, so that `vuln` fails only on new or undecided findings. Consequence: an ignored advisory that later gets a Debian fix or a KEV listing is not shown until its entry expires. | Each entry names its decision in `docs/security/image-advisories.md` and has an expiry date. `vuln` checks the premises of the entries before the scan (the Dockerfile against a strict allowlist; the `-config` path of `entrypoint.sh`; config key case, exactly one JSON value, no repeated key or object, dispatchers, client CAs, listeners) and fails when it did not scan the two images of the allowlist. A build that runs the `apt-get` step installs the Debian fixes of the build date. A cached layer of that step skips the upgrade, and the Railway cache behaviour is not verified; the post-release check of §15 reads the installed package versions from the build log and detects a skipped step. The KEV comparison stays manual. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17). | Go entries expire on 2027-02-24, Debian 13 entries on 2027-01-25. Reassess earlier with a new upstream release, a base image change, a broken premise, or a KEV listing. |
+| §3, §14: vulnerability check of the built ingest image layer, the Rust toolchain, and the mise tools | The earlier exception for all freshness and vulnerability checks ends with this first application PR. `mise run vuln` now scans the crates in `Cargo.lock` and both runtime `FROM` images of `ingest/Dockerfile` as archives (crane and `osv-scanner scan image --archive`, no container runtime). Three surfaces stay without a scanner. (1) The image that Railway builds: it stays in the Railway registry, and no local container runtime can build it. The CI job `image-check` (issue #14) builds an equal image on the runner, but does not scan it yet. The packages that `apt-get` adds or upgrades during the build (`ca-certificates`, `libstdc++6`, and the `apt-get upgrade` results) are therefore not scanned. (2) The Rust toolchain and the mise tools: no advisory database that osv-scanner or cargo-deny reads has a record for the Rust toolchain, and no scanner reads the installed tool binaries. (3) The C code that is linked statically into `/fleet-telemetry`: libzmq 4.3.4 (upstream Dockerfile) with its own copies of tweetnacl and SHA-1, and the librdkafka 2.3.0 bundle of `confluent-kafka-go/v2` v2.3.0 with OpenSSL 3.0.11, libcurl 7.86.0, zlib 1.2.13, zstd 1.5.2, and lz4 1.9.3. libsodium is not linked: the upstream Dockerfile builds libsodium 1.0.19, but the libzmq build uses its tweetnacl copy (no `--with-libsodium`). Cyrus SASL is not linked. At each start, in every configuration, the ELF `_init` runs the OpenSSL CPU feature detection `OPENSSL_cpuid_setup` (reads the environment variable `OPENSSL_ia32cap` and the `CPUID` instruction), and the Go package `zmq4` creates a libzmq context (allocation, process ID, one `eventfd`; no random source); neither takes network input. Since issue #14, the `zmq` dispatcher is on: libzmq binds a PUB socket on 127.0.0.1:5284, starts its I/O thread, and parses ZMTP (the greeting, also of ZMTP 1.0 and 2.0 peers, the NULL handshake, `PING`, subscriptions, and frame headers) from local peers only. The `vuln` premise requires `zmq.addr` on the literal address 127.0.0.1, and the only peer is `ingest`; a local process of the same user could subscribe and read every record, but that user can already read the records and the TLS key (`docs/security/image-advisories.md`, "Code that runs with the `zmq` dispatcher"). All other code of the bundle components runs only behind the `kafka` dispatcher, which the `vuln` premise check rejects (`docs/security/image-advisories.md`, "Static C libraries"). Consequence: a known vulnerability in these surfaces is found only by the manual comparison. | In each PR that runs the vulnerability check, record: the Rust toolchain against the GitHub security advisories of `rust-lang/rust`; each mise tool against OSV (crates.io or Go package) and the GitHub security advisories of its repository; the `apt-get` packages against OSV for `Debian:13`; each static C component of `/fleet-telemetry` against OSV by release commit, or the reason why a component is not compared one by one (`docs/security/image-advisories.md`, "Static C libraries"). Compare the OpenSSL and libcurl records one by one before a change enables the `kafka` dispatcher. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9); surface (3): qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17); the issue #14 change (runtime images, `zmq` listener, triggers): qa-enforcer, [PR #23](https://github.com/jonikanerva/telemetry/pull/23), review round 2. | Reassess when the built image can be downloaded, when a scanner covers the toolchain, the tools, or the static C libraries, when a change enables another dispatcher or binds libzmq to another address, or by 2027-01-25 (the expiry of the Debian 13 ignore entries), whichever comes first. The earlier trigger "a container build check" is met with the CI job `image-check` (issue #14). Proposed follow-up for the owner, not implemented: scan the built image in that job (`docker save` and `osv-scanner scan image --archive` with both ignore files), which would cover surface (1). |
+| §3: reviewed ignore files of the image scan | `osv-scanner scan image` reports advisories that do not affect this deployment, or that have no fix. The ignore files `docs/security/osv-scanner-tesla-fleet-telemetry.toml` (33 Go groups and the Debian 12 packages of the upstream image) and `docs/security/osv-scanner-debian.toml` (69 Debian 13 groups) hide them, so that `vuln` fails only on new or undecided findings. Consequence: an ignored advisory that later gets a Debian fix or a KEV listing is not shown until its entry expires. | Each entry names its decision in `docs/security/image-advisories.md` and has an expiry date. `vuln` checks the premises of the entries before the scan (`ingest/Dockerfile` against a strict allowlist, with the builder tag tied to `rust-toolchain.toml`; `ingest/entrypoint.sh` starts `ingest run` and nothing else; config key case, exactly one JSON value, no repeated key or object, dispatchers, client CAs, listeners, `zmq.addr` on 127.0.0.1) and fails when it did not scan the two runtime images of the allowlist. `scripts/vuln-premise-test.sh` (in `checks`) proves with 40 changed inputs that each premise check fails. A build that runs the `apt-get` step installs the Debian fixes of the build date. A cached layer of that step skips the upgrade, and the Railway cache behaviour is not verified; the post-release check of §15 reads the installed package versions from the build log and detects a skipped step. The KEV comparison stays manual. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #17](https://github.com/jonikanerva/telemetry/pull/17); the premises of issue #14 (entrypoint allowlist, builder tag, `zmq.addr`): qa-enforcer, [PR #23](https://github.com/jonikanerva/telemetry/pull/23), review round 2. | Go entries expire on 2027-02-24, Debian 13 entries on 2027-01-25. Reassess earlier with a new upstream release, a base image change, a broken premise, or a KEV listing. |
 | §8: readable development formatter | The process has only the JSON formatter. One formatter gives one redaction path: the field allowlist exists once, and a second formatter cannot leak a field that the JSON formatter redacts. Nothing needs readable logs yet. Consequence: developers read the logs with `jq`. | The JSON formatter and its redaction tests in `crates/ingest/src/logging.rs`. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #9](https://github.com/jonikanerva/telemetry/pull/9). | Reassess when a developer workflow needs readable logs, and with the first web PR. |
-| §1, §14: runtime tests on linux/amd64 before merge | The development machine is macOS arm64. The CI workflow (§3) runs the tests that need no database on linux/amd64, but not in the container: `ingest` is not PID 1 there, no Railway proxy is in front of the gate, and the tests that need a database do not run there. The ingest process has platform-dependent code: TCP keep-alive options, PID 1 signal handling and child reaping, and the child process. Consequence: a Linux-only runtime fault that shows only in the container, as PID 1, behind the Railway proxy, or in a database test shows only after deployment. The storage of PR #19 therefore has a Linux gap until the deployment checks: CI compiles and links `aws-lc-sys` (C, `cc` build) and SQLx on linux/amd64 and runs the storage unit tests that need no database (failure classes, rows, chunks, connect options, deadlines, and the close of the connection of each call after a passed deadline and after an answered error, against a local fake server), but the 42 tests of the test binary `storage` (39 of them open a database session) and the SQLx and TLS runtime path (a rustls connection with `sslmode=verify-full` to Neon, the migrations, the writer, the role script) run only on macOS. The pipeline of issue #13: CI runs its unit tests and its end-to-end tests without a database (`tests/pipeline.rs`: the ZMQ reader, the gate, degraded mode, the full queue, the shortfall check, the drain, and a failed final flush) on linux/amd64; the four end-to-end tests with a database (`tests/storage/pipeline.rs`) run only on macOS. Scope: until the first deployment that starts `ingest`. Until then the image does not contain the binary, the gate stays closed, and `/health` answers 503. | Before merge: a green run of `mise run ci` on linux/amd64 for the PR (§3): Clippy with `-D warnings`, the locked release build, and the nextest suite and the doctests without the tests that need a database. Check 1 below is now produced by CI for each PR, for the tests that need no database; it replaces the earlier Clippy step for `x86_64-unknown-linux-gnu` in `mise run lint`. The tests that need a database run only locally, on macOS (§3). Required evidence of the deployment PR, before the first deployment that starts `ingest` (also in ADR 0001, "To verify at first deployment"): (1) `cargo nextest run --workspace --locked` passes on linux/amd64: CI produces this for the tests that need no database, and the deployment PR links the green CI run of its head. (2) `ingest` is PID 1. On a redeploy, the log of the old deployment shows `shutdown_started` with reason `SIGTERM`, `gate_stopped`, `child_killed` with `exit_signal` 9, the `stopped` event, and `shutdown_complete` within `drainingSeconds`, and no `task_stop_timeout`. (3) After at least three child exits and restarts, the process table of the container has no zombie (`ps` state `Z`). (4) After a forced end of PID 1 (a watchdog exit or SIGKILL of `ingest`), the container ends, Railway restarts it, a new `started` event follows, and no `fleet-telemetry` process survives without `ingest`. (5) Every `gate_connection_closed` event of a normal connection has `socket_options` `set`, `keepalive` `15/15/9`, and `nodelay` `true` (none has `failed`), and the idle dead-peer case closes in about 150 s; if the Railway proxy terminates TCP, `ss -tio` in the container shows the keep-alive timers, or check 1 covers them. (6) `fleet-telemetry` starts with an empty environment, and `/proc/<child pid>/fd` has no listener of `ingest`. | Lead: Claude Code. Approving independent reviewer: qa-enforcer, [PR #18](https://github.com/jonikanerva/telemetry/pull/18); CI as the source of check 1: qa-enforcer, [PR #21](https://github.com/jonikanerva/telemetry/pull/21). | Ends when the deployment PR records checks 1 to 6. Reassess when the repository gets a container build check, or when CI can run the tests that need a database. |
-| §14: build and test of the ingest image before merge | No local container runtime is available to the lead. Railway builds the image after merge. | Post-release check: the service starts, the TLS certificate verifies, and the vehicle reconnects. | Lead: Claude Code. Approval: owner, with the adoption PR. | Reassess when the repository gets a container build check. |
+| §1, §14: runtime tests on linux/amd64 before merge | The development machine is macOS arm64. The CI workflow (§3) runs the tests that need no database on linux/amd64, but not in the container: `ingest` is not PID 1 there, no Railway proxy is in front of the gate, and the tests that need a database do not run there. The ingest process has platform-dependent code: TCP keep-alive options, PID 1 signal handling and child reaping, and the child process. Consequence: a Linux-only runtime fault that shows only in the container, as PID 1, behind the Railway proxy, or in a database test shows only after deployment. The storage of PR #19 therefore has a Linux gap until the deployment checks: CI compiles and links `aws-lc-sys` (C, `cc` build) and SQLx on linux/amd64 and runs the storage unit tests that need no database (failure classes, rows, chunks, connect options, deadlines, and the close of the connection of each call after a passed deadline and after an answered error, against a local fake server), but the 42 tests of the test binary `storage` (39 of them open a database session) and the SQLx and TLS runtime path (a rustls connection with `sslmode=verify-full` to Neon, the migrations, the writer, the role script) run only on macOS. The pipeline of issue #13: CI runs its unit tests and its end-to-end tests without a database (`tests/pipeline.rs`: the ZMQ reader, the gate, degraded mode, the full queue, the shortfall check, the drain, and a failed final flush) on linux/amd64; the four end-to-end tests with a database (`tests/storage/pipeline.rs`) run only on macOS. Scope: until the first deployment that starts `ingest`. Until then the image does not contain the binary, the gate stays closed, and `/health` answers 503. | Before merge: a green run of `mise run ci` on linux/amd64 for the PR (§3): Clippy with `-D warnings`, the locked release build, and the nextest suite and the doctests without the tests that need a database. Check 1 below is now produced by CI for each PR, for the tests that need no database; it replaces the earlier Clippy step for `x86_64-unknown-linux-gnu` in `mise run lint`. The tests that need a database run only locally, on macOS (§3). Required evidence of the deployment change (also in ADR 0001, "To verify at first deployment"): check 1 and the container part of checks 2, 3, and 6 before the merge (CI jobs `ci` and `image-check`), and checks 2 to 6 on Railway after the release (`docs/ingest-release.md`): (1) `cargo nextest run --workspace --locked` passes on linux/amd64: CI produces this for the tests that need no database, and the deployment PR links the green CI run of its head. (2) `ingest` is PID 1. On a redeploy, the log of the old deployment shows `shutdown_started` with reason `SIGTERM`, `gate_stopped`, `child_killed` with `exit_signal` 9, the `stopped` event, and `shutdown_complete` within `drainingSeconds`, and no `task_stop_timeout` and no `gate_connections_open` (PR #24). (3) After at least three child exits and restarts, the process table of the container has no zombie (`ps` state `Z`). (4) After a forced end of PID 1 (a watchdog exit or SIGKILL of `ingest`), the container ends, Railway restarts it, a new `started` event follows, and no `fleet-telemetry` process survives without `ingest`. (5) Every `gate_connection_closed` event of a normal connection has `socket_options` `set`, `keepalive` `15/15/9`, and `nodelay` `true` (none has `failed`), and the idle dead-peer case closes in about 150 s; if the Railway proxy terminates TCP, `ss -tio` in the container shows the keep-alive timers, or check 1 covers them. (6) `fleet-telemetry` starts with an empty environment, and `/proc/<child pid>/fd` has no listener of `ingest`. Since issue #14, the CI job `image-check` runs checks 2 (without a database, so the `stopped` event is not stored and the exit code is 1), 3, and 6 against the built image on linux/amd64 before merge, without the Railway proxy and without Railway (`scripts/image-check.sh`). The deployment PR still records checks 2 to 6 on Railway after the release (`docs/ingest-release.md`). | Lead: Claude Code. Approving independent reviewer: qa-enforcer, [PR #18](https://github.com/jonikanerva/telemetry/pull/18); CI as the source of check 1: qa-enforcer, [PR #21](https://github.com/jonikanerva/telemetry/pull/21); `image-check` as the container evidence (issue #14): qa-enforcer, [PR #23](https://github.com/jonikanerva/telemetry/pull/23), review round 1. | Ends when the release records checks 1 to 6 (`docs/ingest-release.md`). Check 4 (a forced end of PID 1) cannot be produced on purpose and may never be observed: reassess on 2027-02-28 if it is still open, and decide then whether the kernel rule of ADR 0001 (fact 8) and the `image-check` evidence suffice. Reassess also when CI can run the tests that need a database. |
+| §14: build and test of the ingest image before merge | No local container runtime is available to the lead. Since issue #14, the CI job `image-check` builds `ingest/Dockerfile` with Docker on linux/amd64 and checks the running container (§3). The Railway build stays unverified before merge: another builder and cache, the Railway settings, the TCP proxy, and the healthcheck run only after the merge. | Before merge: a green `image-check` job of the PR head. After release: the checks of `docs/ingest-release.md`; on failure, the recovery path there. | Lead: Claude Code. Approval: owner, with the adoption PR. Change of the compensating evidence (issue #14): qa-enforcer, [PR #23](https://github.com/jonikanerva/telemetry/pull/23), review round 1. | Reassess when Railway documents its Dockerfile build, or when the repository can build with the Railway builder before merge. |
+| §3: scan of the builder image `rust:<version>-slim-trixie` | Proposed with issue #14; not approved yet. The build stage needs the official Rust image (Rust, gcc, libc6-dev, binutils). Only the `ingest` binary leaves the stage; no Debian package of the builder image reaches the final image. `osv-scanner scan image` of `rust:1.100.0-slim-trixie` on 27 November 2026 reports 66 affected package entries (for example binutils 2.44-3 with 69 groups, gcc-14, glibc, openssl, perl, sqlite3). Most are parser or library flaws in tools that read only the trusted source of this repository. A triage of each entry would cost more than it protects. Consequence: a vulnerability in the compiler or linker that changes the produced binary is not found by a scanner. The binary links glibc and libgcc_s dynamically from the final image, which `vuln` scans; it contains the static start files of glibc from libc6-dev and the C code of `aws-lc-sys` that gcc compiles. | The tag is pinned and checked (`vuln` allowlist: `<channel of rust-toolchain.toml>-slim-<Debian codename of the final stage>`); `mise run deps` prints the newest tag. The Rust toolchain comparison of the first row covers Rust. At each vulnerability check, compare the gcc-14, binutils, and glibc advisories of `Debian:13` that are marked as exploited (CISA KEV) with the builder image. | Responsible lead: Claude Code (orchestrating lead). Approving independent reviewer: qa-enforcer, [PR #23](https://github.com/jonikanerva/telemetry/pull/23), review round 1. | Reassess when a scanner of the built image runs in CI, when a build-stage advisory is listed in CISA KEV, or with a change of the builder image. |
 | §15: one image for server and SPA | The ingest service is a second image, because it is Tesla's upstream server. | The application still ships as one image. | Lead: Claude Code. Approval: owner, with the adoption PR. | Permanent while the upstream server is used. |
 
 ---
@@ -903,7 +924,7 @@ explanation. Apply P6 evidence reuse without waiving P9's independent run.
 | P3, P7: security              | Named scanner results and auth/privacy checks                                                                                           | Resolve session tuple if accounts are used; scanners do not prove authorization                   |
 | P5–P7: browser                | Critical Playwright journeys, degraded/error states, keyboard and axe                                                                   | Record unsupported browsers and manual accessibility gaps                                         |
 | P7: release                   | Before merge: target build and recovery readiness; after release: identity, health, and smoke evidence                                  | Local build is not a verified deployment                                                          |
-| P6, P7: production platform   | Green `ci` job (`mise run ci` on linux/amd64, GitHub Actions, §3) for the PR, together with the local `mise run verify`                  | CI runs no database test and no container (§13); it is not branch protection                     |
+| P6, P7: production platform   | Green `ci` job (`mise run ci` on linux/amd64, GitHub Actions, §3) for the PR, together with the local `mise run verify`; for a change of an image input, also a green `image-check` job | CI runs no database test; `image-check` runs the container without Railway (§13); CI is not branch protection |
 | P8–P9: material changes       | Current docs, significant decisions, independent integrated verification                                                                | Separate reviewer context; exact tested revisions                                                 |
 
 ### Check configuration
@@ -975,10 +996,11 @@ a verification environment; its pins are the four rows that start with
 
 | Component                 | Version or value                                         | Notes                                                                                   |
 | ------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Railway                   | Hobby plan, project `calmdonut`, service `telemetry`     | Builds from `main` of `jonikanerva/telemetry`. A merge to `main` is a release.          |
-| Ingest server             | `tesla/fleet-telemetry:v0.10.1`                          | Upstream binary, copied into the image in `Dockerfile`. Go 1.27.4, dynamically linked against the glibc and libstdc++ of the base image. Advisory triage: `docs/security/image-advisories.md`. |
+| Railway                   | Hobby plan, project `calmdonut`, service `telemetry`     | Builds `ingest/Dockerfile` from `main` of `jonikanerva/telemetry`, root directory `/`. A merge to `main` that changes a watch path is a release. The service settings are in "Railway settings of the service `telemetry`" below. |
+| Ingest server             | `tesla/fleet-telemetry:v0.10.1`                          | Upstream binary, copied into the image in `ingest/Dockerfile`. Go 1.27.4, dynamically linked against the glibc and libstdc++ of the base image. Advisory triage: `docs/security/image-advisories.md`. |
 | Ingest base image         | `debian:trixie-slim`                                     | Debian 13 (trixie), the current stable release. Point release 13.8 on 26 November 2026. Same digest as `trixie-20261123-slim`. The build runs `apt-get upgrade`, so the packages depend on the build date. |
-| Rust toolchain            | 1.100.0, `rust-toolchain.toml`                           | Latest stable on 26 November 2026. Builds `crates/ingest`. The deployed image does not contain the Rust binary yet. |
+| Ingest builder image      | `rust:1.100.0-slim-trixie`                               | Build stage of `ingest/Dockerfile`. Official Rust image, Rust 1.100.0 (`--profile minimal`) with gcc and libc6-dev on Debian 13. Digest for linux/amd64 on 27 November 2026: `sha256:6014030547c3168bb80e700b7aaf653fbb92e5ac1e2712c49a1c9ec1beea49d8`. Only the `ingest` binary leaves the stage. The `vuln` allowlist ties the tag to `rust-toolchain.toml` and to the Debian release of the final stage; `mise run deps` prints the newest tag. Not scanned (§13). |
+| Rust toolchain            | 1.100.0, `rust-toolchain.toml`                           | Latest stable on 26 November 2026. Builds `crates/ingest` locally, in CI, and (through the builder image) in the Railway build. |
 | Railway TCP proxy         | `zephyr.proxy.rlwy.net:57438` to container port 4443     | The vehicle's signed config contains host `telemetry.calmdonut.com` and port 57438.     |
 | DNS                       | Cloudflare, `telemetry` CNAME, DNS only                  | A proxied record breaks the vehicle mTLS connection.                                    |
 | Ingest TLS certificate    | Cloudflare Origin CA, ECC, valid until 22 November 2041  | Railway variables `TLS_CERT` and `TLS_KEY`. The Origin CA ECC root expires 15 August 2029. |
@@ -1000,13 +1022,23 @@ Project-specific release rules:
   The vehicle reconnects by itself. Give each Railway service its own root
   directory and watch patterns, so that an application merge does not
   redeploy the ingest service.
-- Target layout (ADR 0001, applied by the deployment PR): the service
-  `telemetry` runs one image with the Rust ingest process as PID 1 and
-  `fleet-telemetry` as its child. The ingest process owns port 4443 and
-  forwards the vehicle connections only while it can take records.
-  `/ingest/railway.json` sets the Dockerfile path, the watch patterns, the
-  pre-deploy migration command, the healthcheck, 30 draining seconds, and
-  the restart policy `ALWAYS`.
+- Layout (ADR 0001): the service `telemetry` runs one image with the Rust
+  ingest process as PID 1 and `fleet-telemetry` as its child. The ingest
+  process owns port 4443 and forwards the vehicle connections only while
+  it can take records. The image runs as user 10001.
+- Railway settings: the table below. Railway deprecated config as code
+  ("Existing `railway.json` / `railway.toml` files continue to work for
+  services that already use them until 2026-12-01 (hard cutoff). New
+  services cannot opt into Config as Code", read on 27 November 2026,
+  <https://docs.railway.com/guides/config-as-code>). The service
+  `telemetry` has no config file today. So the lead sets each value as a
+  service setting or a `RAILWAY_*` variable. Owner decision of 27
+  November 2026: no `railway.json` and no file in its place;
+  Infrastructure as Code (`.railway/railway.ts`) when it is possible and
+  safe; reassess in December 2026 (ADR 0001, lead decision 7, with the
+  blocking facts).
+- Release steps, post-release checks, and recovery:
+  [`docs/ingest-release.md`](docs/ingest-release.md).
 - Railway documentation does not state that the TCP proxy port is permanent.
   The port stayed the same over one redeploy. If the port changes, sign and
   send a new vehicle telemetry config (`config/telemetry_config.json`).
@@ -1015,13 +1047,20 @@ Project-specific release rules:
 - Post-release check for the ingest service: the deployment status is
   `SUCCESS`, `openssl s_client` verifies the certificate against the Origin
   CA ECC root on port 57438, and the log shows a vehicle connection after the
-  vehicle is next awake. After each build of the ingest image, also read the
+  vehicle is next awake. The first release of the ADR 0001 image has more
+  checks (`docs/ingest-release.md`). After each build of the ingest image, also read the
   Railway build log: the `apt-get` step must have run, not come from a cached
   layer, and the log must show the installed versions of the fixed packages,
   for example `libzstd1` 1.5.7+dfsg-1+deb13u1 and `passwd` 1:4.17.4-2+deb13u1
   on 26 November 2026. If the step came from the cache, start a build
   without the cache. How Railway caches Dockerfile layers is not verified.
-- Recovery: redeploy the previous successful Railway deployment.
+- Recovery: roll back to the previous successful Railway deployment.
+  Railway restores its image and its custom variables. Before the first
+  rollback to an image without `ingest` (the image before ADR 0001),
+  clear the pre-deploy command and the healthcheck path, because that
+  image has neither `/usr/local/bin/ingest` nor `/health`; that image
+  writes the VIN and the location to the log again
+  (`docs/ingest-release.md`, "Recovery").
 - Image advisories: `mise run vuln` reads the reviewed ignore files in
   `docs/security/` (§3, §13). When an entry expires or a new advisory
   appears, triage it in a `chore/deps-<topic>` PR and update
@@ -1031,12 +1070,69 @@ Project-specific release rules:
   applies fixes only at build time. A build can reuse a cached layer of the
   `apt-get` step; the build log must show that the step ran and installed
   the fix.
-- The `vuln` premise check does not read the `zmq` bind address. The ADR
-  0001 deployment change enables the `zmq` dispatcher, so libzmq 4.3.4
-  starts to listen. That change must add a premise that `zmq.addr` binds
-  the loopback interface. It must also update the Dockerfile allowlist
-  and the paths of the check, because it moves the Dockerfile and the
-  server config; the strict allowlist fails on any other Dockerfile.
+- The `zmq` dispatcher makes libzmq 4.3.4 listen. The `vuln` premise
+  check requires `zmq.addr` of the form `tcp://127.0.0.1:<port>`, and
+  `scripts/vuln-premise-test.sh` proves that the check fails on any other
+  address.
+
+#### Railway settings of the service `telemetry`
+
+The lead sets these values without a deployment, before the merge
+(`docs/ingest-release.md`, section 1). This table is the one documented
+place of the values. The deployment test
+(`crates/ingest/tests/deployment.rs`, module `railway`) holds them as
+constants, checks them against the image and the code (the pre-deploy
+command and timeout against the binary and the migrate deadline, the
+draining time against the shutdown budget, the health path against the
+router, the watch paths against the `COPY` inputs), and checks that this
+table holds the same values.
+Railway sources (read on 27 November 2026): config as code
+(<https://docs.railway.com/reference/config-as-code>), Dockerfiles
+(<https://docs.railway.com/builds/dockerfiles>), build configuration and
+watch paths (<https://docs.railway.com/builds/build-configuration>),
+healthchecks (<https://docs.railway.com/deployments/healthchecks>),
+pre-deploy command
+(<https://docs.railway.com/deployments/pre-deploy-command>), deployment
+teardown (<https://docs.railway.com/deployments/deployment-teardown>),
+restart policy (<https://docs.railway.com/deployments/restart-policy>),
+start command (<https://docs.railway.com/deployments/start-command>), and
+deployment actions
+(<https://docs.railway.com/deployments/deployment-actions>).
+
+| Setting                 | Value | Where the lead sets it | Reason |
+| ----------------------- | ----- | ---------------------- | ------ |
+| Root directory          | `/` (unchanged) | Service settings | The build context must hold `Cargo.toml`, `crates/`, `db/`, `migrations/`, and `.sqlx/`. |
+| Dockerfile path         | `/ingest/Dockerfile` | Variable `RAILWAY_DOCKERFILE_PATH` | Railway looks for `Dockerfile` in the root; the example of the documentation uses an absolute path. Without it, the Railway builder (Railpack) builds the Rust workspace and no image of ADR 0001. |
+| Watch paths             | `/ingest/**`, `/crates/**`, `/db/**`, `/migrations/**`, `/.sqlx/**`, `/.cargo/**`, `/Cargo.toml`, `/Cargo.lock`, `/rust-toolchain.toml`, `/.dockerignore` | Service settings, one pattern each line | Each input of the image (`.dockerignore` and the `COPY` lines; the deployment test checks the list). "Any changes that don't match the patterns will skip creating a new deployment", so a documentation merge does not disconnect the vehicle. The patterns operate from `/`. |
+| Custom start command    | None | Service settings | The image `CMD` runs `/entrypoint.sh`. A start command replaces the image `ENTRYPOINT` in exec form. |
+| Pre-deploy command      | `/usr/local/bin/ingest migrate` | Service settings | Migrations are a separate release step (ADR 0002). The schema allows one string or an array with one string, not one argument for each element. It runs in its own container with the service variables. A failure stops the deployment. |
+| Pre-deploy timeout      | 1200 s | Service settings (appears after the pre-deploy command is set) | Longer than the 15-minute client deadline of `ingest migrate`, so it never cuts a migration. It ends a pre-deploy command that never ends, for example the image before ADR 0001, whose `ENTRYPOINT` would start the server. By default, Railway sets no time limit (the allowed range is 1 to 3600 s). |
+| Healthcheck path        | `/health` | Service settings | A deployment becomes active only after a 2xx answer. `/health` answers 200 only when the gate is open and the start-up check passed. |
+| Healthcheck timeout     | 300 s (the default) | Variable `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`, or unset | Includes the first Neon wake-up and the settle time. |
+| `PORT`                  | `8080` | Variable `PORT` | The port of `/health` and of the healthcheck. Railway injects `PORT` when it is not set; a fixed value keeps it apart from the ports 4443, 4444, 5284, and 9090. |
+| Draining time           | 30 s | Variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | The time from SIGTERM to SIGKILL. The shutdown budget is 26 s (`crates/ingest/src/lifecycle.rs`). |
+| Overlap time            | 0 s | Variable `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` | The vehicle reconnects by itself (ADR 0001). |
+| Restart policy          | Always | Service settings | No limit of 10 restarts. The documentation limits "Always" only for Free and trial users. Assumption: the Hobby plan counts as a paid plan; the setting shows it. |
+| TCP proxy               | `zephyr.proxy.rlwy.net:57438` to port 4443 (unchanged) | Service settings | The vehicle config names port 57438. |
+
+Changes without a deployment: a variable with `railway variable set
+--skip-deploys` ("Skip triggering deploys",
+<https://docs.railway.com/cli/variable>) or the API mutation
+`variableUpsert` with `skipDeploys: true` ("Don't trigger a redeploy
+after change", <https://docs.railway.com/integrations/api/manage-variables>);
+a service setting in the dashboard as a staged change, applied with Alt
+and "Deploy", which "commit[s] the changes without triggering a redeploy"
+(<https://docs.railway.com/deployments/staged-changes>). The next
+deployment, for example the deployment of a merge, then uses them.
+
+The service variables `DATABASE_URL`, `MIGRATION_DATABASE_URL`,
+`TLS_CERT`, and `TLS_KEY` hold secrets. The image `ENV` lines hold the
+other settings of `ingest run` (README.md, "Configuration"); do not set
+those names as service variables, because a service variable replaces
+the image value. A Dockerfile build sees only the variables that an `ARG`
+line names ("you must specify them in the Dockerfile using the `ARG`
+command"), and `ingest/Dockerfile` has no `ARG`, so no secret reaches a
+build step.
 
 Owner decisions of 26 November 2026 (lead authority):
 
@@ -1057,10 +1153,36 @@ section "Lead decisions"):
   least-privilege role `telemetry_migrator` owns schema `raw` and runs the
   migrations. It serves the owner's intent and keeps `neondb_owner` out of
   Railway. The lead reports this decision to the owner. Accepted risk: the
-  migrator URL is a service variable, so the running container can read it.
-  Reassess when Railway can limit a variable to the pre-deploy command, when
-  the migration step can run outside the service, or after a security
+  migrator URL is a service variable, so Railway gives it to every
+  container of the service. Since issue #14, `ingest/entrypoint.sh` unsets
+  it before the `exec`, so neither `ingest` (`/proc/1/environ`) nor
+  `fleet-telemetry` holds it; the deployment test and `image-check`
+  check this. It stays readable in the pre-deploy container (which needs
+  it), and to anything that reads the service variables: the Railway
+  dashboard, the API, and possibly a `railway ssh` session. Reassess when
+  Railway can limit a variable to the pre-deploy command, when the
+  migration step can run outside the service, or after a security
   finding in the running container.
+- Accepted risk (issue #14, review round 1 of PR #23, note N1):
+  `fleet-telemetry` runs as the same user (10001) as `ingest`, so it can
+  read `/proc/1/environ`, which holds `DATABASE_URL` of the role
+  `telemetry_ingest` (`SELECT` and `INSERT` on `raw`). Only a
+  code-execution fault in `fleet-telemetry` after the mTLS handshake
+  (`docs/security/image-advisories.md`, fact 2) could use it. Such a
+  fault already reaches the records in flight in memory; with the URL it
+  could also read the stored raw history (`SELECT` on `raw`, with the
+  locations) and insert rows. A bounded fix exists but is not done: the
+  entrypoint would write the URL to a 0600 file and unset it, and
+  `ingest` would read and delete the file at start. Whether the child
+  could then still read the memory of `ingest` depends on the kernel:
+  reading `/proc/1/mem` needs ptrace-level access, which Yama
+  `ptrace_scope` 1 or higher denies to a child towards its parent, while
+  `/proc/1/environ` needs only the same user. The runbook records the
+  `ptrace_scope` value of the container. Only a separate user for the
+  child (which needs root or a capability to start it) closes the
+  exposure on every kernel. Reassess with a security finding in the
+  handshake path of `fleet-telemetry`, a change of the user model of the
+  image, or when the role `telemetry_ingest` gets more privileges.
 - The production compute has a fixed size of 0.25 CU. Applied on
   26 November 2026 (table above). Verify the effective size after the first
   week of ingest.
