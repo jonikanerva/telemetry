@@ -74,17 +74,30 @@
 //!   handshake or in a quiet session, and a client that closed only its
 //!   side: as long as `fleet-telemetry` keeps the connection. This is the
 //!   accepted risk of ADR 0001, lead decision 6.
-//! - Every connection ends at once when the gate closes or the process
-//!   stops. The bytes move in a task of their own, and the connection task
+//! - When the gate closes or the process stops, each connection ends at
+//!   once. The bytes move in a task of their own, and the connection task
 //!   only watches the gate state, the deadlines, and the end of the copy;
-//!   it aborts the copy task. So a copy that always has data cannot delay
-//!   the gate close, rule 1, or the close linger.
+//!   it aborts the copy task and waits until the copy task has ended. So a
+//!   copy that always has data cannot delay the gate close, rule 1, or the
+//!   close linger.
+//!
+//! The stop: the gate waits [`GateLimits::close_deadline`] for the
+//! connection tasks and then aborts them. An abort of a task only asks the
+//! runtime to cancel it, and an aborted connection task only asks for the
+//! cancel of its copy task. Until the runtime has cancelled a copy task, it
+//! can still move bytes in both directions, without the controls. So the
+//! stop then waits at most [`GateLimits::abort_wait`] until every slot is
+//! free ([`Slots`]): a free slot means that the copy task of the connection
+//! has ended and has dropped both sockets. `gate_stopped` comes after this
+//! wait; a slot that is still taken at the bound is logged
+//! (`gate_connections_open`). [`crate::lifecycle`] waits for the slots
+//! again after the gate task has ended, because an abort of the gate task
+//! ends its connection tasks in the same way.
 //!
 //! Bounds: each forwarded connection has two copy buffers of 8 KiB
 //! ([`GateLimits::buffer_size`]), so 1024 connections use 16 MiB of buffers.
-//! At the stop, the gate waits [`GateLimits::close_deadline`] for the
-//! connection tasks and then aborts them. After a failed `accept`, for
-//! example "too many open files", the acceptor waits 0.5 s.
+//! After a failed `accept`, for example "too many open files", the acceptor
+//! waits 0.5 s.
 //!
 //! The acceptor beats its watchdog heartbeat each second, also when no
 //! client connects.
@@ -132,6 +145,9 @@ pub struct GateLimits {
     pub gate_full_interval: Duration,
     /// Time that the stop waits for the connection tasks.
     pub close_deadline: Duration,
+    /// Time that the stop waits, after it has aborted the connection tasks
+    /// at the close deadline, for every slot to be free.
+    pub abort_wait: Duration,
     /// Longest time between two heartbeats of the acceptor.
     pub beat_interval: Duration,
     /// Longest wait for the client to end its side after `fleet-telemetry`
@@ -147,6 +163,7 @@ pub const LIMITS: GateLimits = GateLimits {
     buffer_size: 8 * 1024,
     gate_full_interval: Duration::from_secs(60),
     close_deadline: Duration::from_millis(500),
+    abort_wait: Duration::from_millis(200),
     beat_interval: watchdog::BEAT_INTERVAL,
     upstream_close_linger: Duration::from_secs(5),
 };
@@ -161,9 +178,55 @@ pub const KEEPALIVE: TcpKeepalive = TcpKeepalive::new()
 /// the heartbeat interval.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(500);
 
+/// The connection slots of rule 2.
+///
+/// A forwarded connection holds its slot until its copy task has ended and
+/// has dropped both sockets, also when an abort ends the connection task or
+/// the copy task. Before the copy task starts, the connection task holds
+/// the slot. So a free slot means that no task of that connection can move
+/// a byte any more, and the stop can wait until every slot is free. This
+/// holds also after an abort of the gate task, which ends the connection
+/// tasks only when the runtime cancels them.
+#[derive(Debug, Clone)]
+pub struct Slots {
+    semaphore: Arc<Semaphore>,
+    count: u32,
+}
+
+impl Slots {
+    /// Slots for [`GateLimits::max_connections`] connections.
+    #[must_use]
+    pub fn new(limits: &GateLimits) -> Self {
+        let count = u32::try_from(limits.max_connections).unwrap_or(u32::MAX);
+        Self {
+            semaphore: Arc::new(Semaphore::new(count as usize)),
+            count,
+        }
+    }
+
+    /// Takes a free slot, if one exists.
+    pub(crate) fn try_take(&self) -> Option<OwnedSemaphorePermit> {
+        Arc::clone(&self.semaphore).try_acquire_owned().ok()
+    }
+
+    /// Waits until every slot is free, at most until `deadline`, and
+    /// returns the number of slots that are still taken (0 when every
+    /// connection has ended). Call it only after the acceptor has stopped.
+    pub async fn wait_free(&self, deadline: Instant) -> usize {
+        match timeout_at(deadline, self.semaphore.acquire_many(self.count)).await {
+            // The slots go back when `_all` is dropped.
+            Ok(Ok(_all)) => 0,
+            Ok(Err(_)) | Err(_) => {
+                (self.count as usize).saturating_sub(self.semaphore.available_permits())
+            }
+        }
+    }
+}
+
 /// Runs the gate until the state is shut, then closes every connection.
 ///
-/// `upstream` is the loopback address of `fleet-telemetry`.
+/// `upstream` is the loopback address of `fleet-telemetry`. `slots` must
+/// have been made with the same `limits`.
 pub async fn run(
     listener: TcpListener,
     upstream: SocketAddr,
@@ -171,8 +234,8 @@ pub async fn run(
     sink: Arc<dyn EventSink>,
     heartbeat: Heartbeat,
     limits: GateLimits,
+    slots: Slots,
 ) {
-    let permits = Arc::new(Semaphore::new(limits.max_connections));
     let mut connections = JoinSet::new();
     let mut refusals = CountThrottle::new(limits.gate_full_interval);
     let mut tick = tokio::time::interval(limits.beat_interval);
@@ -201,7 +264,7 @@ pub async fn run(
                     let state = *gate.borrow();
                     if !state.is_open() {
                         drop(stream);
-                    } else if let Ok(permit) = Arc::clone(&permits).try_acquire_owned() {
+                    } else if let Some(permit) = slots.try_take() {
                         connections.spawn(serve_connection(
                             stream,
                             peer,
@@ -247,6 +310,14 @@ pub async fn run(
     if drained.is_err() {
         warn!(connections = connections.len(), "gate_connections_aborted");
         connections.shutdown().await;
+    }
+    // The abort of a connection task only asks the runtime to cancel its
+    // copy task. Until the runtime has done so, the copy task can still move
+    // bytes to `fleet-telemetry`, so the stop waits for the slots. Without an
+    // abort, every slot is free already.
+    let open = slots.wait_free(Instant::now() + limits.abort_wait).await;
+    if open > 0 {
+        warn!(connections = open, "gate_connections_open");
     }
     info!("gate_stopped");
     heartbeat.retire();
@@ -368,9 +439,9 @@ async fn serve_connection(
         &limits,
         gate,
         admission.epoch,
+        admission.permit,
     )
     .await;
-    drop(admission.permit);
     info!(
         reason = report.end.as_str(),
         error = report.error.map(tracing::field::debug),
@@ -442,17 +513,23 @@ struct Report {
 /// copy task, and the abort drops both sockets. A copy direction that
 /// always has data uses the cooperative budget of its own task only, so it
 /// cannot delay a control.
-async fn forward<C, U>(
+///
+/// `slot` is the slot of the connection ([`Slots`]). This task holds it
+/// until the copy task starts; then the copy task holds it until it has
+/// dropped both sockets.
+async fn forward<C, U, S>(
     client: C,
     connect: impl Future<Output = io::Result<U>>,
     accepted_at: Instant,
     limits: &GateLimits,
     mut gate: watch::Receiver<GateState>,
     epoch: u64,
+    slot: S,
 ) -> Report
 where
     C: AsyncRead + AsyncWrite + Send + 'static,
     U: AsyncRead + AsyncWrite + Send + 'static,
+    S: Send + Unpin + 'static,
 {
     let deadline = accepted_at + limits.first_byte_timeout;
     // A dropped sender also ends the wait: the process stops.
@@ -476,13 +553,16 @@ where
         // before its own abort below, for example by the abort of the stop at
         // the close deadline. A dropped `JoinHandle` alone would detach the
         // copy task, and it would go on without the controls.
-        let mut copy = AbortOnDrop(tokio::spawn(copy_both(
-            client,
-            upstream,
-            limits.buffer_size,
-            seen,
-            upstream_ended,
-        )));
+        let mut copy = AbortOnDrop(tokio::spawn(SlottedCopy {
+            copy: Box::pin(copy_both(
+                client,
+                upstream,
+                limits.buffer_size,
+                seen,
+                upstream_ended,
+            )),
+            _slot: slot,
+        }));
         let mut no_first_byte = pin!(sleep_until(deadline));
         let mut linger = pin!(sleep_until(deadline));
         let mut first_byte_at = None;
@@ -560,6 +640,25 @@ struct AbortOnDrop<T>(JoinHandle<T>);
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+/// The copy of one connection together with the slot of the connection.
+///
+/// Rust drops the fields of a struct in the order of their declaration. So
+/// when the task ends, also by an abort, the copy and both of its sockets
+/// are dropped first, and only then is the slot free.
+struct SlottedCopy<F, S> {
+    copy: Pin<Box<F>>,
+    /// Held only for its drop.
+    _slot: S,
+}
+
+impl<F: Future, S: Unpin> Future for SlottedCopy<F, S> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().copy.as_mut().poll(cx)
     }
 }
 
