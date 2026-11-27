@@ -12,15 +12,19 @@
 
 ## Context
 
-- ADR 0003 leaves the place of the session data to the first web PR.
-- The owner gave these values for the task, through the task text of
-  the lead for slice S2 (no other repository record holds them): at
-  most 8 sessions, an
-  absolute lifetime of 30 days, an idle lifetime of 7 days, the cookie
-  `__Host-telemetry_session` with `Secure`, `HttpOnly`,
-  `SameSite=Strict`, and `Path=/`, the public origin
-  `https://tesla.calmdonut.com`, and session data in the memory of the
-  server. A restart or a deploy ends all sessions.
+- ADR 0003 leaves the place of the session data and the expiry to the
+  first web PR. The sources of the values of this ADR:
+  - At most 8 sessions, an absolute lifetime of 30 days, and an idle
+    lifetime of 7 days: lead decisions within that delegated choice. The
+    lead told the owner about them on 27 November 2026.
+  - Session data in the memory of the server: a lead decision within the
+    same choice. A restart or a deploy ends all sessions.
+  - The public origin `https://tesla.calmdonut.com`: an owner decision of
+    27 November 2026.
+  - The cookie attributes `Secure`, `HttpOnly`, and `SameSite`: ADR 0003
+    and `docs/stack-web-profile.md` §2.5. The name
+    `__Host-telemetry_session`, `SameSite=Strict`, and `Path=/`: lead
+    decisions.
 - The web service runs one process on Railway. A Railway deploy with an
   overlap of 0 s stops the old process before the new one serves.
 - The data shows where the owner is and when the owner is away
@@ -56,9 +60,11 @@
    than one `__Host-telemetry_session` pair (in one or more `Cookie`
    headers, valid in form or not) with 400 `invalid_request`, before any
    session lookup. So no endpoint chooses between two tokens, and a
-   logout always ends the one presented session.
-6. **Fixation and rotation.** A login ends every session that the request
-   presents, then makes a new session. There is no other rotation: a
+   logout always ends the one presented session. The contract declares
+   this 400, and the other answers of the guard, for every API operation
+   (`crates/server/src/auth/responses.rs`).
+6. **Fixation and rotation.** A login ends the one session that the
+   request presents (decision 5), then makes a new session. There is no other rotation: a
    session has one token for its whole life, and the lifetimes bound it.
 7. **Revocation and logout.** `DELETE /api/v1/session` ends the session of
    the request at once; a copy of the cookie stops working. A restart
@@ -109,9 +115,14 @@
     error, timeout, another status) it removes the cached data at once,
     shows the page `/logout`: the logout did not complete and the session
     can still be valid on this device, and offers one retry for each
-    click, without an automatic retry. A page that the browser restores
-    from its back-forward cache reloads, so the protected route asks the
-    server again.
+    click, without an automatic retry. The page `/logout` shows the
+    failure only after a failed logout in the same page session (a mark in
+    memory); a direct visit goes to `/`. The SPA reloads a page that the
+    browser restores from its back-forward cache (`pageshow` with
+    `persisted`), so the protected route asks the server again. Unit tests
+    cover that handler; no browser test covers the back-forward-cache
+    path, because the cache was not active in the Playwright runs. The
+    owner checks it after the release (`docs/web-release.md`).
 
 ## Threat model
 
@@ -127,6 +138,7 @@ history behind the API.
 | Neon CU-hour exhaustion by unauthenticated requests | The guard runs before every handler; `/health` needs no database | None. |
 | Cross-site request forgery | Origin rule, JSON content type, `SameSite=Strict` | None known. |
 | Session fixation | `__Host-` prefix; a login always makes a new token and ends the presented session | None known. |
+| A second `__Host-telemetry_session` pair in the request | The guard refuses the request (decision 5). The `__Host-` prefix makes the browser refuse a `Set-Cookie` of that name with a `Domain` attribute, without `Secure`, from an origin without HTTPS, or with a `Path` other than `/`, so a sibling subdomain of `calmdonut.com` cannot set or replace the cookie, and the browser keeps at most one cookie of the name for the host. | A party that can add a second pair locks the owner out of every API route, also login and logout, until the owner deletes the cookies of the site in the browser. A server restart does not help: the guard refuses the request by the number of pairs, not by the store. The prefix does not stop a script on the origin itself (see XSS). A browser without the RFC 6265bis rule against nameless cookies can accept a nameless cookie from a sibling subdomain whose value is `__Host-telemetry_session=…`, which reaches the server as a second pair. Which current browsers have that rule is not verified in this work (WebKit, Firefox, and Chromium). The owner controls the sibling subdomains, so the attack needs a compromised sibling service or an XSS. Accepted for a single-user product: the effect is a denial of service of one browser, and the recovery is to delete the site cookies. |
 | Cookie theft by script (XSS) | `HttpOnly`; the CSP `script-src 'self'` of ADR 0010; no inline script | A script injection in the SPA could still send requests while the page is open. |
 | Cookie theft on the network | HTTPS only through the Cloudflare DNS record and the Railway certificate; HSTS; `Secure` | None known. |
 | A stolen cookie after logout or expiry | Server-side revocation and lifetimes; the server holds the only valid copy | A stolen cookie works until logout, expiry, or a restart. |
