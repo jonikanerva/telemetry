@@ -155,14 +155,23 @@ pub struct GateLimits {
     pub upstream_close_linger: Duration,
 }
 
-/// The bounds of ADR 0001. The close deadline is part of the shutdown
-/// budget of [`crate::lifecycle`].
+/// The bounds of ADR 0001. The close deadline and the abort wait are part
+/// of step 1 of the shutdown budget of [`crate::lifecycle`].
+///
+/// The close deadline is 250 ms. On a healthy runtime each connection task
+/// ends within milliseconds of the shut state: it aborts its copy task and
+/// waits for it, with no network wait. So the deadline matters only for a
+/// starved runtime. There, a connection task that misses it is aborted:
+/// its sockets close in the same way, but its `gate_connection_closed` log
+/// line is missing, and `gate_connections_aborted` gives the count. With
+/// the abort wait of 200 ms, the stop of the gate ends 300 ms before step 1
+/// aborts the gate task ([`crate::lifecycle::GATE_STOP_MARGIN`]).
 pub const LIMITS: GateLimits = GateLimits {
     max_connections: 1024,
     first_byte_timeout: Duration::from_secs(10),
     buffer_size: 8 * 1024,
     gate_full_interval: Duration::from_secs(60),
-    close_deadline: Duration::from_millis(500),
+    close_deadline: Duration::from_millis(250),
     abort_wait: Duration::from_millis(200),
     beat_interval: watchdog::BEAT_INTERVAL,
     upstream_close_linger: Duration::from_secs(5),
@@ -187,21 +196,33 @@ const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// a byte any more, and the stop can wait until every slot is free. This
 /// holds also after an abort of the gate task, which ends the connection
 /// tasks only when the runtime cancels them.
+///
+/// The slots keep the limits that made them, and [`run`] takes its limits
+/// from them, so the count of the slots and the gate bounds always agree.
 #[derive(Debug, Clone)]
 pub struct Slots {
     semaphore: Arc<Semaphore>,
     count: u32,
+    limits: GateLimits,
 }
 
 impl Slots {
-    /// Slots for [`GateLimits::max_connections`] connections.
+    /// Slots for [`GateLimits::max_connections`] connections, for a gate
+    /// with `limits`.
     #[must_use]
     pub fn new(limits: &GateLimits) -> Self {
         let count = u32::try_from(limits.max_connections).unwrap_or(u32::MAX);
         Self {
             semaphore: Arc::new(Semaphore::new(count as usize)),
             count,
+            limits: *limits,
         }
+    }
+
+    /// The limits of the gate of these slots.
+    #[must_use]
+    pub const fn limits(&self) -> &GateLimits {
+        &self.limits
     }
 
     /// Takes a free slot, if one exists.
@@ -225,17 +246,17 @@ impl Slots {
 
 /// Runs the gate until the state is shut, then closes every connection.
 ///
-/// `upstream` is the loopback address of `fleet-telemetry`. `slots` must
-/// have been made with the same `limits`.
+/// `upstream` is the loopback address of `fleet-telemetry`. The bounds of
+/// the gate are the limits of `slots`.
 pub async fn run(
     listener: TcpListener,
     upstream: SocketAddr,
     mut gate: watch::Receiver<GateState>,
     sink: Arc<dyn EventSink>,
     heartbeat: Heartbeat,
-    limits: GateLimits,
     slots: Slots,
 ) {
+    let limits = *slots.limits();
     let mut connections = JoinSet::new();
     let mut refusals = CountThrottle::new(limits.gate_full_interval);
     let mut tick = tokio::time::interval(limits.beat_interval);
@@ -618,7 +639,7 @@ where
         if !copy_done {
             copy.0.abort();
             // The task drops both sockets when it ends. Only then does the
-            // caller return the permit of the connection.
+            // copy task free the slot of the connection.
             (&mut copy.0).await.ok();
         }
         if waiting {

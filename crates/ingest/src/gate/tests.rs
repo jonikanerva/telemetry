@@ -45,7 +45,6 @@ impl TestGate {
             readiness.subscribe(),
             Arc::new(sink.clone()),
             heartbeat,
-            limits,
             slots.clone(),
         ));
         Self {
@@ -498,6 +497,147 @@ async fn the_stop_logs_a_slot_that_is_still_taken_at_its_bound() {
     assert_eq!(messages, ["gate_connections_open", "gate_stopped"]);
     assert_eq!(lines[0]["connections"], 1);
     drop(slot);
+}
+
+/// A stream that never has data and takes every byte. It notes when it is
+/// dropped. When `polled` is set, it signals its first read.
+struct DropFlag {
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+    polled: Option<oneshot::Sender<()>>,
+}
+
+impl AsyncRead for DropFlag {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if let Some(polled) = self.polled.take() {
+            polled.send(()).ok();
+        }
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for DropFlag {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A slot that records, when it is dropped, whether the client stream and
+/// the upstream stream of its connection were dropped already.
+struct OrderSlot {
+    client: Arc<std::sync::atomic::AtomicBool>,
+    upstream: Arc<std::sync::atomic::AtomicBool>,
+    seen: Arc<std::sync::Mutex<Option<(bool, bool)>>>,
+}
+
+impl Drop for OrderSlot {
+    fn drop(&mut self) {
+        let order = std::sync::atomic::Ordering::SeqCst;
+        *self.seen.lock().unwrap() = Some((self.client.load(order), self.upstream.load(order)));
+    }
+}
+
+/// The streams and the slot of one connection for the drop-order tests.
+struct OrderedConnection {
+    seen: Arc<std::sync::Mutex<Option<(bool, bool)>>>,
+    readiness: Readiness,
+    task: JoinHandle<Report>,
+}
+
+/// Starts [`forward`] with [`DropFlag`] streams and an [`OrderSlot`], and
+/// returns when the copy task has read from the client stream.
+async fn start_ordered_connection() -> OrderedConnection {
+    let client_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let upstream_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let (polled, copying) = oneshot::channel();
+    let client = DropFlag {
+        dropped: Arc::clone(&client_dropped),
+        polled: Some(polled),
+    };
+    let upstream = DropFlag {
+        dropped: Arc::clone(&upstream_dropped),
+        polled: None,
+    };
+    let slot = OrderSlot {
+        client: client_dropped,
+        upstream: upstream_dropped,
+        seen: Arc::clone(&seen),
+    };
+    let (readiness, gate) = open_gate();
+    let epoch = gate.borrow().epoch();
+    let task = tokio::spawn(async move {
+        forward(
+            client,
+            async { Ok(upstream) },
+            Instant::now(),
+            &LIMITS,
+            gate,
+            epoch,
+            slot,
+        )
+        .await
+    });
+    tokio::time::timeout(WAIT, copying).await.unwrap().unwrap();
+    OrderedConnection {
+        seen,
+        readiness,
+        task,
+    }
+}
+
+#[tokio::test]
+async fn an_abort_drops_both_streams_before_the_slot() {
+    // Review round 1 of PR #24, note 1: the fields of `SlottedCopy` drop
+    // in declaration order, so the slot is free only after both sockets
+    // are closed. The slot records the order when it is dropped.
+    let connection = start_ordered_connection().await;
+    connection.task.abort();
+    assert!(connection.task.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(WAIT, async {
+        while connection.seen.lock().unwrap().is_none() {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(*connection.seen.lock().unwrap(), Some((true, true)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gate_close_drops_both_streams_before_the_slot() {
+    let connection = start_ordered_connection().await;
+    connection.readiness.set_child_running(false);
+    let report = tokio::time::timeout(WAIT, connection.task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.end, End::GateClosed);
+    // `forward` returns only after the copy task has ended, so the slot is
+    // dropped already.
+    assert_eq!(*connection.seen.lock().unwrap(), Some((true, true)));
 }
 
 /// A client stream whose first read blocks its worker thread until the

@@ -503,6 +503,7 @@ visible:
 | Shutdown flush fails within 20 s, for example a deploy during a database outage | The queue at shutdown. | The log has the count. A `stopped` event cannot be written. |
 | The child dies by itself | Messages in its libzmq send queue: milliseconds of data. | `child_exited` event. The count is unknown. |
 | The SUB socket stops receiving while the gate is open (for example the `zeromq` defect of "SUB socket", or a lost `Disconnected` event) | The records that the child dispatches and acks with the gate open until the stall rule decides: "SUB socket", "Detection bound" (less than 4P + 2D + G = 63.5 s for one stall in every case, over up to three openings of the gate; less than 32.75 s, 47.75 s, and 62.75 s with 0, 1, and 2 failed metrics reads while the gate stays open). Between two stalls in a row the gate stays closed for 30 s, doubling to 15 minutes, and the vehicle buffers. The vehicle does not resend acked records. | `zmq_shortfall` events with the count, the `gate_closed` event with the reason `subscriber_stalled`, and the log line `subscriber_rebuilt`. |
+| Shutdown step 1 ends with a slot of the gate still taken (a runtime starved past the 1 s bound of step 1) | The records that the remaining copy tasks forward after the drain of step 2, and whose acknowledgements they forward to the vehicle. | The log line `gate_connections_open` with the count. A `zmq_shortfall` event only when the dispatch comes before the final shortfall read. |
 | A connection closes with messages that were sent but not acked (gate closing, deploy, rate limit) | Those messages, if the vehicle does not resend them (fact 1, not verified). | None in `ingest`. Stored `is_resend` values show whether resends happen. |
 | Accepted risk: a peer that stalls inside the TLS handshake | A live peer holds one connection until it closes it. A peer that goes away holds it until the dead-peer bound closes it (gate rule 3): about 150 s after its last answer when no data is unacknowledged (keep-alive), about 925 to 1,045 s when data is unacknowledged (retransmission timeout, `tcp_retries2` 15). Both are below the vehicle buffer of at least 2,500 s. This is the same class of exposure that upstream has today. If the Railway proxy terminates TCP, the close of a gone peer depends on the proxy (deployment check). | None for a single peer. |
 | Accepted risk: a flood that fills the 1024-connection bound | No new connection while the flood holds the bound: while the flooding peers keep their connections alive, plus the dead-peer bound after they go away (about 150 s idle, about 925 to 1,045 s with unacknowledged data). The vehicle cannot connect and relies on its own buffer (at least 2,500 s). Then as in the next line. | `gate_full` events, and gaps between `connectivity_event` rows. |
@@ -878,16 +879,28 @@ sections above leave open. Each point has a test.
   holds `vin_signal_count` with the VIN as a label; the parser reads only
   `dispatch_total`.
 - **Shutdown.** Each step gives its work its bound minus 250 ms and aborts
-  it at the bound. Step 1 aborts the gate task at its bound minus 250 ms,
-  and then waits until every slot of the gate is free, at most until its
-  bound. Each copy task holds the slot of its connection until it has
-  dropped both sockets, also when an abort ends it, because the runtime
-  cancels an aborted task later. So after step 1 no byte reaches
-  `fleet-telemetry` and no acknowledgement reaches a vehicle. A slot that
-  is still taken at the bound is logged as `gate_connections_open`. The `stopped` event is recorded before step 5, so the final
-  flush stores it. A final flush that leaves records or events unstored
-  logs `flush_incomplete` with the counts, and the process exits with code
-  1.
+  it at the bound. Step 1 is the exception: it aborts the gate task at its
+  bound minus 250 ms (750 ms), and then waits until every slot of the gate
+  is free, at most until its bound (1 s). Each copy task holds the slot of
+  its connection until it has dropped both sockets, also when an abort
+  ends it, because the runtime cancels an aborted task later. So when
+  every slot is free, no copy task writes a byte to `fleet-telemetry` or
+  to a vehicle after step 1. Bytes that a copy task wrote before can still
+  wait in the loopback receive buffer of `fleet-telemetry`; the line "A
+  connection closes with messages that were sent but not acked" of the
+  remaining loss covers them. A slot that is still taken at the bound is
+  logged as `gate_connections_open` (a line of the remaining loss). The
+  gate stop itself waits at most 250 ms for its connection tasks and then
+  200 ms for the slots, so it ends 300 ms before the abort of step 1. A
+  smaller margin (50 ms before PR #24 review note 3) lets a slow host abort
+  a gate stop that would have ended in time, with `task_stop_timeout` in
+  the log. The 250 ms are enough for a healthy runtime, where the
+  connection tasks end within milliseconds. A connection task that misses
+  them is aborted: its sockets close in the same way, but its
+  `gate_connection_closed` line is missing. The `stopped` event is
+  recorded before step 5, so the final flush stores it. A final flush that
+  leaves records or events unstored logs `flush_incomplete` with the
+  counts, and the process exits with code 1.
 
 ## Key alternatives
 
