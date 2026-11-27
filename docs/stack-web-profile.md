@@ -246,8 +246,10 @@ and any CI invoke these entry points rather than separate tool pipelines.
 - **test:** nextest workspace tests, `cargo test --doc --workspace --locked`, Vitest, required real-database integration tests, and Playwright against the built service. Required browser tests are part of the complete test command, not an optional omitted suffix.
 - **verify:** format check without edits; isolated service setup and migrations where needed; lint/type checks; complete-tree contract drift check; SQLx metadata check; security/dependency checks; build; all required tests. Stop on required failures, retain useful diagnostics, and clean up only owned temporary resources.
 
-`cargo sqlx prepare --workspace --check` MUST use an isolated migrated
-database with the relevant targets/features. The release compilation uses
+`cargo sqlx prepare --check`, run once in each crate with SQLx query macros
+so that each crate keeps its metadata in its own `.sqlx/` (`STACK.md` §3,
+task `sqlx-check`), MUST use an isolated migrated database with the
+relevant targets/features. The release compilation uses
 `SQLX_OFFLINE=true`; offline compilation does not replace the schema check.
 Initial query/migration work may generate metadata against the isolated database
 before verification. Checks never silently regenerate missing expected evidence.

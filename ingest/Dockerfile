@@ -6,14 +6,17 @@
 #
 # The build context is the repository root:
 #   docker build -f ingest/Dockerfile .
-# Each COPY line names one input of the build. The Railway watch paths and
-# .dockerignore list the same paths (STACK.md section 15). The build reads
-# crates/ingest in full, but only the Cargo.toml of each other workspace
-# member, so a change of the web sources does not change this image.
+# Each input of a COPY line has a Railway watch path of the service
+# telemetry (STACK.md section 15) and an entry in the root .dockerignore;
+# crates/ingest/tests/deployment.rs checks this. The root .dockerignore also
+# serves webapp/Dockerfile, so the build context holds the web files too,
+# but no COPY line of this file reads them. The build reads crates/ingest
+# in full, but only the Cargo.toml of each other workspace member, so a
+# change of the web sources does not change this image.
 #
-# The vuln task of mise.toml compares each instruction line with a strict
-# allowlist. Change the allowlist and docs/security/image-advisories.md in
-# the same change as this file.
+# The vuln task of mise.toml compares the COPY --from lines with a strict
+# allowlist and scans each runtime FROM image. Change the allowlist and
+# docs/security/image-advisories.md in the same change as these lines.
 
 # Stage 1: the release build of ingest. The tag is the Rust version of
 # rust-toolchain.toml on the Debian release of the final stage, so that the
