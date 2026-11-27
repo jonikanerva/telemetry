@@ -146,25 +146,41 @@ Each decision relies on these facts. `mise run vuln` checks the
 configuration facts (marked "checked") before it scans, and fails when
 one breaks.
 
-1. **Image composition (checked).** The production `Dockerfile` copies
-   only one file from the upstream image:
+1. **Image composition (checked).** The production Dockerfile
+   (`ingest/Dockerfile` since issue #14) copies only one file from the
+   upstream image:
    `COPY --from=upstream /fleet-telemetry /fleet-telemetry`. The check is
    a strict allowlist, not a Dockerfile parser: all bytes must be printable
    ASCII, tab, or newline; no parser directive (`# name=value`) is
    allowed; and after removal of empty lines and of lines that start with
    `#`, the lines must equal the expected lines of this project exactly.
-   Only the two image tags may change (`[A-Za-z0-9._-]+`). The expected
-   lines contain exactly two `FROM` lines (the upstream image `AS
-   upstream`, then `debian`), one `COPY --from=upstream /fleet-telemetry
-   /fleet-telemetry`, and the copy of `config/server_config.json` to
-   `/etc/fleet-telemetry/config.json`. Any other form fails, also a
+   Only the three image tags may change (`[A-Za-z0-9._-]+`). The expected
+   lines contain exactly three `FROM` lines (the Rust builder `AS build`,
+   the upstream image `AS upstream`, then `debian`), one
+   `COPY --from=upstream /fleet-telemetry /fleet-telemetry`, one
+   `COPY --from=build` of the `ingest` binary only, the copy of
+   `ingest/server_config.json` to `/etc/fleet-telemetry/config.json`, and
+   `ENV INGEST_CHILD_CONFIG=/etc/fleet-telemetry/config.json`. The builder
+   tag must be the channel of `rust-toolchain.toml` with `-slim-` and the
+   Debian codename of the final stage. Any other form fails, also a
    continuation inside a token, a Unicode space, a quote or an escape
    character in a flag, or a trailing space after a continuation
    backslash; the message says that the allowlist must change together
-   with the Dockerfile. The task scans the two images of the `FROM` lines
-   and fails when it did not scan two images. `entrypoint.sh` must start
-   the server with `exec /fleet-telemetry -config
-   /etc/fleet-telemetry/config.json` and contain no other `-config`. The upstream
+   with the Dockerfile. The task scans the two runtime images (upstream
+   and `debian`) and fails when it did not scan two images; the builder
+   image is not scanned (`STACK.md` §13). The server reads the config
+   that the Dockerfile copies: `ingest/entrypoint.sh` is checked against a
+   strict allowlist like the Dockerfile (first line `#!/bin/sh`; after
+   removal of empty lines and `#` lines, the lines must equal the expected
+   lines; printable ASCII only), so it writes the TLS files, unsets the
+   TLS variables and `MIGRATION_DATABASE_URL`, and starts
+   `exec /usr/local/bin/ingest run` and nothing else; `ingest` starts the
+   server with `-config` and `INGEST_CHILD_CONFIG`
+   (`crates/ingest/src/child.rs`). Limit: a Railway service variable
+   `INGEST_CHILD_CONFIG` would replace the image value; the release steps
+   forbid any `INGEST_` service variable (`docs/ingest-release.md`).
+   `scripts/vuln-premise-test.sh` proves with 40 changed inputs that the
+   premise checks fail. The upstream
    layer of the binary contains only `fleet-telemetry`. The Debian 12
    files of the upstream image (`gcr.io/distroless/cc-debian12` base,
    upstream [`Dockerfile#L31-L33`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L31-L33))
@@ -193,19 +209,24 @@ one breaks.
    affected". Any holder of a valid certificate from Tesla's vehicle CA
    passes it, for example a vehicle with a compromised infotainment
    system (compare GO-2026-5553).
-3. **Client CAs (checked).** `config/server_config.json` does not set
+3. **Client CAs (checked).** `ingest/server_config.json` does not set
    `use_default_eng_ca` or `tls.ca_file`, so only the Tesla production CA
    is in the pool.
-4. **HTTP/2 on port 4443.** The server is the standard `net/http` server
+4. **HTTP/2 on the TLS port.** Since issue #14, the Rust gate of `ingest`
+   owns port 4443 and copies the bytes of each connection without parsing
+   them to `fleet-telemetry` on `127.0.0.1:4444` (ADR 0001, "Layout"), so
+   the same peer bytes reach the same Go code. The server is the standard `net/http` server
    ([`server/streaming/server.go#L80-L84`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/server.go#L80-L84)).
    Its HTTP/2 code is the copy inside the standard library
    (`net/http/internal/http2`), which Go 1.27.4 contains with the fixes of
    Go 1.27.2. No upstream source file imports `golang.org/x/net`,
    `google.golang.org/grpc`, `golang.org/x/text`, or `golang.org/x/sys`
    directly (search of all non-test `.go` files at the tag).
-5. **Dispatchers (checked).** `config/server_config.json` routes all
-   record types to `logger`. ADR 0001 changes this to `zmq`. The `vuln`
-   task allows only these two. `ConfigureProducers` creates a producer
+5. **Dispatchers (checked).** `ingest/server_config.json` routes all
+   record types to `zmq` (issue #14; before, `logger`). The `vuln` task
+   allows only these two, and it requires `zmq.addr` of the form
+   `tcp://127.0.0.1:<port>` with lowercase keys in the `zmq` object, so
+   that libzmq listens on the loopback interface only. `ConfigureProducers` creates a producer
    only for a dispatcher that a record type names: Kafka
    [`#L386-L396`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L386-L396),
    Pub/Sub [`#L398-L407`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L398-L407),
@@ -448,7 +469,7 @@ the binary. Two sources put static C code into `/fleet-telemetry`:
 
 | Component | Version | Evidence of the version | Use in this deployment |
 | --------- | ------- | ----------------------- | ---------------------- |
-| libzmq | 4.3.4 | Upstream `Dockerfile#L15`; `zmq_version` in the binary returns 4, 3, 4. | At each start, the Go package `zmq4` creates a libzmq context, without a socket (see "Code that runs at each start"). No socket today. After ADR 0001, the `zmq` dispatcher binds a PUB socket. |
+| libzmq | 4.3.4 | Upstream `Dockerfile#L15`; `zmq_version` in the binary returns 4, 3, 4. | At each start, the Go package `zmq4` creates a libzmq context, without a socket (see "Code that runs at each start"). Since issue #14, the `zmq` dispatcher binds a PUB socket on `tcp://127.0.0.1:5284` (see "Code that runs with the `zmq` dispatcher"). |
 | tweetnacl (copy in libzmq 4.3.4, `src/tweetnacl.c`) | the libzmq 4.3.4 copy | Binary: file symbol `tweetnacl.c` and its local functions (`car25519`, `pack25519`, `scalarmult`, ...); `sodium_init` is the tweetnacl stub; `randombytes` calls only `getrandom` and `sleep`. | Used by libzmq only for CURVE. The configuration does not enable CURVE. |
 | SHA-1 (copy in libzmq 4.3.4, `external/sha1`) | the libzmq 4.3.4 copy | Binary: file symbol `sha1`, next to the libzmq WebSocket files (`ws_engine`, `ws_listener`). | Used by the libzmq WebSocket transport only. Not configured. |
 | libsodium | not linked | See above: built by the upstream Dockerfile, but not used by the libzmq build; no libsodium symbol or string in the binary. | Not applicable. |
@@ -498,6 +519,51 @@ functions (`go tool objdump`). The glibc start code calls `_init`
 | ELF `_init` | `OPENSSL_cpuid_setup` of OpenSSL 3.0.11: CPU feature detection. It reads the environment variable `OPENSSL_ia32cap` (`getenv`), parses it with `ossl_strtouint64`, and runs `OPENSSL_ia32_cpuid` (the `CPUID` instruction). | The process environment and the CPU. No network input. The environment comes from the Railway service variables; no file of this repository sets `OPENSSL_ia32cap`. | `_init` at `0x408000` calls `OPENSSL_cpuid_setup`; its only calls are `getenv@plt`, `ossl_strtouint64`, and `OPENSSL_ia32_cpuid`. OpenSSL 3.0.11 [`crypto/cpuid.c#L95-L157`](https://github.com/openssl/openssl/blob/openssl-3.0.11/crypto/cpuid.c#L95-L157). None of the 45 OSV records for OpenSSL 3.0.11 contains `cpuid` or `ia32cap` in its summary or details. |
 | ELF `.init_array` | `frame_dummy` (C run time) and the libzmq constructor of `ctx.cpp`, which only sets `zmq::ctx_t::max_socket_id` to 0. | None. | Disassembly of both entries. |
 | Go `zmq4.init.0` | `zmq_version`, then `zmq4_ctx_new` (libzmq `zmq_ctx_new`): it allocates a `ctx_t`, reads `getpid`, and creates the local signalling descriptor of the terminate mailbox (`eventfd`; `make_fdpair` calls `eventfd@plt`). `zmq::random_open()` is a single `retq` in this build, so no random source is read. It opens no network socket and starts no I/O thread: libzmq starts the reaper and the I/O threads only with the first socket. | None (the process ID only). No network input. | `go tool objdump`: the only Go `init` with a direct call into C is `zmq4.init.0` (calls `Version` and `_C2func_zmq4_ctx_new`); [`zmq4.go#L129-L158`](https://github.com/pebbe/zmq4/blob/v1.2.10/zmq4.go#L129-L158). libzmq 4.3.4 [`zmq.cpp#L130-L148`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/zmq.cpp#L130-L148), [`ctx.cpp#L76-L105`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L76-L105), [`ctx.cpp#L478-L491`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L478-L491) (`start` only in `create_socket`). |
+
+**Code that runs with the `zmq` dispatcher (issue #14).** The deployed
+configuration sends every record type to `zmq`. At start,
+`zmq.NewProducer` creates a PUB socket (libzmq starts its reaper and one
+I/O thread) and binds `tcp://127.0.0.1:5284`
+([`datastore/zmq/zmq.go#L115-L187`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/zmq/zmq.go#L115-L187)).
+Then libzmq runs its TCP listener, the ZMTP handshake with the NULL
+mechanism, the subscription handling, and the message framing for each
+peer that connects. Input: only peers on the loopback interface of the
+container. Two processes run there: `ingest`, whose SUB socket (the
+`zeromq` crate) is the only peer, and `fleet-telemetry` itself. The
+`vuln` premise requires the literal address `127.0.0.1`, so no other host
+can connect. CURVE is off (no `server_key_json_path`), so the tweetnacl
+copy does not run. The transport is `tcp://`, not `ws://`, so the SHA-1
+copy of the WebSocket transport does not run. The OSV query for the
+release commit of libzmq 4.3.4 has no record (table below).
+
+Which libzmq code takes input from a peer: the TCP listener and accept;
+the greeting, which also selects the older protocols, because libzmq
+4.3.4 accepts ZMTP 1.0 and 2.0 peers (`src/zmtp_engine.cpp`, the
+`v1_decoder` and `v2_decoder` paths) besides ZMTP 3.x; the NULL mechanism
+handshake (the peer sends its greeting, mechanism name, and READY command
+with its socket type); the ZMTP 3.1 `PING` command, which libzmq answers
+with `PONG`; the SUB/XSUB subscription messages (the topic prefixes that
+PUB matches); and the decoders of the frame headers. The PUB socket sends
+records, and it reads and discards every other message of a peer. The CI job `image-check` shows that the SUB
+socket of `ingest` connects, subscribes, and settles on this socket of
+the real binary, and that it reconnects after each child exit.
+
+Who can be a peer: only a process inside the container, through the
+loopback interface. Railway exposes only the TCP proxy to port 4443, and
+the `vuln` premise requires `zmq.addr` on the literal address
+`127.0.0.1`. The container runs two processes, `ingest` and
+`fleet-telemetry`, both as user 10001, and no shell or other program
+stays running. A process of that user that ran in the container (for
+example after a code-execution fault in `fleet-telemetry`; a
+`railway ssh` session has at least the same access) could connect to
+port 5284 and subscribe: it
+would get a copy of every record, with the VIN and the location, and it
+could send malformed ZMTP to libzmq. Such a process could already read
+the records and the TLS key directly (same user, same files and
+memory), so the listener adds no access that the user does not have.
+
+Decision: unchanged. The new code is reachable only from inside the
+container, and only by the user that already holds the data.
 
 The direct-call scan does not follow indirect calls from a Go `init`
 function. The Go packages with C calls in the binary are `kafka` of
@@ -602,7 +668,14 @@ the build".
 **accepted.** The only network input to the service is the mTLS port, and
 the running service does not execute the package tools.
 
-Loaded by the running server process (14 groups):
+Loaded by the running server process and by `ingest` (14 groups). Since
+issue #14, `ingest` (Rust, PID 1) runs in the same image. Premise
+(checked): it links only glibc (`libc.so.6`, `libm.so.6`, the ELF
+interpreter) and `libgcc_s.so.1` (gcc-14), the packages of this table;
+the C code of `aws-lc-sys` is linked statically. This is the expected
+result for the Rust target `x86_64-unknown-linux-gnu`. The CI job
+`image-check` fails when `ldd` of `/usr/local/bin/ingest` in the built
+image lists another library.
 
 | Source package | Groups (max score) |
 | -------------- | ------------------ |
@@ -610,10 +683,11 @@ Loaded by the running server process (14 groups):
 | gcc-14 (`libstdc++6`, `libgcc-s1`) | DEBIAN-CVE-2026-95619 (7.7), -102010 (7.0), -114690 (6.2), -114691 (5.9), -115455 (6.5), -115456 (3.7), -125709 (4.2) |
 
 On disk only; the running service does not execute or load these
-packages (51 groups). The entrypoint runs `/bin/sh` (dash), `mkdir`, and
-`chmod`, which load only `libc.so.6` and `libselinux.so.1`; `libselinux.so.1`
-loads `libpcre2-8.so.0`. The scan has no gating advisory for libselinux
-or pcre2.
+packages (51 groups). The entrypoint (`ingest/entrypoint.sh` since issue
+#14) runs `/bin/sh` (dash) with shell builtins only (`printf`, `umask`,
+`ulimit`, `unset`, `exec`); dash loads only `libc.so.6`. The `chmod` and
+`install` steps run at build time. The scan has no gating advisory for
+dash.
 
 | Source package | Groups (max score) |
 | -------------- | ------------------ |
@@ -660,23 +734,33 @@ Reassessment rule:
   `osv-scanner-<repository, / replaced by ->.toml`. An image without a
   file fails the task.
 - Before the scans, the `vuln` task checks these premises and fails when
-  one breaks. Dockerfile (fact 1): a strict allowlist of the expected
-  lines; only the two image tags may change; printable ASCII only; no
-  parser directive. After the scans, the task fails when it did not scan
-  the two images. `entrypoint.sh`: the server starts with
-  `-config /etc/fleet-telemetry/config.json`, and no other `-config`
-  exists. `config/server_config.json` (fact 8): exactly one
+  one breaks. `ingest/Dockerfile` (fact 1): a strict allowlist of the
+  expected lines; only the three image tags may change; the builder tag
+  follows `rust-toolchain.toml` and the Debian release of the final
+  stage; printable ASCII only; no parser directive. After the scans, the
+  task fails when it did not scan the two runtime images.
+  `ingest/entrypoint.sh`: a strict allowlist of the expected lines (first
+  line `#!/bin/sh`, printable ASCII only). `ingest/server_config.json`
+  (fact 8): exactly one
   JSON value; the same leaf paths in the token stream and in the parsed
   value, so no repeated key of any kind; lowercase keys
-  (`^[a-z0-9_]+$`) in the root, `monitoring`, and `tls` objects; all
+  (`^[a-z0-9_]+$`) in the root, `monitoring`, `tls`, and `zmq` objects;
+  `zmq.addr` of the form `tcp://127.0.0.1:<port>`; all
   dispatchers in `records` are `logger` or `zmq`; `use_default_eng_ca` is not true;
   `tls.ca_file` is empty; `status_port` and `monitoring.profiler_port`
   are not set; `monitoring.prometheus_metrics_host` is unset or
   `127.0.0.1`.
-- The check does not read the `zmq` bind address. The ADR 0001
-  deployment change, which enables the `zmq` dispatcher and makes libzmq
-  4.3.4 listen, must add a premise that `zmq.addr` binds the loopback
-  interface.
+- `scripts/vuln-premise-test.sh` (in the `checks` task) runs the premise
+  part of the task on 40 changed inputs and fails when a change passes.
+  Examples: `USER root`, an extra `COPY . .`, a builder tag of another
+  Rust version or Debian release, a parser directive, `ENTRYPOINT` in
+  place of `CMD`, an entrypoint that starts the server itself (also
+  through `PATH`, a name built from parts, or a sourced file, the bypasses
+  of the earlier denylist found in review round 1 of PR #23), an `exec`
+  in a block that never runs, `set -eux`, a kept migrator URL, and
+  `zmq.addr` values `tcp://0.0.0.0:5284`, `tcp://*:5284`,
+  `tcp://localhost:5284`, `tcp://[::]:5284`, a key `Addr`, and a
+  repeated `zmq` object.
 - After an expiry date, an entry stops to apply, and `vuln` fails on the
   finding again. An unused entry gives a warning only. Remove unused
   entries in the next triage.
@@ -717,8 +801,9 @@ the gating advisory rate falls below one each month over 60 days.
 - An ignored CVE appears in the CISA KEV catalog: the fix becomes due
   (DOCTRINE.md P7). Compare the CVE IDs with the catalog at each
   vulnerability check; `vuln` does not read the catalog.
-- The ADR 0001 deployment moves the Dockerfile and the server
-  configuration. Update the paths in the `vuln` task in the same change.
+- A change of the builder image `rust:<version>-slim-<codename>`: the
+  builder image is not scanned (`STACK.md` §13); compare its gcc-14,
+  binutils, and glibc advisories with the CISA KEV catalog.
 
 ## Reproduction
 
@@ -741,7 +826,8 @@ the gating advisory rate falls below one each month over 60 days.
    in "Static C libraries". Versions in the binary: search the binary for
    the version strings, and read `ZSTD_versionNumber`,
    `LZ4_versionNumber`, and `zmq_version` with `go tool objdump`.
-6. Config premises: run the premise part of the `vuln` task (the lines
-   before `cargo deny`) in a scratch directory that holds a variant
-   `Dockerfile`, `entrypoint.sh`, and `config/server_config.json`. The
-   harness of the PR comments does this for each variant.
+6. Config premises: `scripts/vuln-premise-test.sh` runs the premise part
+   of the `vuln` task (the lines before `cargo deny`) in a scratch
+   directory for each variant of `ingest/Dockerfile`,
+   `ingest/entrypoint.sh`, `ingest/server_config.json`, and
+   `rust-toolchain.toml`. Expected: "40 of 40 cases as expected".

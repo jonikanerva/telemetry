@@ -1,0 +1,29 @@
+{
+  "host": "127.0.0.1",
+  "port": 4444,
+  "log_level": "info",
+  "json_log_enable": true,
+  "namespace": "tesla_telemetry",
+  "transmit_decoded_records": false,
+  "monitoring": {
+    "prometheus_metrics_port": 9090
+  },
+  "rate_limit": {
+    "enabled": true,
+    "message_interval_time": 30,
+    "message_limit": 10000
+  },
+  "records": {
+    "alerts": ["zmq"],
+    "errors": ["zmq"],
+    "V": ["zmq"],
+    "connectivity": ["zmq"]
+  },
+  "zmq": {
+    "addr": "tcp://127.0.0.1:5284"
+  },
+  "tls": {
+    "server_cert": "/etc/fleet-telemetry/tls/tls.crt",
+    "server_key": "/etc/fleet-telemetry/tls/tls.key"
+  }
+}
