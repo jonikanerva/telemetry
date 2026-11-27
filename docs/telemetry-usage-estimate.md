@@ -200,7 +200,7 @@ it.
 
 The deployed image writes no record to the Railway log, so the log gives no
 signal count. The stored records are in the database (ADR 0002). A
-procedure that counts the signals there does not exist yet.
+procedure that counts the signals there does not exist yet (issue #41).
 
 Do not use the Prometheus signal counter of the server as a signal count.
 In v0.10.1, `trackSignalUsage` runs only for messages that exceed the

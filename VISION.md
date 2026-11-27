@@ -175,8 +175,6 @@ Owner decisions:
 
 Delegated technical choices, recorded as ADRs when significant:
 
-- How signals move from the ingest service to the application without loss
-  during an application deployment.
 - The interface of the `spot-price` service, and whether it keeps a price
   history. Not checked yet. The lead checks both when the charging view is
   built, and reports to the owner if the history is missing.
