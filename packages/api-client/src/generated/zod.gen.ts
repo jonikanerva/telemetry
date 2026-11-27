@@ -10,11 +10,7 @@ export const zChangeUnknownReason = z.enum(['no_latest', 'no_baseline']);
 /**
  * What a gap count counts.
  */
-export const zCountUnit = z.enum([
-    'records',
-    'messages',
-    'connections'
-]);
+export const zCountUnit = z.enum(['records', 'messages']);
 
 /**
  * Counts of rows that are not usable, by reason.
@@ -34,16 +30,6 @@ export const zFreshness = z.enum([
 ]);
 
 /**
- * Whether the bounds of a gap are recorded times or an estimate.
- */
-export const zGapBounds = z.enum(['exact', 'estimated']);
-
-/**
- * Whether data was surely lost.
- */
-export const zGapCertainty = z.enum(['loss', 'possible_loss']);
-
-/**
  * A recorded number of lost items.
  */
 export const zGapCount = z.object({
@@ -55,12 +41,9 @@ export const zGapCount = z.object({
  * The cause of a loss.
  */
 export const zGapKind = z.enum([
-    'unclean_restart',
     'queue_full',
     'database_refused',
-    'zmq_shortfall',
-    'gate_full',
-    'child_exited'
+    'zmq_shortfall'
 ]);
 
 /**
@@ -87,7 +70,7 @@ export const zInstant = z.iso.datetime().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\
 /**
  * The change of the capacity over the range.
  *
- * The baseline is the newest usable value at or before `range.from`, or
+ * The baseline is the newest usable value before `range.from`, or
  * else the oldest usable value in the range.
  */
 export const zCapacityChange = z.union([
@@ -106,22 +89,24 @@ export const zCapacityChange = z.union([
 ]);
 
 /**
- * The connection state of the vehicle.
+ * The newest stored connectivity event of the vehicle, as it is.
  *
  * The stored data cannot tell a sleeping car from a car without network:
- * both are `disconnected`.
+ * both are `disconnected`. An ingest process that ends writes no
+ * DISCONNECTED event, so a `connected` event can be old; `freshness` then
+ * shows `overdue`.
  */
 export const zConnection = z.union([
     z.object({
-        since: zInstant,
+        at: zInstant,
         state: z.enum(['connected'])
     }),
     z.object({
-        since: zInstant,
+        at: zInstant,
         state: z.enum(['disconnected'])
     }),
     z.object({
-        state: z.enum(['unknown'])
+        state: z.enum(['none'])
     })
 ]);
 
@@ -136,23 +121,23 @@ export const zBatteryStatus = z.object({
 });
 
 /**
- * One data-collection loss. A sleeping car is never a gap.
+ * One loss that the ingest process recorded: records or messages that it
+ * received or should have received and did not store. A sleeping car, a
+ * restart, or a refused connection is never a gap.
  */
 export const zGap = z.object({
-    bounds: zGapBounds,
-    certainty: zGapCertainty,
-    count: zGapCount.nullable(),
+    count: zGapCount,
     from: zInstant,
     kind: zGapKind,
     to: zInstant
 });
 
 /**
- * The data-collection losses that touch the range.
+ * The losses that the ingest process recorded in the range.
  */
 export const zGaps = z.object({
     items: z.array(zGap),
-    total: z.int().gte(0).lte(4294967295)
+    truncated: z.boolean()
 });
 
 /**
@@ -229,6 +214,15 @@ export const zBatteryRange = z.object({
 });
 
 /**
+ * The starts of the ingest process in the range. A start states only
+ * that the process started there, not that data was lost.
+ */
+export const zRestarts = z.object({
+    items: z.array(zInstant),
+    truncated: z.boolean()
+});
+
+/**
  * The response body of a valid session.
  */
 export const zSession = z.object({
@@ -265,8 +259,10 @@ export const zUnit = z.object({
  * A row is usable when it holds a finite number: a double or float, an
  * integer of at most 2^53 in magnitude, or a text of the form
  * `-?[0-9]+(.[0-9]+)?` with at most 32 characters. The invalid marker of
- * the vehicle and every other value are not usable. A value is never
- * rounded and never replaced with zero.
+ * the vehicle and every other value are not usable. A float and an
+ * integer are kept exactly. A text is converted to the nearest 64-bit
+ * float, so a text with more than 15 significant digits can change in
+ * its last digits. No value is replaced with zero.
  */
 export const zReading = z.union([
     z.object({
@@ -333,6 +329,7 @@ export const zBatteryView = z.union([
         gaps: zGaps,
         generated_at: zInstant,
         range: zBatteryRange,
+        restarts: zRestarts,
         state: z.enum(['available']),
         status: zBatteryStatus,
         tiles: zBatteryTiles

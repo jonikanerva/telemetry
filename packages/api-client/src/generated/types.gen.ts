@@ -46,7 +46,7 @@ export type BatteryRange = {
  */
 export type BatteryStatus = {
     /**
-     * The connection state of the vehicle as the stored events show it.
+     * The newest stored connectivity event of the vehicle.
      */
     connection: Connection;
     /**
@@ -60,9 +60,8 @@ export type BatteryStatus = {
     latest_data_at: Instant;
     /**
      * Ingest clock: the newest `received_at` among the newest stored row
-     * of each battery field and the newest stored connectivity event.
-     * The ingest process stores data at most about 15 minutes after it
-     * receives it.
+     * of each battery field. The ingest process stores data at most about
+     * 15 minutes after it receives it.
      */
     latest_received_at: Instant;
 };
@@ -108,7 +107,7 @@ export type BatteryView = {
      */
     charts: BatteryCharts;
     /**
-     * The data-collection losses that touch the range.
+     * The losses that the ingest process recorded in the range.
      */
     gaps: Gaps;
     /**
@@ -119,6 +118,10 @@ export type BatteryView = {
      * The requested range.
      */
     range: BatteryRange;
+    /**
+     * The starts of the ingest process in the range.
+     */
+    restarts: Restarts;
     state: 'available';
     /**
      * Connection, newest data, and freshness.
@@ -134,7 +137,7 @@ export type BatteryView = {
 /**
  * The change of the capacity over the range.
  *
- * The baseline is the newest usable value at or before `range.from`, or
+ * The baseline is the newest usable value before `range.from`, or
  * else the oldest usable value in the range.
  */
 export type CapacityChange = {
@@ -187,32 +190,33 @@ export type CapacityTile = {
 export type ChangeUnknownReason = 'no_latest' | 'no_baseline';
 
 /**
- * The connection state of the vehicle.
+ * The newest stored connectivity event of the vehicle, as it is.
  *
  * The stored data cannot tell a sleeping car from a car without network:
- * both are `disconnected`.
+ * both are `disconnected`. An ingest process that ends writes no
+ * DISCONNECTED event, so a `connected` event can be old; `freshness` then
+ * shows `overdue`.
  */
 export type Connection = {
     /**
-     * Server clock: the CONNECTED event of the oldest open connection.
+     * Server clock: the time of the event.
      */
-    since: Instant;
+    at: Instant;
     state: 'connected';
 } | {
     /**
-     * The newest DISCONNECTED event (server clock), or the start of
-     * the current ingest run (ingest clock), whichever is later.
+     * Server clock: the time of the event.
      */
-    since: Instant;
+    at: Instant;
     state: 'disconnected';
 } | {
-    state: 'unknown';
+    state: 'none';
 };
 
 /**
  * What a gap count counts.
  */
-export type CountUnit = 'records' | 'messages' | 'connections';
+export type CountUnit = 'records' | 'messages';
 
 /**
  * Counts of rows that are not usable, by reason.
@@ -236,20 +240,17 @@ export type ExcludedRows = {
 export type Freshness = 'current' | 'overdue' | 'not_expected';
 
 /**
- * One data-collection loss. A sleeping car is never a gap.
+ * One loss that the ingest process recorded: records or messages that it
+ * received or should have received and did not store. A sleeping car, a
+ * restart, or a refused connection is never a gap.
  */
 export type Gap = {
     /**
-     * Whether `from` and `to` are recorded times or an estimate.
+     * The recorded number of lost items.
      */
-    bounds: GapBounds;
+    count: GapCount;
     /**
-     * Whether data was surely lost.
-     */
-    certainty: GapCertainty;
-    count: GapCount | null;
-    /**
-     * Ingest clock: the start of the loss. `from <= to`.
+     * Ingest clock: the first lost item. `from <= to`.
      */
     from: Instant;
     /**
@@ -257,20 +258,10 @@ export type Gap = {
      */
     kind: GapKind;
     /**
-     * Ingest clock: the end of the loss.
+     * Ingest clock: the last lost item.
      */
     to: Instant;
 };
-
-/**
- * Whether the bounds of a gap are recorded times or an estimate.
- */
-export type GapBounds = 'exact' | 'estimated';
-
-/**
- * Whether data was surely lost.
- */
-export type GapCertainty = 'loss' | 'possible_loss';
 
 /**
  * A recorded number of lost items.
@@ -289,21 +280,22 @@ export type GapCount = {
 /**
  * The cause of a loss.
  */
-export type GapKind = 'unclean_restart' | 'queue_full' | 'database_refused' | 'zmq_shortfall' | 'gate_full' | 'child_exited';
+export type GapKind = 'queue_full' | 'database_refused' | 'zmq_shortfall';
 
 /**
- * The data-collection losses that touch the range.
+ * The losses that the ingest process recorded in the range.
  */
 export type Gaps = {
     /**
-     * At most 500 gaps, in order of `from`, then `to`. The list is
-     * truncated when `total` is larger than its length.
+     * At most 500 gaps whose interval meets the range, in order of
+     * `from`, then `to`.
      */
     items: Array<Gap>;
     /**
-     * The number of gaps that touch the range.
+     * True when more gaps meet the range than `items` holds. The series
+     * is then split only at the gaps in `items`.
      */
-    total: number;
+    truncated: boolean;
 };
 
 /**
@@ -418,8 +410,10 @@ export type RangeKey = '24h' | '7d' | '30d' | '90d' | '1y';
  * A row is usable when it holds a finite number: a double or float, an
  * integer of at most 2^53 in magnitude, or a text of the form
  * `-?[0-9]+(.[0-9]+)?` with at most 32 characters. The invalid marker of
- * the vehicle and every other value are not usable. A value is never
- * rounded and never replaced with zero.
+ * the vehicle and every other value are not usable. A float and an
+ * integer are kept exactly. A text is converted to the nearest 64-bit
+ * float, so a text with more than 15 significant digits can change in
+ * its last digits. No value is replaced with zero.
  */
 export type Reading = {
     /**
@@ -443,6 +437,21 @@ export type Reading = {
      * The unit of the field.
      */
     unit: Unit;
+};
+
+/**
+ * The starts of the ingest process in the range. A start states only
+ * that the process started there, not that data was lost.
+ */
+export type Restarts = {
+    /**
+     * Ingest clock: at most 500 start times in the range, in order.
+     */
+    items: Array<Instant>;
+    /**
+     * True when more starts lie in the range than `items` holds.
+     */
+    truncated: boolean;
 };
 
 /**
@@ -522,11 +531,11 @@ export type GetBatteryData = {
 
 export type GetBatteryErrors = {
     /**
-     * The query is not valid (`invalid_request`).
+     * The query is not valid, or the request carries more than one session cookie (`invalid_request`).
      */
     400: Problem;
     /**
-     * The request has no valid session (`unauthenticated`).
+     * The request has no valid session.
      */
     401: Problem;
     /**

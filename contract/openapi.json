@@ -12,7 +12,7 @@
           "battery"
         ],
         "summary": "Returns the battery view of one range.",
-        "description": "Each request reads the database once, in one read-only snapshot. A\ndatabase that cannot be reached gives 503 `database_unavailable`,\nnever an empty result.",
+        "description": "The session guard (`crate::auth`) runs first: without a valid session\nthe answer is 401 `unauthenticated` (declared by\n`auth::responses`), and no read starts.\n\nEach request reads the database once, in one read-only snapshot. A\ndatabase that cannot be reached gives 503 `database_unavailable`,\nnever an empty result.",
         "operationId": "getBattery",
         "parameters": [
           {
@@ -37,7 +37,7 @@
             }
           },
           "400": {
-            "description": "The query is not valid (`invalid_request`).",
+            "description": "The query is not valid, or the request carries more than one session cookie (`invalid_request`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -47,7 +47,7 @@
             }
           },
           "401": {
-            "description": "The request has no valid session (`unauthenticated`).",
+            "description": "The request has no valid session.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -464,7 +464,7 @@
         "properties": {
           "connection": {
             "$ref": "#/components/schemas/Connection",
-            "description": "The connection state of the vehicle as the stored events show it."
+            "description": "The newest stored connectivity event of the vehicle."
           },
           "freshness": {
             "$ref": "#/components/schemas/Freshness",
@@ -476,7 +476,7 @@
           },
           "latest_received_at": {
             "$ref": "#/components/schemas/Instant",
-            "description": "Ingest clock: the newest `received_at` among the newest stored row\nof each battery field and the newest stored connectivity event.\nThe ingest process stores data at most about 15 minutes after it\nreceives it."
+            "description": "Ingest clock: the newest `received_at` among the newest stored row\nof each battery field. The ingest process stores data at most about\n15 minutes after it receives it."
           }
         }
       },
@@ -545,6 +545,7 @@
               "tiles",
               "charts",
               "gaps",
+              "restarts",
               "state"
             ],
             "properties": {
@@ -554,7 +555,7 @@
               },
               "gaps": {
                 "$ref": "#/components/schemas/Gaps",
-                "description": "The data-collection losses that touch the range."
+                "description": "The losses that the ingest process recorded in the range."
               },
               "generated_at": {
                 "$ref": "#/components/schemas/Instant",
@@ -563,6 +564,10 @@
               "range": {
                 "$ref": "#/components/schemas/BatteryRange",
                 "description": "The requested range."
+              },
+              "restarts": {
+                "$ref": "#/components/schemas/Restarts",
+                "description": "The starts of the ingest process in the range."
               },
               "state": {
                 "type": "string",
@@ -649,7 +654,7 @@
             }
           }
         ],
-        "description": "The change of the capacity over the range.\n\nThe baseline is the newest usable value at or before `range.from`, or\nelse the oldest usable value in the range."
+        "description": "The change of the capacity over the range.\n\nThe baseline is the newest usable value before `range.from`, or\nelse the oldest usable value in the range."
       },
       "CapacityTile": {
         "type": "object",
@@ -681,15 +686,15 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "A connection of the current ingest run has a CONNECTED event and no\nDISCONNECTED event.",
+            "description": "The newest event is CONNECTED.",
             "required": [
-              "since",
+              "at",
               "state"
             ],
             "properties": {
-              "since": {
+              "at": {
                 "$ref": "#/components/schemas/Instant",
-                "description": "Server clock: the CONNECTED event of the oldest open connection."
+                "description": "Server clock: the time of the event."
               },
               "state": {
                 "type": "string",
@@ -701,15 +706,15 @@
           },
           {
             "type": "object",
-            "description": "No connection of the current ingest run is open.",
+            "description": "The newest event is DISCONNECTED: asleep or offline.",
             "required": [
-              "since",
+              "at",
               "state"
             ],
             "properties": {
-              "since": {
+              "at": {
                 "$ref": "#/components/schemas/Instant",
-                "description": "The newest DISCONNECTED event (server clock), or the start of\nthe current ingest run (ingest clock), whichever is later."
+                "description": "Server clock: the time of the event."
               },
               "state": {
                 "type": "string",
@@ -729,21 +734,20 @@
               "state": {
                 "type": "string",
                 "enum": [
-                  "unknown"
+                  "none"
                 ]
               }
             }
           }
         ],
-        "description": "The connection state of the vehicle.\n\nThe stored data cannot tell a sleeping car from a car without network:\nboth are `disconnected`."
+        "description": "The newest stored connectivity event of the vehicle, as it is.\n\nThe stored data cannot tell a sleeping car from a car without network:\nboth are `disconnected`. An ingest process that ends writes no\nDISCONNECTED event, so a `connected` event can be old; `freshness` then\nshows `overdue`."
       },
       "CountUnit": {
         "type": "string",
         "description": "What a gap count counts.",
         "enum": [
           "records",
-          "messages",
-          "connections"
+          "messages"
         ]
       },
       "ExcludedRows": {
@@ -781,38 +785,21 @@
       },
       "Gap": {
         "type": "object",
-        "description": "One data-collection loss. A sleeping car is never a gap.",
+        "description": "One loss that the ingest process recorded: records or messages that it\nreceived or should have received and did not store. A sleeping car, a\nrestart, or a refused connection is never a gap.",
         "required": [
           "kind",
-          "certainty",
           "from",
           "to",
-          "bounds",
           "count"
         ],
         "properties": {
-          "bounds": {
-            "$ref": "#/components/schemas/GapBounds",
-            "description": "Whether `from` and `to` are recorded times or an estimate."
-          },
-          "certainty": {
-            "$ref": "#/components/schemas/GapCertainty",
-            "description": "Whether data was surely lost."
-          },
           "count": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/GapCount",
-                "description": "The recorded number of lost items, or null when no count exists."
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/GapCount",
+            "description": "The recorded number of lost items."
           },
           "from": {
             "$ref": "#/components/schemas/Instant",
-            "description": "Ingest clock: the start of the loss. `from <= to`."
+            "description": "Ingest clock: the first lost item. `from <= to`."
           },
           "kind": {
             "$ref": "#/components/schemas/GapKind",
@@ -820,25 +807,9 @@
           },
           "to": {
             "$ref": "#/components/schemas/Instant",
-            "description": "Ingest clock: the end of the loss."
+            "description": "Ingest clock: the last lost item."
           }
         }
-      },
-      "GapBounds": {
-        "type": "string",
-        "description": "Whether the bounds of a gap are recorded times or an estimate.",
-        "enum": [
-          "exact",
-          "estimated"
-        ]
-      },
-      "GapCertainty": {
-        "type": "string",
-        "description": "Whether data was surely lost.",
-        "enum": [
-          "loss",
-          "possible_loss"
-        ]
       },
       "GapCount": {
         "type": "object",
@@ -865,20 +836,17 @@
         "type": "string",
         "description": "The cause of a loss.",
         "enum": [
-          "unclean_restart",
           "queue_full",
           "database_refused",
-          "zmq_shortfall",
-          "gate_full",
-          "child_exited"
+          "zmq_shortfall"
         ]
       },
       "Gaps": {
         "type": "object",
-        "description": "The data-collection losses that touch the range.",
+        "description": "The losses that the ingest process recorded in the range.",
         "required": [
           "items",
-          "total"
+          "truncated"
         ],
         "properties": {
           "items": {
@@ -886,14 +854,11 @@
             "items": {
               "$ref": "#/components/schemas/Gap"
             },
-            "description": "At most 500 gaps, in order of `from`, then `to`. The list is\ntruncated when `total` is larger than its length."
+            "description": "At most 500 gaps whose interval meets the range, in order of\n`from`, then `to`."
           },
-          "total": {
-            "type": "integer",
-            "format": "int32",
-            "description": "The number of gaps that touch the range.",
-            "maximum": 4294967295,
-            "minimum": 0
+          "truncated": {
+            "type": "boolean",
+            "description": "True when more gaps meet the range than `items` holds. The series\nis then split only at the gaps in `items`."
           }
         }
       },
@@ -1142,7 +1107,28 @@
             }
           }
         ],
-        "description": "The newest usable value of a field.\n\nA row is usable when it holds a finite number: a double or float, an\ninteger of at most 2^53 in magnitude, or a text of the form\n`-?[0-9]+(.[0-9]+)?` with at most 32 characters. The invalid marker of\nthe vehicle and every other value are not usable. A value is never\nrounded and never replaced with zero."
+        "description": "The newest usable value of a field.\n\nA row is usable when it holds a finite number: a double or float, an\ninteger of at most 2^53 in magnitude, or a text of the form\n`-?[0-9]+(.[0-9]+)?` with at most 32 characters. The invalid marker of\nthe vehicle and every other value are not usable. A float and an\ninteger are kept exactly. A text is converted to the nearest 64-bit\nfloat, so a text with more than 15 significant digits can change in\nits last digits. No value is replaced with zero."
+      },
+      "Restarts": {
+        "type": "object",
+        "description": "The starts of the ingest process in the range. A start states only\nthat the process started there, not that data was lost.",
+        "required": [
+          "items",
+          "truncated"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Instant"
+            },
+            "description": "Ingest clock: at most 500 start times in the range, in order."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when more starts lie in the range than `items` holds."
+          }
+        }
       },
       "Series": {
         "type": "object",

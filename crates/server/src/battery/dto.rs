@@ -1,4 +1,4 @@
-//! The wire types of `GET /api/v1/battery` (ADR 0012).
+//! The wire types of `GET /api/v1/battery` (ADR 0013).
 //!
 //! The types are output types only. The schema rules of `crate::wire`
 //! apply: an instant is a [`Instant`], a count has the bounds of `u32`, a
@@ -9,8 +9,11 @@
 //!
 //! - **Vehicle clock.** `Point.at`, `Reading.measured_at`, and
 //!   `Status.latest_data_at` are the `created_at` of the vehicle record.
-//! - **Ingest clock.** `Gap.from`, `Gap.to`, and `Status.latest_received_at`
-//!   are times of the ingest process (`received_at`, `occurred_at`).
+//! - **Ingest clock.** `Gap.from`, `Gap.to`, `restarts`, and
+//!   `Status.latest_received_at` are times of the ingest process
+//!   (`received_at`, `occurred_at`).
+//! - **Server clock.** The connection times are the `created_at` of the
+//!   connectivity event.
 //!
 //! The vehicle can send old records late (resend), so a gap on the ingest
 //! clock does not always lie at the same time as the lost samples on the
@@ -82,8 +85,10 @@ pub enum BatteryView {
         tiles: Box<BatteryTiles>,
         /// The series of the range.
         charts: Box<BatteryCharts>,
-        /// The data-collection losses that touch the range.
+        /// The losses that the ingest process recorded in the range.
         gaps: Gaps,
+        /// The starts of the ingest process in the range.
+        restarts: Restarts,
     },
 }
 
@@ -105,41 +110,40 @@ pub struct BatteryRange {
 /// Connection, newest data, and freshness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 pub struct BatteryStatus {
-    /// The connection state of the vehicle as the stored events show it.
+    /// The newest stored connectivity event of the vehicle.
     pub connection: Connection,
     /// Vehicle clock: the newest `created_at` of a row of the four battery
     /// fields before `generated_at`, usable or not.
     pub latest_data_at: Instant,
     /// Ingest clock: the newest `received_at` among the newest stored row
-    /// of each battery field and the newest stored connectivity event.
-    /// The ingest process stores data at most about 15 minutes after it
-    /// receives it.
+    /// of each battery field. The ingest process stores data at most about
+    /// 15 minutes after it receives it.
     pub latest_received_at: Instant,
     /// Whether new data is expected and has arrived.
     pub freshness: Freshness,
 }
 
-/// The connection state of the vehicle.
+/// The newest stored connectivity event of the vehicle, as it is.
 ///
 /// The stored data cannot tell a sleeping car from a car without network:
-/// both are `disconnected`.
+/// both are `disconnected`. An ingest process that ends writes no
+/// DISCONNECTED event, so a `connected` event can be old; `freshness` then
+/// shows `overdue`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Connection {
-    /// A connection of the current ingest run has a CONNECTED event and no
-    /// DISCONNECTED event.
+    /// The newest event is CONNECTED.
     Connected {
-        /// Server clock: the CONNECTED event of the oldest open connection.
-        since: Instant,
+        /// Server clock: the time of the event.
+        at: Instant,
     },
-    /// No connection of the current ingest run is open.
+    /// The newest event is DISCONNECTED: asleep or offline.
     Disconnected {
-        /// The newest DISCONNECTED event (server clock), or the start of
-        /// the current ingest run (ingest clock), whichever is later.
-        since: Instant,
+        /// Server clock: the time of the event.
+        at: Instant,
     },
     /// No connectivity event is stored.
-    Unknown,
+    None,
 }
 
 /// Whether new data is expected and has arrived.
@@ -148,11 +152,11 @@ pub enum Connection {
 pub enum Freshness {
     /// `generated_at - latest_received_at` is 1200 s or less.
     Current,
-    /// Older than 1200 s, and the connection is `connected` or `unknown`:
-    /// the data is stale.
+    /// Older than 1200 s, and the connection is `connected`: the data is
+    /// stale.
     Overdue,
-    /// Older than 1200 s, and the connection is `disconnected`: the car is
-    /// asleep or offline, so no new data is expected.
+    /// Older than 1200 s, and the connection is `disconnected` or `none`:
+    /// the car is asleep or offline, so no new data is expected.
     NotExpected,
 }
 
@@ -174,8 +178,10 @@ pub struct BatteryTiles {
 /// A row is usable when it holds a finite number: a double or float, an
 /// integer of at most 2^53 in magnitude, or a text of the form
 /// `-?[0-9]+(.[0-9]+)?` with at most 32 characters. The invalid marker of
-/// the vehicle and every other value are not usable. A value is never
-/// rounded and never replaced with zero.
+/// the vehicle and every other value are not usable. A float and an
+/// integer are kept exactly. A text is converted to the nearest 64-bit
+/// float, so a text with more than 15 significant digits can change in
+/// its last digits. No value is replaced with zero.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Reading {
@@ -247,7 +253,7 @@ pub struct CapacityTile {
 
 /// The change of the capacity over the range.
 ///
-/// The baseline is the newest usable value at or before `range.from`, or
+/// The baseline is the newest usable value before `range.from`, or
 /// else the oldest usable value in the range.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -341,42 +347,36 @@ pub struct ExcludedRows {
     pub not_numeric: u32,
 }
 
-/// The data-collection losses that touch the range.
+/// The losses that the ingest process recorded in the range.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct Gaps {
-    /// At most 500 gaps, in order of `from`, then `to`. The list is
-    /// truncated when `total` is larger than its length.
+    /// At most 500 gaps whose interval meets the range, in order of
+    /// `from`, then `to`.
     pub items: Vec<Gap>,
-    /// The number of gaps that touch the range.
-    #[schema(minimum = 0, maximum = 4_294_967_295_u64)]
-    pub total: u32,
+    /// True when more gaps meet the range than `items` holds. The series
+    /// is then split only at the gaps in `items`.
+    pub truncated: bool,
 }
 
-/// One data-collection loss. A sleeping car is never a gap.
+/// One loss that the ingest process recorded: records or messages that it
+/// received or should have received and did not store. A sleeping car, a
+/// restart, or a refused connection is never a gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 pub struct Gap {
     /// The cause of the loss.
     pub kind: GapKind,
-    /// Whether data was surely lost.
-    pub certainty: GapCertainty,
-    /// Ingest clock: the start of the loss. `from <= to`.
+    /// Ingest clock: the first lost item. `from <= to`.
     pub from: Instant,
-    /// Ingest clock: the end of the loss.
+    /// Ingest clock: the last lost item.
     pub to: Instant,
-    /// Whether `from` and `to` are recorded times or an estimate.
-    pub bounds: GapBounds,
-    /// The recorded number of lost items, or null when no count exists.
-    #[schema(required = true)]
-    pub count: Option<GapCount>,
+    /// The recorded number of lost items.
+    pub count: GapCount,
 }
 
 /// The cause of a loss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GapKind {
-    /// An ingest run ended without its `stopped` event (a crash, or a
-    /// final flush that failed). The queue of that run can be lost.
-    UncleanRestart,
     /// The memory queue of the ingest process was full; records were
     /// dropped.
     QueueFull,
@@ -384,31 +384,6 @@ pub enum GapKind {
     DatabaseRefused,
     /// Messages of the server did not reach the ingest reader.
     ZmqShortfall,
-    /// The gate refused vehicle connections at its bound.
-    GateFull,
-    /// The server process of the vehicle connections ended while the gate
-    /// was open.
-    ChildExited,
-}
-
-/// Whether data was surely lost.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum GapCertainty {
-    /// Data was lost.
-    Loss,
-    /// Data can be lost; the stored events cannot show it.
-    PossibleLoss,
-}
-
-/// Whether the bounds of a gap are recorded times or an estimate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum GapBounds {
-    /// Recorded times of the ingest process.
-    Exact,
-    /// An estimate from the times of other events.
-    Estimated,
 }
 
 /// A recorded number of lost items.
@@ -429,6 +404,14 @@ pub enum CountUnit {
     Records,
     /// Messages of the server.
     Messages,
-    /// Vehicle connections.
-    Connections,
+}
+
+/// The starts of the ingest process in the range. A start states only
+/// that the process started there, not that data was lost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct Restarts {
+    /// Ingest clock: at most 500 start times in the range, in order.
+    pub items: Vec<Instant>,
+    /// True when more starts lie in the range than `items` holds.
+    pub truncated: bool,
 }

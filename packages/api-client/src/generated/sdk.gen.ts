@@ -24,6 +24,10 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 /**
  * Returns the battery view of one range.
  *
+ * The session guard (`crate::auth`) runs first: without a valid session
+ * the answer is 401 `unauthenticated` (declared by
+ * `auth::responses`), and no read starts.
+ *
  * Each request reads the database once, in one read-only snapshot. A
  * database that cannot be reached gives 503 `database_unavailable`,
  * never an empty result.

@@ -24,10 +24,13 @@ getrandom.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 jiff.workspace = true
+jiff-sqlx.workspace = true
 rustls = { workspace = true, optional = true, features = ["aws_lc_rs", "std", "tls12"] }
 serde.workspace = true
 serde_json.workspace = true
+sqlx.workspace = true
 subtle.workspace = true
+telemetry-web-domain = { path = "../domain", version = "0.1.0" }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls = { workspace = true, optional = true }
@@ -36,6 +39,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

@@ -1,74 +1,136 @@
-//! The battery view under `/api/v1` (the derivation ADR of the battery
-//! slice).
+//! The battery view under `/api/v1` (ADR 0013).
 //!
-//! Slice S3 (`feat/battery-api`) fills this module: `GET
-//! /api/v1/battery?range=...`, its DTOs, and the read from the database.
-//! Slice S1 mounts the empty router.
+//! `GET /api/v1/battery?range=...` returns the battery view of one range
+//! ([`dto::BatteryView`]). The handler ([`handler`]) asks a
+//! [`source::BatterySource`] for one snapshot of the raw tables, derives
+//! the view with the pure rules of `telemetry_web_domain`, and maps it to
+//! the wire types ([`map`]).
 //!
-//! S3 owns `crates/server/src/battery/**` and needs no change in a file of
-//! S1. The extension points:
+//! Sources:
 //!
-//! - [`router`]: register the handler with `utoipa_axum::routes!`. The
-//!   router is nested at `/api/v1`.
-//! - [`Config::from_vars`]: read the variables of the slice (for example
-//!   `DATABASE_URL`) through [`Vars`].
-//! - [`State`]: the data source. Proposed: a trait `BatterySource` in
-//!   `battery/source.rs`, the PostgreSQL adapter in `battery/postgres.rs`,
-//!   and the fake of the test server in `battery/fake.rs`; [`State`] holds
-//!   an `Arc<dyn BatterySource>`. [`State::new`] builds the PostgreSQL
-//!   source for `serve`, [`test_state`] the fake for `serve-test`. A
-//!   handler takes `axum::extract::State<battery::State>`.
-//! - The axum `Query` extractor is enabled; `Problem::from(QueryRejection)`
-//!   gives the problem `invalid_request`.
-//! - Use [`crate::wire::Instant`] for each instant of the DTOs, with the
-//!   schema rules of `crate::wire`.
-//! - `unit_test_state` gives the state that the router tests of S1 use;
-//!   keep it valid when [`State`] gets fields.
+//! - [`postgres::PostgresSource`] (`serve`): one connection and one
+//!   read-only snapshot for each request, as the role `telemetry_web`,
+//!   with bounded concurrency and deadlines.
+//! - `fake::FakeSource` (feature `test-server`, without `DATABASE_URL`):
+//!   the scenario files of the browser tests.
+//!
+//! Scenario files of the test server: `<WEB_TEST_SCENARIO_DIR>/<name>.json`,
+//! picked with the cookie `telemetry_test_scenario=<name>`. The file is one
+//! JSON object without unknown keys: `now` (the fixed clock) and
+//! `vehicles` (the ids) are required; `signals`, `connectivity`, and
+//! `ingest_events` hold rows with the columns of the raw tables (no VIN,
+//! no location); `fault` (`database_unavailable`, `service_busy`,
+//! `timeout`, `internal_error`) and `delay_ms` (0 to 10000) are optional.
+//! `fake` documents the format with an example.
 
 pub mod dto;
+#[cfg(feature = "test-server")]
+pub mod fake;
 pub mod handler;
+pub mod map;
+pub mod postgres;
+pub mod source;
+
+use std::sync::Arc;
 
 use axum::extract::FromRef;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
+use self::postgres::{DatabaseOptions, PostgresSource};
+use self::source::BatterySource;
 use crate::app::AppState;
 use crate::config::{ConfigError, Vars};
 
-/// The configuration of this slice. Empty until slice S3.
+/// The variable of the database URL of the role `telemetry_web`.
+pub const DATABASE_URL: &str = "DATABASE_URL";
+
+/// The variable of the scenario directory of the test server.
+#[cfg(feature = "test-server")]
+pub const WEB_TEST_SCENARIO_DIR: &str = "WEB_TEST_SCENARIO_DIR";
+
+/// The configuration of this slice.
 #[derive(Debug, Clone)]
-pub struct Config {}
+pub enum Config {
+    /// Read the database (`DATABASE_URL`).
+    Database(Box<DatabaseOptions>),
+    /// Read the scenario files of the browser tests (feature
+    /// `test-server`, no `DATABASE_URL`; `WEB_TEST_SCENARIO_DIR` names the
+    /// directory).
+    #[cfg(feature = "test-server")]
+    Scenarios(Option<std::path::PathBuf>),
+}
 
 impl Config {
-    /// Reads and validates the variables of this slice. `crate::config`
-    /// calls it once at startup, after the common variables.
+    /// Reads and validates the variables of this slice.
     ///
-    /// Rules: read only through `vars`; return [`ConfigError`] with the
-    /// variable name and a static reason, never the value.
+    /// - `DATABASE_URL`: required by the release build. A PostgreSQL URL
+    ///   of the role `telemetry_web`. The server forces
+    ///   `sslmode=verify-full` and the schema `raw`. The value is a
+    ///   secret; no error holds it.
+    /// - `WEB_TEST_SCENARIO_DIR` (feature `test-server` only): read when
+    ///   `DATABASE_URL` is not set.
     ///
     /// # Errors
     ///
     /// Returns [`ConfigError`] for a missing or invalid variable.
     pub fn from_vars(vars: &Vars<'_>) -> Result<Self, ConfigError> {
-        let _ = vars;
-        Ok(Self {})
+        match vars.get(DATABASE_URL) {
+            Some(url) => {
+                let options = url.to_str().and_then(DatabaseOptions::from_url).ok_or(
+                    ConfigError::Invalid {
+                        name: DATABASE_URL,
+                        reason: "expected a PostgreSQL URL",
+                    },
+                )?;
+                Ok(Self::Database(Box::new(options)))
+            }
+            #[cfg(feature = "test-server")]
+            None => Ok(Self::Scenarios(
+                vars.get(WEB_TEST_SCENARIO_DIR)
+                    .map(std::path::PathBuf::from),
+            )),
+            #[cfg(not(feature = "test-server"))]
+            None => Err(ConfigError::Missing { name: DATABASE_URL }),
+        }
     }
 }
 
-/// The state of the handlers of this slice. Empty until slice S3.
+/// The state of the handlers of this slice: the data source.
 ///
 /// A handler reads it with `axum::extract::State<battery::State>`: the
 /// [`FromRef`] implementation below takes the field `battery` of
 /// [`AppState`].
 #[derive(Debug, Clone)]
-pub struct State {}
+pub struct State {
+    source: Arc<dyn BatterySource>,
+}
 
 impl State {
     /// The state of `serve`.
     #[must_use]
     pub fn new(config: &Config) -> Self {
-        let _ = config;
-        Self {}
+        match config {
+            Config::Database(options) => {
+                Self::with_source(Arc::new(PostgresSource::new((**options).clone())))
+            }
+            #[cfg(feature = "test-server")]
+            Config::Scenarios(dir) => {
+                Self::with_source(Arc::new(fake::FakeSource::new(dir.clone())))
+            }
+        }
+    }
+
+    /// A state with a given source.
+    #[must_use]
+    pub fn with_source(source: Arc<dyn BatterySource>) -> Self {
+        Self { source }
+    }
+
+    /// The data source.
+    #[must_use]
+    pub fn source(&self) -> &dyn BatterySource {
+        self.source.as_ref()
     }
 }
 
@@ -78,17 +140,19 @@ impl FromRef<AppState> for State {
     }
 }
 
-/// The state of `serve-test` (feature `test-server`). Slice S3 builds the fake `BatterySource` here.
+/// The state of `serve-test` (feature `test-server`): the fake source
+/// without `DATABASE_URL`, else the database.
 #[cfg(feature = "test-server")]
 #[must_use]
 pub fn test_state(config: &Config) -> State {
     State::new(config)
 }
 
-/// The state of the unit tests of the router (`crate::app`).
+/// The state of the unit tests of the router (`crate::app`): a source
+/// that is never reached in those tests answers `internal_error`.
 #[cfg(test)]
 pub(crate) fn unit_test_state() -> State {
-    State {}
+    State::with_source(Arc::new(tests::Unreachable))
 }
 
 /// The routes of the battery API: `GET /battery` under `/api/v1`.
@@ -96,3 +160,6 @@ pub(crate) fn unit_test_state() -> State {
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(handler::get_battery))
 }
+
+#[cfg(test)]
+mod tests;

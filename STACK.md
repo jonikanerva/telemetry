@@ -36,7 +36,7 @@ repo/
   crates/ingest/src/     # Ingest process: gate, supervisor, ZMQ reader, PostgreSQL writer
   crates/ingest/proto/   # Vendored upstream .proto files of the deployed fleet-telemetry tag
   crates/ingest/.sqlx/   # Committed query metadata of the SQLx macros of ingest
-  crates/domain/         # Package telemetry-web-domain: pure web domain rules; an empty library now
+  crates/domain/         # Package telemetry-web-domain: pure web domain rules (battery view, ADR 0013)
   crates/server/         # Package telemetry-web-server: HTTP server, problem mapping, static files, contract export (ADR 0010)
   contract/openapi.json  # Committed OpenAPI 3.1 export of the server
   packages/api-client/   # Package telemetry-web-api-client: generated client and Zod validators, handwritten facade
@@ -44,7 +44,7 @@ repo/
   e2e/                   # Package telemetry-web-e2e: Playwright journeys against the test server
   webapp/                # Dockerfile of the web image (ADR 0010)
   migrations/            # SQLx migrations (ADR 0002)
-  db/roles.sql           # Roles, schema, and privileges (ADR 0002); run once by the owner role
+  db/roles.sql           # Roles, schema, and privileges (ADR 0002, ADR 0013); run by the owner role, again after a migration
   scripts/               # Check scripts: SQLx metadata, image check, contract check, bundle size, CI PostgreSQL, Gitleaks guard
   Cargo.toml  Cargo.lock  rust-toolchain.toml  clippy.toml  deny.toml  mise.toml
   package.json  pnpm-workspace.yaml  pnpm-lock.yaml  .npmrc  tsconfig*.json
@@ -336,13 +336,13 @@ other rows name the slice that can measure them.
 | Initial bundle | JS ≤ 200 KB and CSS ≤ 30 KB, gzip, the files that `index.html` references | JS 131,619 B, CSS 1,009 B (S1 shell, macOS arm64, 27 November 2026) | `scripts/bundle-size.sh` in `build` |
 | Web image | ≤ 100 MB compressed (`docker save` with gzip) | Printed by `image-check-web.sh` in CI | `image-check-web.sh` fails above the budget |
 | Startup to `/health` | ≤ 1 s, release image on linux/amd64 | Printed in whole seconds (container start included) by `image-check-web.sh` in CI | Not a gate: the script waits at most 30 s |
-| Battery API, warm | p95 ≤ 1 s for 24h to 30d, ≤ 2 s for 90d and 1y | Not measured | Owned by S3 |
-| Battery API, cold Neon | ≤ 8 s total | Not measured | Owned by S3 (experiment E3) |
+| Battery API, warm | p95 ≤ 1 s for 24h to 30d, ≤ 2 s for 90d and 1y | E3 (ADR 0013), 27 November 2026, 90 days at the planning rate: server work under 0.1 s for every range (90-day bucket query 34 ms). E3 read 7 statements, about 19 round trips with the connect; from a client with a 240 ms round trip, about 4.7 s, so not met there. The current read is 6 statements. | Not a gate. Post-release check on Railway (`docs/web-release.md`, "Battery API read time"). |
+| Battery API, cold Neon | ≤ 8 s total | Not measured: the shared test compute did not suspend during E3 | Post-release check on Railway (`docs/web-release.md`, "Battery API read time") |
 | Login | p95 ≤ 1 s with the Argon2 parameters of S2 | Not measured | Owned by S2 |
 | Resident memory | steady ≤ 128 MiB, peak ≤ 256 MiB | Not measured | Railway metrics after the release |
-| Concurrency | database requests ≤ 2, Argon2 ≤ 1 | Not applicable in S1 | Owned by S2 and S3 |
+| Concurrency | database requests ≤ 2, Argon2 ≤ 1 | Database reads: a semaphore of 2 (`battery::postgres`), tested | Database: unit test of the third read (`service_busy`). Argon2: owned by S2 |
 | Lab experience | LCP ≤ 2.5 s, CLS ≤ 0.1 (Chromium, mobile viewport, 4× CPU slowdown); no field data | Not measured | Owned by S4 |
-| Web use of Neon | ≤ 10 CU-hours each month | Not applicable in S1 (no database) | Owned by S3 |
+| Web use of Neon | ≤ 10 CU-hours each month | Not measured: each request wakes the compute only for its read; no background polling | Neon usage after the first week of web use (ADR 0013, reassessment) |
 
 ---
 
@@ -351,6 +351,7 @@ other rows name the slice that can measure them.
 - **Storage:** PostgreSQL on Neon (Free plan: 1 GB storage, 100 CU-hours each month, scale to zero after 5 minutes, 6 hours of restore history, computes up to 2 CU, 10 branches; <https://neon.com/docs/introduction/plans>). Neon suspends the compute when the CU-hours are used, and rejects writes when the storage is full. The ingest process writes a batch at the latest 15 minutes after the oldest queued record and keeps no idle connection (ADR 0001). ADR 0002 holds the tables, values, idempotency keys, roles, and size estimate.
 - **Test databases:** the Neon branch `test` (ADR 0002, "Test databases"); never reset it from its parent. The connection sets the `search_path` (production: `raw`), so the storage SQL names no schema. At most 8 database tests run at the same time (`.config/nextest.toml`); a hung test stops after 4 minutes. `db/roles.sql` and the cleanup of test roles take one advisory lock (parallel privilege changes fail with SQLSTATE XX000).
 - **Queries:** every storage statement is a checked SQLx query macro, except `db/roles.sql` (run through `apply_roles`) and the SQLx migrator. A bind of a `jiff_sqlx::Timestamp` or of an array with NULL elements uses `as _`; a time column uses `AS "name: jiff_sqlx::Timestamp"`. The database tests execute every statement against the migrated schema. Dynamic SQL needs bound parameters, structural constraints, and integration tests.
+- **Web access (ADR 0013):** the web server connects as the role `telemetry_web` (`db/roles.sql`): SELECT only on the columns that the web queries read (`web_columns` of the script: no `latitude`, `longitude`, or `json_value`); no VIN, no `unprocessed_record`, no write; a new query column needs a new grant; CONNECTION LIMIT 4, `statement_timeout` 10 s, `idle_in_transaction_session_timeout` 15 s, `default_transaction_read_only` on. Run `db/roles.sql` again after a migration that adds a table that the web reads. One connection and one `REPEATABLE READ READ ONLY` transaction for each request, no pool, at most 2 reads at a time (5 s wait, then `service_busy`), connect 15 s, the whole read 24 s. The web server never migrates; its queries are checked macros with metadata in `crates/server/.sqlx/`, and `crates/server/tests/battery_postgres.rs` compares them with the reference rules of `telemetry-web-domain` on the migrated schema as the web role. `crates/server/tests/battery_e3.rs` repeats experiment E3 on request.
 - **Entities and retention:** `VISION.md`.
 - **Constraints and atomicity:** use the database constraints that apply (NOT NULL, CHECK, foreign, unique, exclusion), and test rejection and competing writes; read-before-write alone cannot enforce concurrent uniqueness. Use transactions for atomic operations; never publish partial success. Idempotency: ADR 0002, "Idempotency".
 - **Migrations:** numbered, reviewed SQLx migrations as a separate release step, never at process start: `ingest migrate` is the Railway pre-deploy command with the role `telemetry_migrator`, and `ingest run` only checks that its embedded migrations are applied (ADR 0002). Use expand-and-contract compatibility. A migration names no role and no schema (the default privileges of `db/roles.sql` apply). A new reason of `raw.unprocessed_record` needs a migration in the same release.
@@ -390,12 +391,12 @@ of the web server. A feature that only the web server uses is in
 | jiff | 1.0.3 | `std` | `Timestamp` of records and events (§10) | Unlicense OR MIT |
 | prost | 0.14.6 | `derive`, `std` | Protobuf decode (ADR 0001) | Apache-2.0 |
 | prost-types, also build | 0.14.6 | `std` | `google.protobuf.Timestamp`; schema descriptors in `build.rs` | Apache-2.0 |
-| uuid | 1.29.3 | `std` | Typed connection ID (ADR 0002) | Apache-2.0 OR MIT |
+| uuid | 1.29.3 | `std` | Typed connection ID (ADR 0002); run and connection IDs of the web reads | Apache-2.0 OR MIT |
 | prost-build, build | 0.14.6 | none | Rust types of `crates/ingest/proto/` | Apache-2.0 |
 | protox, build and dev | 0.10.0 | none | `.proto` parser in Rust, no `protoc` | MIT OR Apache-2.0 |
 | proptest, dev | 1.12.0 | `std` | Property tests of the decode | MIT OR Apache-2.0 |
-| sqlx | 0.9.1 | `postgres`, `runtime-tokio`, `tls-rustls-aws-lc-rs`, `migrate`, `macros`, `uuid`, `json` | Connections without a pool, checked queries, migrations, verified TLS (§5) | MIT OR Apache-2.0 |
-| jiff-sqlx | 1.0.0 | `postgres` | `timestamptz` binds of `jiff::Timestamp` (§10) | Unlicense OR MIT |
+| sqlx | 0.9.1 | `postgres`, `runtime-tokio`, `tls-rustls-aws-lc-rs`, `migrate`, `macros`, `uuid`, `json` | Connections without a pool, checked queries, migrations, verified TLS (§5); also the web reads | MIT OR Apache-2.0 |
+| jiff-sqlx | 1.0.0 | `postgres` | `timestamptz` binds of `jiff::Timestamp` (§10), ingest and web | Unlicense OR MIT |
 | zeromq | 0.7.0 | `tcp-transport`, `tokio-runtime` | ZMQ SUB socket (ADR 0001); pure Rust | MIT |
 | futures-util | 0.3.34 | none | `StreamExt::next` on the `zeromq` monitor stream | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | none | Run ID and retry jitter without a panic | MIT OR Apache-2.0 |
@@ -766,8 +767,10 @@ build step.
 
 - The service `telemetry-web` runs the image of `webapp/Dockerfile`: the
   server binary `telemetry-web-server` and the built SPA, as user 10001
-  (ADR 0010). It holds no data and runs no migration. It reads no
-  database in this phase.
+  (ADR 0010). It holds no data.
+- The service reads the database as the role `telemetry_web` (ADR 0013,
+  §5). It runs no migration. A migration that the web needs ships in an
+  ingest release first.
 - The image has a `USER 10001:10001` line, unlike the ingest image: the
   server process holds its own service variables anyway, so
   `/proc/1/environ` exposes nothing more (ADR 0010).
@@ -802,14 +805,19 @@ and checks that this table holds the same values.
 | Overlap time            | 0 s | Variable `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` | One version of the server at a time. |
 | Restart policy          | Always | Service settings | No limit of restarts. |
 | `NO_CACHE`              | `1` | Variable `NO_CACHE` | Each build runs the `apt-get` step without the layer cache, so the image gets the Debian security fixes of the build date. |
+| `DATABASE_URL`          | Secret: a URL of the role `telemetry_web`; never in a document | Variable `DATABASE_URL` | The battery API reads the database (§5). The release build does not start without it. |
 | TCP proxy               | None | Service settings | No TCP port for the internet. |
 | Custom domain           | None | Service settings | No public URL before the login exists (`VISION.md`, drift signs); `tesla.calmdonut.com` comes with the login. |
 | `WEB_PUBLIC_ORIGIN`     | `https://tesla.calmdonut.com` | Variable `WEB_PUBLIC_ORIGIN` | The origin of the CSRF rule (ADR 0012); the server stops at the start without it. |
 | `WEB_PASSWORD_HASH`     | The Argon2id PHC string of the owner password; a secret | Variable `WEB_PASSWORD_HASH`, set by the owner | The login checks the password against it (ADR 0003, ADR 0012); the server stops at the start without a valid hash. |
 
-The variable `RAILWAY_GIT_COMMIT_SHA`, which Railway sets, gives the
+The service variable `DATABASE_URL` holds a secret: a URL of the role
+`telemetry_web`, database `neondb`, on the branch `production`. The
+variable `RAILWAY_GIT_COMMIT_SHA`, which Railway sets, gives the
 version that `/health` reports. The image `ENV` line sets `WEB_STATIC_DIR`;
-do not set it as a service variable. `webapp/Dockerfile` has no `ARG` line.
+do not set it as a service variable: a service variable replaces the image
+value. `webapp/Dockerfile` has no `ARG` line, so no secret reaches a build
+step.
 The owner makes `WEB_PASSWORD_HASH` with `telemetry-web-server
 hash-password` on the owner's computer (README, "Web password"); the hash
 never passes through an agent, a PR, or a log.
