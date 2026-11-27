@@ -36,6 +36,13 @@
 #     with no task_stop_timeout and no gate_connections_open line.
 #  9. The log holds neither the TLS key nor the database password.
 #
+# Docker starts the container without an init, so ingest is PID 1 here. On
+# Railway an init that Railway adds is PID 1 and ingest is PID 2 (ADR 0001,
+# "Process tree on Railway"). So this script proves the image, the
+# entrypoint, and the behaviour of ingest as the parent of fleet-telemetry.
+# It does not prove the signal forward or the reaping of the Railway init,
+# the environment of that init, or a forced end of ingest on Railway.
+#
 # The container uses the network of the host, so that the script reaches
 # the loopback ports. The ports 4443, 4444, 5284, 9090, and 18080 of the
 # host must be free.

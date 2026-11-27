@@ -88,13 +88,16 @@ ZMQ is the only candidate without a broker or a new provider that delivers
 the complete record. The Rust process compensates for the missing ZMQ
 guarantee with the layout below.
 
-### Layout: one Railway service, one image, Rust is PID 1
+### Layout: one Railway service, one image, Rust is the parent of the server
 
 The service `telemetry` runs one image with two processes.
 
 - `ingest` (Rust) is PID 1. It starts `fleet-telemetry` as its child and
   supervises it. Because of fact 8, `fleet-telemetry` never runs without
-  the consumer.
+  the consumer. Update (release of 27 November 2026): on Railway an init
+  that Railway adds is PID 1, and `ingest` is PID 2, its child. The init
+  exits when `ingest` exits, so fact 8 still ends `fleet-telemetry` with
+  `ingest` (section "Process tree on Railway").
 - `ingest` owns the public port. It listens on `0.0.0.0:4443` and forwards
   each accepted TCP connection byte for byte to `fleet-telemetry` on
   `127.0.0.1:4444`. It does not terminate TLS and does not read the bytes.
@@ -270,7 +273,9 @@ thread, outside the Tokio runtime:
   30 s, or the heartbeat of the writer is older than 120 s, the watchdog
   logs the task name and ends the process with `std::process::exit`.
 - PID 1 then ends, the kernel kills the child (fact 8), and Railway
-  restarts the container. The vehicle buffers meanwhile.
+  restarts the container. The vehicle buffers meanwhile. On Railway,
+  `ingest` is PID 2: its exit ends the init (PID 1), and then the same
+  happens (section "Process tree on Railway").
 
 **ZMQ shortfall check.** PUB drops messages without notice when its send
 queue for the subscriber is full (fact 3). Upstream sets no `SNDHWM`, so
@@ -931,10 +936,15 @@ the files agree; the CI job `image-check` checks the running container
   `ingest/entrypoint.sh` writes `TLS_CERT` and `TLS_KEY` to
   `/etc/fleet-telemetry/tls/`, removes both variables, raises the soft
   open-file limit, and replaces itself with `ingest run` (`exec`), so
-  `ingest` is PID 1. Reasons: the start order above already names the
+  `ingest` takes the process of the script: PID 1 under Docker, PID 2
+  under the init of Railway. Reasons: the start order above already names the
   entrypoint; a shell builtin (`printf`) writes the key, so no process
   argument holds it; `umask 077` gives mode 0600; `unset` before the `exec`
-  keeps the key out of the environment of `ingest` (`/proc/1/environ`),
+  keeps the key out of the environment of `ingest`
+  (`/proc/<pid of ingest>/environ`). Update (release of 27 November 2026):
+  this protects only under Docker without an init. On Railway the init
+  (PID 1, UID 10001) keeps the full environment, and a process of UID
+  10001 can read it (section "Process tree on Railway"),
   and `ingest` starts the child with an empty environment. In Rust, the
   removal of a variable (`std::env::remove_var`) is `unsafe` in edition
   2024, which the workspace forbids, and the raise of the limit needs
@@ -946,7 +956,10 @@ the files agree; the CI job `image-check` checks the running container
   files, into `/etc/fleet-telemetry/tls/` (mode 0700, owner 10001).
   Upstream runs `fleet-telemetry` as a non-root user too
   (`gcr.io/distroless/cc-debian12:nonroot`). A numeric user needs no
-  `useradd` step.
+  `useradd` step. Update (release of 27 November 2026): on Railway the
+  init also runs as 10001, so its environment is readable by `ingest`
+  and the child; option 1 of the proposal in "Process tree on Railway"
+  would replace this decision.
 - **Fixed settings in the image.** The `ENV` lines of the Dockerfile set
   the ports and the child paths. The Railway service variables hold only
   `PORT` (8080) and the secrets. So the settings change with the code,
@@ -1004,6 +1017,133 @@ the files agree; the CI job `image-check` checks the running container
   (`crates/ingest/src/pipeline/metrics.rs`). So a renamed metric would
   make the check report no shortfall without an error. The release reads
   the metrics of the real binary once (`docs/ingest-release.md`).
+
+### Process tree on Railway (observed at the release, 27 November 2026)
+
+Lead observation through `railway ssh` after the release of PR #23
+(release record on PR #23):
+
+- PID 1 is `/run/podman-init -- /entrypoint.sh`, an init that Railway
+  adds. The entrypoint replaces itself with `ingest` (`exec`), so
+  `/usr/local/bin/ingest run` is PID 2, with parent 1 and UID 10001.
+  `fleet-telemetry` is a child of PID 2. So "`ingest` is PID 1" is false
+  on Railway. In the CI job `image-check`, Docker starts the image without
+  an init, and `ingest` is PID 1 there.
+- The init. Podman documents `--init` as "an init inside the container
+  that forwards signals and reaps processes", mounted at
+  `/run/podman-init` [P1]. Podman's default container init is catatonit.
+  Assumption: the binary at `/run/podman-init` on Railway is catatonit;
+  it was not identified. The catatonit source [P2] shows: it forwards each
+  signal except `SIGCHLD`, the terminal stop signals, and its own fault
+  signals to the one process that it started (not to the process group,
+  unless `-g`); it reaps every zombie of the container; and when the
+  process that it started exits, it exits too, with the exit code of that
+  process (128 plus the signal number after a signal).
+
+What changes, and what does not:
+
+- **Reaping.** `ingest` still waits for its own child (Tokio). Each other
+  process that loses its parent goes to PID 1, and the init reaps it [P2]. So
+  the gap "no general reaping" (`crates/ingest/src/child.rs`) does not
+  apply on Railway. At the release, the container had no zombie.
+- **SIGTERM.** Railway sends SIGTERM to PID 1; by [P2] the init forwards
+  it to `ingest`, which runs the shutdown sequence. Not observed yet:
+  Linux check 2 at the first redeploy shows it (`shutdown_started` with
+  reason `SIGTERM` in the log of the old deployment). Without the
+  forward, no `shutdown_started` line would appear, and SIGKILL would end
+  the container after `drainingSeconds`.
+- **Other signals.** `ingest` is not PID 1 on Railway, so the kernel rule
+  that protects PID 1 from signals without a handler does not apply to
+  it. A signal that the init forwards and that `ingest` does not handle
+  (for example `SIGHUP` or `SIGQUIT`) ends `ingest` with the default
+  action. Railway documents no such signal.
+- **Forced end of `ingest` (Linux check 4).** A watchdog exit, a crash, or
+  SIGKILL of `ingest` ends the process that the init started; the init
+  then exits [P2], PID 1 ends, the kernel ends `fleet-telemetry` (fact 8),
+  and Railway restarts the container (restart policy "Always").
+  Documented by the catatonit source, not observed on Railway. The check
+  can now be produced on purpose: a `railway ssh` session (UID 0) can
+  send SIGKILL to PID 2, if the session may signal a process of UID
+  10001 (not tested; the same session cannot read the environment of
+  that process). Cost: the queue since the last flush is lost (the
+  crash line of "Delivery guarantee").
+- **Environment of PID 1.** The init started with every service variable:
+  `TLS_CERT`, `TLS_KEY`, `DATABASE_URL`, and `MIGRATION_DATABASE_URL`. The
+  entrypoint removes the TLS variables and the migrator URL only in the
+  process that becomes `ingest`, so `/proc/1/environ` of the init still
+  holds them. Observed by the lead on 27 November 2026 in the production
+  container: `/proc/1/status` of `/run/podman-init -- /entrypoint.sh`
+  shows `Uid: 10001 10001 10001 10001`, and `ptrace_scope` is 0. So the
+  init runs as the user of the image, the same user as `ingest` and
+  `fleet-telemetry`. The kernel lets a process read `/proc/<pid>/environ`
+  of another process of the same UID (a ptrace read check; Yama
+  `ptrace_scope` restricts only the attach mode, and it is 0 here, which
+  also allows the memory read). So `fleet-telemetry` and `ingest` can read
+  all four variables in `/proc/1/environ`. This follows from that kernel
+  rule; nobody read the file directly, because the `railway ssh` session
+  (UID 0) has no right to read it. Consequence: on Railway the `unset` in
+  the entrypoint gives no protection. It protects only under Docker
+  without an init (the CI job `image-check`). `STACK.md` §15 (accepted
+  risks) names the exposure; the options to close it follow.
+
+**Proposal for the owner: close the environment of PID 1 (not
+implemented).** Each option needs an owner decision; the lead does not
+choose. Assumption of options 1 and 2: the init runs as the user that the
+image names, as observed for 10001.
+
+1. **Start as root, drop in the entrypoint.** The image has no
+   `USER 10001`, so the init (PID 1) and its environment belong to UID 0.
+   The entrypoint writes the TLS files as root, sets their owner to
+   10001, removes the variables, and then replaces itself with
+   `setpriv --reuid=10001 --regid=10001 --clear-groups` and
+   `ingest run` (`exec`). `setpriv` comes from util-linux; the change must
+   confirm that the final image contains it. Then no process of UID 10001
+   can read `/proc/1/environ`. Costs and changes:
+   - It replaces the decision "Non-root user": the image starts as root,
+     and the drop happens in the entrypoint. A fault in the entrypoint
+     before the drop runs as root.
+   - The Dockerfile and entrypoint allowlists of `vuln`
+     (`scripts/vuln-premise-test.sh` and the `vuln` task) change with the
+     files.
+   - The `image-check` assertions change: PID 1 under Docker is then the
+     entrypoint as root until the `exec`, then `ingest` as 10001 through
+     `setpriv`; the check must show the UID of `ingest` and of the child,
+     and that UID 10001 cannot read `/proc/1/environ` on a container with
+     an init.
+   - File ownership: the TLS directory and files need an explicit owner
+     (10001) and mode, because root creates them.
+   - `ingest` (PID 2, UID 10001) still holds `DATABASE_URL` in its own
+     environment, so the child can still read it, unless `ingest` also
+     reads and clears it. In Rust, `std::env::remove_var` is `unsafe`
+     (forbidden in the workspace); the bounded fix of `STACK.md` §15 (a
+     0600 file that `ingest` reads and deletes) does not help while
+     `ptrace_scope` is 0, because the child can then read the memory of
+     `ingest`.
+2. **A separate UID for the child (the stronger variant).** `ingest`
+   starts `fleet-telemetry` as another user, for example 10002. A process
+   of another UID cannot read the environment or the memory of `ingest`
+   or of the init, whatever `ptrace_scope` is. Costs and changes: `ingest`
+   needs the capabilities `CAP_SETUID` and `CAP_SETGID` to start the child
+   as another user (a file capability on the binary, or a start as root
+   and a partial drop), and `ingest` then holds these capabilities while
+   it runs; the TLS files must be readable by the child user and not by
+   others; the child code in `crates/ingest/src/child.rs` changes, and the
+   tests and `image-check` change with it. Option 2 alone does not close
+   the environment of PID 1 against a fault in `ingest`; with option 1 it
+   closes both paths.
+3. **Keep the accepted risk.** No change. The exposure of `STACK.md` §15
+   stays until the owner decides.
+- **What `image-check` proves.** Under Docker without an init it shows the
+  image, the entrypoint, the release build, the empty environment of the
+  child, the descriptors, the shutdown order after SIGTERM to `ingest`, and
+  the reaping by `ingest` of its child. It does not show the process tree
+  of Railway, the signal forward of the init, the environment of the
+  init, or the reaping of orphans by the init.
+- **What does not change.** The gate, the pipeline, the shutdown sequence,
+  the file modes, the user 10001, and the listeners. Observed listeners:
+  `0.0.0.0:4443` (gate), `0.0.0.0:8080` (`/health`), `127.0.0.1:4444`
+  (`fleet-telemetry`), `127.0.0.1:5284` (ZMQ), `127.0.0.1:9090`
+  (metrics).
 
 ## Key alternatives
 
@@ -1081,6 +1221,8 @@ the files agree; the CI job `image-check` checks the running container
   connectivity gaps show it. See "Reassessment".
 - The vehicle config does not change in this phase.
 - `ingest` must handle PID 1 duties: signal handlers and reaping its child.
+  On Railway the init does the PID 1 duties (section "Process tree on
+  Railway"); `ingest` still installs its handlers and reaps its own child.
 
 ## Cost of reversal
 
@@ -1226,10 +1368,39 @@ binary succeeds for about two minutes (no `shortfall_read_failed`, no
 child exits the reader ends its socket, connects to the new child,
 settles, and the gate opens again; and Linux checks 2 (without a stored
 `stopped` event), 3, and 6 below. Each point still needs its evidence on
-Railway.
+Railway. `image-check` runs under Docker without an init, where `ingest`
+is PID 1; on Railway `ingest` is PID 2 under an init (section "Process
+tree on Railway").
+
+Status after the release of 27 November 2026 (release record on PR #23;
+lead observation). "Pending" names what the point still needs.
+
+| Point | Status | Evidence or what it needs |
+| ----- | ------ | ------------------------- |
+| Railway runs the image `CMD` through the entrypoint | Closed, with a correction | Railway runs `CMD` under its init: PID 1 `/run/podman-init -- /entrypoint.sh` (UID 10001), PID 2 `/usr/local/bin/ingest run` (UID 10001), `fleet-telemetry` a child of PID 2. `ingest` is not PID 1, and the init keeps every service variable where UID 10001 can read it (section "Process tree on Railway"). |
+| Healthcheck on `PORT` without an HTTP domain | Closed (first half) | The healthcheck on `/health` passed; deployment `SUCCESS` about 2 minutes after the merge. The old deployment kept on a failed healthcheck: documented, not observed. |
+| Pre-deploy command runs `ingest migrate` with the service variables | Closed (first half) | `migrated` with `applied` 1 and `embedded` 1 in the pre-deploy step. A failure that stops the deployment: documented, not observed. |
+| Settle time of 250 ms | Pending | Needs the first vehicle connection of a start without a `zmq_shortfall` event. |
+| SUB socket defences: `V`, `alerts`, `errors` go to `zmq` | Closed | The configuration in the container sends `V`, `alerts`, `errors`, and `connectivity` each to `["zmq"]`. |
+| SUB socket defences: the other three points | Pending | Child exits on Railway (vehicle awake), and one week for the stall rule and the high water mark. |
+| Client address through the TCP proxy | Closed | `peer_class` `shared` on the first gate connections: the container sees an address of the shared range (100.64.0.0/10), not the client address. A per-source limit is not possible. |
+| Gate rule 1 | Pending (one week) | `first_byte_ms` 0 to 5 on the first gate connections; the maximum over the first week is still to record. |
+| Quiet connection of 30 minutes | Pending | Needs AC charging or another awake, quiet period. |
+| Dead-peer bound | Pending | Kernel `6.12.12+bpo-cloud-amd64`, `tcp_retries2` 15 (as assumed). The idle and unacknowledged-data cases and the proxy behaviour are still to test. |
+| Open-file limit and memory at the bound | Partly closed | Limit 1048576 soft and hard. Memory at 1024 connections: optional, not measured. |
+| `dispatch_total` on the real binary | Pending | The child has dispatched records; the metrics read of the runbook is still to record. |
+| No `test_overrides` line | Closed | No `test_overrides`, `task_stop_timeout`, or `gate_connections_open` line in the log of the new deployment. |
+| Linux check 1 | Closed | Green `ci` and `image-check` of the merged head (`3ec0d14`, run 45941109755). |
+| Linux check 2 (shutdown on a redeploy) | Pending (redeploy) | Also shows whether the init forwards SIGTERM to `ingest`. |
+| Linux check 3 (no zombie after child exits) | Partly closed | No zombie at the release; the three child exits on Railway are still to do. |
+| Linux check 4 (forced end) | Pending | Now possible on purpose: SIGKILL of PID 2 from a `railway ssh` session; it loses the queue since the last flush. Not tested: whether the session (UID 0, which cannot read the environment of UID 10001) may signal a process of UID 10001. |
+| Linux check 5 (socket options) | Partly closed | The TLS probe connection had `socket_options` `set`, `keepalive` `15/15/9`, `nodelay` `true`; the vehicle connections and the idle dead-peer case are still to record. |
+| Linux check 6 (child environment and descriptors) | Closed by CI only | `railway ssh` runs as UID 0 and gets "Permission denied" on `/proc/<pid>/environ` of UID 10001. The evidence is `image-check` under Docker (empty child environment, no listener of `ingest` in the child). The empty environment of the child does not keep the service variables from it on Railway: the child can read `/proc/1/environ` of the init (section "Process tree on Railway"). |
+| `unknown_fields` false positives, Neon compute | Pending (one week) | |
 
 - Railway runs the image `CMD` (through `ingest/entrypoint.sh` and `exec`)
-  so that `ingest` is PID 1 in the container.
+  so that `ingest` is PID 1 in the container. Answered at the release: on
+  Railway `ingest` is PID 2 under an init (status table above).
 - Railway runs the healthcheck on `PORT` for a service that has only a TCP
   proxy and no HTTP domain, and keeps the old deployment when the
   healthcheck fails.
@@ -1308,21 +1479,25 @@ Railway.
      linux/amd64. Update (issue #20): the CI workflow runs this suite on
      linux/amd64 for each PR, without the tests that need a database. The
      deployment PR links the green run of its head (`STACK.md` §13).
-  2. `ingest` is PID 1. On a redeploy, the log of the old deployment shows
+  2. `ingest` is PID 1 (on Railway: PID 2 under the init, which forwards
+     SIGTERM to it). On a redeploy, the log of the old deployment shows
      `shutdown_started` with reason `SIGTERM`, `gate_stopped`,
      `child_killed` with `exit_signal` 9, the `stopped` event, and
      `shutdown_complete` within `drainingSeconds`, and no
      `task_stop_timeout` and no `gate_connections_open` (PR #24).
   3. After at least three child exits and restarts, the process table of
      the container has no zombie (`ps` state `Z`).
-  4. After a forced end of PID 1 (a watchdog exit or SIGKILL of `ingest`),
+  4. After a forced end of `ingest` (a watchdog exit or SIGKILL of `ingest`),
      the container ends, Railway restarts it, a new `started` event
      follows, and no `fleet-telemetry` process survives without `ingest`.
      Update (issue #14): a process inside the container cannot end PID 1
      on purpose (the kernel ignores a signal to PID 1 from its own PID
      namespace when PID 1 has no handler for it [K]), and Railway has no
      command for a SIGKILL. The check waits for the first natural watchdog
-     exit or crash.
+     exit or crash. Update (release of 27 November 2026): on Railway
+     `ingest` is PID 2, so a `railway ssh` session can send it SIGKILL
+     (if the session may signal it; not tested); the init then exits and the container ends [P2] (section
+     "Process tree on Railway").
   5. Every `gate_connection_closed` event of a normal connection has
      `socket_options` `set`, `keepalive` `15/15/9` (read back from the
      socket), and `nodelay` `true` (none has `failed`), and the idle
@@ -1375,6 +1550,8 @@ Railway.
 - [L] Linux kernel at tag `v6.12`: `net/ipv4/tcp_timer.c` (no keep-alive probe while data is unacknowledged) and `Documentation/networking/ip-sysctl.rst` (`tcp_retries2`, default 15, about 924.6 s as a lower bound): <https://github.com/torvalds/linux/tree/v6.12>. The container's kernel version is a deployment check.
 - [G] Go 1.19 release notes: programs that import `os` raise the `RLIMIT_NOFILE` soft limit to the hard limit: <https://go.dev/doc/go1.19>. Go TLS, HTTP server, and TCP keep-alive source at tag `go1.27.4` (upstream builds with Go 1.27): <https://github.com/golang/go/tree/go1.27.4/src>
 - [K] Linux `pid_namespaces(7)`: <https://man7.org/linux/man-pages/man7/pid_namespaces.7.html>
+- [P1] Podman, option `--init`: "Run an init inside the container that forwards signals and reaps processes. The container-init binary is mounted at `/run/podman-init`." <https://github.com/containers/podman/blob/main/docs/source/markdown/options/init.md>, read 27 November 2026
+- [P2] catatonit, `catatonit.c` (main branch, read 27 November 2026): the signal loop forwards every signal but `SIGCHLD`, `SIGTSTP`, `SIGTTOU`, and `SIGTTIN` to the started process; `reap_zombies` reaps all children and ends the loop with the exit code of the started process. <https://github.com/openSUSE/catatonit/blob/main/catatonit.c>
 - [N1] Neon plans: <https://neon.com/docs/introduction/plans>
 - [N2] Neon scale to zero: <https://neon.com/docs/introduction/scale-to-zero>
 - [N3] Neon computes, "Compute is not suspending": <https://neon.com/docs/manage/computes>

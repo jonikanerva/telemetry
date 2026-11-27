@@ -669,7 +669,7 @@ the build".
 the running service does not execute the package tools.
 
 Loaded by the running server process and by `ingest` (14 groups). Since
-issue #14, `ingest` (Rust, PID 1) runs in the same image. Premise
+issue #14, `ingest` (Rust; PID 1 under Docker, PID 2 under the init of Railway) runs in the same image. Premise
 (checked): it links only glibc (`libc.so.6`, `libm.so.6`, the ELF
 interpreter) and `libgcc_s.so.1` (gcc-14), the packages of this table;
 the C code of `aws-lc-sys` is linked statically. This is the expected
