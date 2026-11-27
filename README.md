@@ -98,7 +98,6 @@ vehicle ──TCP──▶ gate (ingest, port 4443) ──▶ fleet-telemetry (1
 | `.sqlx/`                       | Query metadata of the SQLx macros                              |
 | `scripts/sqlx-metadata.sh`     | Checks or writes `.sqlx/` against a test database              |
 | `scripts/image-check.sh`       | Builds the image and checks the container (CI job `image-check`) |
-| `scripts/vuln-premise-test.sh` | Mutation test of the premise checks of `mise run vuln`         |
 | `Cargo.toml`, `Cargo.lock`     | Rust workspace, lints, and locked dependencies                 |
 | `rust-toolchain.toml`          | Rust toolchain version                                         |
 | `mise.toml`                    | Tool pins and the project commands                             |

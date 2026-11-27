@@ -61,8 +61,9 @@ lists for the static C libraries (see "Static C libraries").
 2. Accept the residual risk: the internet-facing binary carries outdated
    Go modules and static C libraries. The protection depends on mTLS, on
    the dispatcher configuration, and on the loopback listeners. A holder
-   of a valid Tesla vehicle certificate passes mTLS. `mise run vuln` now
-   fails when the configuration breaks one of these premises.
+   of a valid Tesla vehicle certificate passes mTLS. A check fails when
+   the configuration breaks one of these facts ("Ignore files and
+   deployment facts").
 3. Know the consequence of the merge: Railway rebuilds and redeploys the
    ingest service, and the vehicle reconnects after a short disconnect.
 
@@ -142,50 +143,19 @@ Limitations:
 
 ## Deployment facts
 
-Each decision relies on these facts. `mise run vuln` checks the
-configuration facts (marked "checked") before it scans, and fails when
-one breaks.
+Each decision relies on these facts. Each fact marked "checked" has a
+check ("Ignore files and deployment facts").
 
 1. **Image composition (checked).** The production Dockerfile
    (`ingest/Dockerfile` since issue #14) copies only one file from the
    upstream image:
-   `COPY --from=upstream /fleet-telemetry /fleet-telemetry`. The check is
-   a strict allowlist, not a Dockerfile parser: all bytes must be printable
-   ASCII, tab, or newline; no parser directive (`# name=value`) is
-   allowed; and after removal of empty lines and of lines that start with
-   `#`, the lines must equal the expected lines of this project exactly.
-   Only the three image tags may change (`[A-Za-z0-9._-]+`). The expected
-   lines contain exactly three `FROM` lines (the Rust builder `AS build`,
-   the upstream image `AS upstream`, then `debian`), one
-   `COPY --from=upstream /fleet-telemetry /fleet-telemetry`, one
-   `COPY --from=build` of the `ingest` binary only, the copy of
-   `ingest/server_config.json` to `/etc/fleet-telemetry/config.json`, and
-   `ENV INGEST_CHILD_CONFIG=/etc/fleet-telemetry/config.json`. The builder
-   tag must be the channel of `rust-toolchain.toml` with `-slim-` and the
-   Debian codename of the final stage. Any other form fails, also a
-   continuation inside a token, a Unicode space, a quote or an escape
-   character in a flag, or a trailing space after a continuation
-   backslash; the message says that the allowlist must change together
-   with the Dockerfile. The task scans the two runtime images (upstream
-   and `debian`) and fails when it did not scan two images; the builder
-   image is not scanned (`STACK.md` §13). The server reads the config
-   that the Dockerfile copies: `ingest/entrypoint.sh` is checked against a
-   strict allowlist like the Dockerfile (first line `#!/bin/sh`; after
-   removal of empty lines and `#` lines, the lines must equal the expected
-   lines; printable ASCII only), so it writes the TLS files, unsets the
-   TLS variables and `MIGRATION_DATABASE_URL`, and starts
-   `exec setpriv --reuid 10001 --regid 10001 --clear-groups
-   --inh-caps=-all --bounding-set=-all --no-new-privs
-   /usr/local/bin/ingest run` and nothing else (issue #29: the image has
-   no `USER` line and starts as root; `setpriv` starts `ingest` as user
-   10001 without capabilities); `ingest` starts the
-   server with `-config` and `INGEST_CHILD_CONFIG`
+   `COPY --from=upstream /fleet-telemetry /fleet-telemetry`. The
+   server reads the config that the Dockerfile copies: `ingest` starts
+   the server with `-config` and `INGEST_CHILD_CONFIG`
    (`crates/ingest/src/child.rs`). Limit: a Railway service variable
    `INGEST_CHILD_CONFIG` would replace the image value; the release steps
    forbid any `INGEST_` service variable (`docs/ingest-release.md`).
-   `scripts/vuln-premise-test.sh` proves with 55 changed inputs that the
-   premise checks fail. The upstream
-   layer of the binary contains only `fleet-telemetry`. The Debian 12
+   The upstream layer of the binary contains only `fleet-telemetry`. The Debian 12
    files of the upstream image (`gcr.io/distroless/cc-debian12` base,
    upstream [`Dockerfile#L31-L33`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/Dockerfile#L31-L33))
    are not in the production image.
@@ -227,10 +197,10 @@ one breaks.
    `google.golang.org/grpc`, `golang.org/x/text`, or `golang.org/x/sys`
    directly (search of all non-test `.go` files at the tag).
 5. **Dispatchers (checked).** `ingest/server_config.json` routes all
-   record types to `zmq` (issue #14; before, `logger`). The `vuln` task
-   allows only these two, and it requires `zmq.addr` of the form
-   `tcp://127.0.0.1:<port>` with lowercase keys in the `zmq` object, so
-   that libzmq listens on the loopback interface only. `ConfigureProducers` creates a producer
+   record types to `zmq` (issue #14; before, `logger`). The deployment
+   test allows only `zmq` and requires `zmq.addr`
+   `tcp://127.0.0.1:5284`, so that libzmq listens on the loopback
+   interface only. `ConfigureProducers` creates a producer
    only for a dispatcher that a record type names: Kafka
    [`#L386-L396`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L386-L396),
    Pub/Sub [`#L398-L407`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L398-L407),
@@ -273,15 +243,12 @@ one breaks.
    key decodes again into the same field, so a repeated object merges
    into the first one. The decoder reads only the first JSON value of the
    file. jq is case sensitive, keeps only the last of two equal keys, and
-   reads every value. The `vuln` task therefore requires:
-   - lowercase keys (`^[a-z0-9_]+$`) in the root, `monitoring`, and `tls`
-     objects (the record type names inside `records` are data and keep
-     their case);
-   - exactly one JSON value in the file (`jq -s 'length == 1'`);
-   - the same sorted list of leaf paths in the token stream
-     (`jq --stream`) and in the parsed value. A repeated key of any kind,
-     also a repeated object, adds leaf paths to the stream that the parsed
-     value does not have, so it breaks this rule.
+   reads every value. The deployment test reads the file with
+   `serde_json`, which keeps the last repeated key. The `vuln` task
+   therefore requires one JSON value, no repeated key (the leaf paths of
+   the `jq --stream` token stream equal those of the parsed value), and
+   lowercase keys (`^[a-z0-9_]+$`) outside the record type names in
+   `records`.
 
 ## Decision classes
 
@@ -291,7 +258,7 @@ one breaks.
   call of a vulnerable symbol.
 - **D (not affected while the premise holds):** vulnerable symbols are
   reachable only through a dispatcher that this deployment does not
-  configure (fact 5). The `vuln` task fails when the premise breaks.
+  configure (fact 5). A check fails when the premise breaks.
 - **C (not affected):** the code is called, but the vulnerable condition
   does not occur, with evidence from the source.
 - **F (false positive):** the advisory does not apply to the deployed
@@ -534,7 +501,7 @@ mechanism, the subscription handling, and the message framing for each
 peer that connects. Input: only peers on the loopback interface of the
 container. Two processes run there: `ingest`, whose SUB socket (the
 `zeromq` crate) is the only peer, and `fleet-telemetry` itself. The
-`vuln` premise requires the literal address `127.0.0.1`, so no other host
+deployment test requires the literal address `127.0.0.1`, so no other host
 can connect. CURVE is off (no `server_key_json_path`), so the tweetnacl
 copy does not run. The transport is `tcp://`, not `ws://`, so the SHA-1
 copy of the WebSocket transport does not run. The OSV query for the
@@ -554,7 +521,7 @@ the real binary, and that it reconnects after each child exit.
 
 Who can be a peer: only a process inside the container, through the
 loopback interface. Railway exposes only the TCP proxy to port 4443, and
-the `vuln` premise requires `zmq.addr` on the literal address
+the deployment test requires `zmq.addr` on the literal address
 `127.0.0.1`. The container runs two processes, `ingest` and
 `fleet-telemetry`, both as user 10001 without capabilities, and no shell
 or other program stays running. Since issue #29 the container starts as
@@ -593,8 +560,8 @@ runs without the `kafka` dispatcher:
   ([`config/config.go#L386-L396`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L386-L396)).
 - libzmq does not use OpenSSL: the binary has no GnuTLS symbol and no
   libzmq TLS transport; libzmq uses its tweetnacl copy for CURVE.
-- The `vuln` task fails when a record type names a dispatcher other than
-  `logger` or `zmq`, also through a repeated `records` object.
+- The deployment test fails when a record type names a dispatcher other
+  than `zmq`. `vuln` fails on a repeated `records` object (fact 8).
 
 The start code takes no network input, so the decision for OpenSSL and
 libcurl stays class D: the network-facing code of these components is
@@ -619,8 +586,8 @@ commit, not a scanner result):
 An empty OSV answer does not prove that no vulnerability exists. The 119
 CVE IDs of these records are not in the CISA KEV catalog 2026.11.25. The
 OpenSSL and curl records are not compared one by one, because the code is
-not reachable in this deployment; the `kafka` premise of the `vuln` task
-guards this decision. Compare them before any change enables the `kafka`
+not reachable in this deployment; the dispatcher check of the deployment
+test guards this decision. Compare them before any change enables the `kafka`
 dispatcher.
 
 STACK.md §13 records this surface as a gap without a scanner.
@@ -636,9 +603,7 @@ Decision: **not in the production image.** Evidence: the production
 (fact 1). The production base is Debian 13, and its packages are triaged
 below. One `PackageOverrides` entry with `ecosystem = "Debian:12"`
 ignores these advisories in the upstream image scan only. The `vuln` task
-fails when the Dockerfile differs from its allowlist, which allows only
-the copy of `/fleet-telemetry` from the upstream image and a final stage
-from `debian`.
+fails when the Dockerfile copies another file between stages.
 
 ## Debian 13 base
 
@@ -704,8 +669,8 @@ DEBIAN-CVE-2026-3184 is in `login -h`; -76642, -78409, and -78410 are
 in `mount` and its `X-mount.*` options (libmount); -78408 is in
 `nsenter --join-cgroup`. `setpriv` does not load libmount and does not
 run these programs. Decision: **accepted**, with the reason "not
-affected". The entrypoint allowlist of `vuln` fixes the three programs:
-a change of the entrypoint fails `vuln` and repeats this split.
+affected". `vuln` pins the git blob ID of the entrypoint: a change of
+the file fails `vuln` and repeats this split.
 
 | Source package | Groups (max score) |
 | -------------- | ------------------ |
@@ -750,7 +715,7 @@ Reassessment rule:
 - When the Rust ingest process joins the image (ADR 0001), repeat the
   split above for the libraries that it loads.
 
-## Ignore files and premises
+## Ignore files and deployment facts
 
 - `docs/security/osv-scanner-tesla-fleet-telemetry.toml`: 33 entries
   (one for each Go group; osv-scanner also ignores the aliases) and the
@@ -759,40 +724,29 @@ Reassessment rule:
   gating Debian 13 group. Expiry 2027-01-25.
 - The `vuln` task selects the file from the image repository name:
   `osv-scanner-<repository, / replaced by ->.toml`. An image without a
-  file fails the task.
-- Before the scans, the `vuln` task checks these premises and fails when
-  one breaks. `ingest/Dockerfile` (fact 1): a strict allowlist of the
-  expected lines; only the three image tags may change; the builder tag
-  follows `rust-toolchain.toml` and the Debian release of the final
-  stage; printable ASCII only; no parser directive. After the scans, the
-  task fails when it did not scan the two runtime images.
-  `ingest/entrypoint.sh`: a strict allowlist of the expected lines (first
-  line `#!/bin/sh`, printable ASCII only). `ingest/server_config.json`
-  (fact 8): exactly one
-  JSON value; the same leaf paths in the token stream and in the parsed
-  value, so no repeated key of any kind; lowercase keys
-  (`^[a-z0-9_]+$`) in the root, `monitoring`, `tls`, and `zmq` objects;
-  `zmq.addr` of the form `tcp://127.0.0.1:<port>`; all
-  dispatchers in `records` are `logger` or `zmq`; `use_default_eng_ca` is not true;
-  `tls.ca_file` is empty; `status_port` and `monitoring.profiler_port`
-  are not set; `monitoring.prometheus_metrics_host` is unset or
-  `127.0.0.1`.
-- `scripts/vuln-premise-test.sh` (in the `checks` task) runs the premise
-  part of the task on 55 changed inputs and fails when a change passes.
-  Examples: a `USER root` or `USER 10001:10001` line, an extra `COPY . .`, a builder tag of another
-  Rust version or Debian release, a parser directive, `ENTRYPOINT` in
-  place of `CMD`, an entrypoint that starts the server itself (also
-  through `PATH`, a name built from parts, or a sourced file, the bypasses
-  of the earlier denylist found in review round 1 of PR #23), an `exec`
-  in a block that never runs, `set -eux`, a kept migrator URL, each
-  changed or missing argument of the `setpriv` line, a missing or changed
-  `chown` of the TLS files, an `unset` after the first program, a missing
-  `rm -f` or noclobber, and `zmq.addr` values `tcp://0.0.0.0:5284`, `tcp://*:5284`,
-  `tcp://localhost:5284`, `tcp://[::]:5284`, a key `Addr`, and a
-  repeated `zmq` object.
+  file fails the task. The task fails when it did not scan exactly two
+  runtime images (each `FROM` stage except `build`).
 - After an expiry date, an entry stops to apply, and `vuln` fails on the
   finding again. An unused entry gives a warning only. Remove unused
   entries in the next triage.
+
+The checks of the deployment facts (`deployment.rs` is
+`crates/ingest/tests/deployment.rs`, in `mise run test` and the CI job
+`ci`):
+
+| Fact | Check |
+| ---- | ----- |
+| 1: only `/fleet-telemetry` from the upstream image | `vuln`: the stage copies of `ingest/Dockerfile` |
+| 1: the server reads the copied config | `deployment.rs`, `the_image_copies_the_files_to_the_paths_of_the_settings` |
+| 3: no extra client CA | `vuln`: `jq` check of `ingest/server_config.json` |
+| 5: dispatchers `zmq` only, no `kafka` | `deployment.rs`, `the_server_configuration_keeps_records_out_of_the_log` |
+| 5: `zmq.addr` on `127.0.0.1` | `deployment.rs`, `the_server_configuration_uses_the_ports_of_the_image` |
+| 6: metrics on loopback | `deployment.rs`, `the_server_configuration_uses_the_ports_of_the_image`; `image-check` |
+| 6: no status port, no profiler | `vuln`: `jq` check |
+| 8: one JSON value, no repeated key, lowercase keys | `vuln`: `jq` check |
+| Entrypoint runs only `rm`, `chown`, `setpriv` as root | `vuln`: git blob ID pin of `ingest/entrypoint.sh` |
+| No `USER` line; `ingest` as user 10001 | `deployment.rs`, `the_image_copies_the_files_to_the_paths_of_the_settings`; `image-check` |
+| `ingest` loads only glibc and `libgcc_s` | `image-check` (`ldd`) |
 
 ## `vuln` and `verify`
 
@@ -816,8 +770,7 @@ required check and does not join `verify`. Evidence:
   dependency, but the 56 locked crates get new advisories much less
   often.
 
-`vuln` stays mandatory at the points of DOCTRINE.md P7: before each
-delivery task and in each dependency PR. Reassess when a scheduled CI run
+`vuln` stays mandatory at the points of DOCTRINE.md P7. Reassess when a scheduled CI run
 can execute `vuln` and report new findings outside the merge path, or when
 the gating advisory rate falls below one each month over 60 days.
 
@@ -826,7 +779,7 @@ the gating advisory rate falls below one each month over 60 days.
 - An expiry date passes (`vuln` fails).
 - A new `tesla/fleet-telemetry` release or another base image: repeat the
   Go triage in the dependency PR.
-- A configuration premise breaks (`vuln` fails).
+- A deployment fact breaks (`vuln` or the deployment test fails).
 - An ignored CVE appears in the CISA KEV catalog: the fix becomes due
   (DOCTRINE.md P7). Compare the CVE IDs with the catalog at each
   vulnerability check; `vuln` does not read the catalog.
@@ -855,8 +808,3 @@ the gating advisory rate falls below one each month over 60 days.
    in "Static C libraries". Versions in the binary: search the binary for
    the version strings, and read `ZSTD_versionNumber`,
    `LZ4_versionNumber`, and `zmq_version` with `go tool objdump`.
-6. Config premises: `scripts/vuln-premise-test.sh` runs the premise part
-   of the `vuln` task (the lines before `cargo deny`) in a scratch
-   directory for each variant of `ingest/Dockerfile`,
-   `ingest/entrypoint.sh`, `ingest/server_config.json`, and
-   `rust-toolchain.toml`. Expected: "56 of 56 cases as expected".
