@@ -232,13 +232,29 @@ Use short sentences, active voice, and consistent domain terms. Follow
 ASD-STE100 writing principles for English prose; technical vocabulary remains
 the domain's vocabulary. Comments explain non-obvious reasons, constraints,
 or behaviour that the code cannot communicate. Keep relevant explanations
-near the code. Keep historical narration and lengthy alternatives in records.
+near the code.
+
+Documents other than ADRs, and code comments, state the current state and,
+where it is not obvious, its reason, not how the state came about: no merged PR, closed
+issue, or review; no earlier state; no date of a change, decision, reading,
+or observation; no reviewer or approver. A future date, a current pin, the
+open issue of a known gap, a reassessment condition, and the date of a
+measurement or data snapshot that a current decision rests on are current
+state.
+`VISION.md` has no decision labels. `STACK.md` gives reasons of at most a
+clause.
 
 Keep backlog and change history in GitHub issues, commits, PRs, and reviews.
-Do not create roadmap, backlog, ledger, or changelog files. Record only
-significant durable decisions in `docs/adr/`. Each short ADR states status,
-context, decision, key alternatives, consequences, cost of reversal, and a
-reassessment condition. Mark superseded decisions and retain their rationale.
+Do not create roadmap, backlog, ledger, or changelog files. Only ADRs in
+`docs/adr/` record dates, context, deciders, and rejected alternatives; they
+do not narrate review rounds or how a fact was found. A significant durable
+decision gets a short ADR: an owner decision, an accepted risk, a grant of
+authority to the lead, an architecture choice, or a scoped exception. Each
+ADR states status, context, decision, key alternatives, consequences, cost
+of reversal, and a reassessment condition. `STACK.md` cites that ADR, and
+cited text changes only through a change of the ADR. A routine choice, such
+as a version pin or a CI detail, needs no ADR; its commit message holds the
+reason. Mark superseded decisions and retain their rationale.
 Search ADR titles and read relevant records as needed, including known fixes.
 Do not load the whole decision history for every task.
 
@@ -335,9 +351,12 @@ evidence. Preserve the intended quality outcome. An implementer, including a
 lead who wrote the change, MUST NOT approve its own weakening of criteria or
 checks.
 
-Record a proposed exception in `STACK.md` or the existing PR: scope, reason,
+Record a proposed exception in the existing PR: scope, reason,
 consequences, compensating controls or evidence, responsible lead, approving
-independent reviewer, and expiry or reassessment condition. The lead may
+independent reviewer, and expiry or reassessment condition. An approved
+exception that outlasts the PR gets an ADR with the same content. `STACK.md`
+states the scope, the compensating evidence, and the expiry of the exception,
+and cites the ADR. The lead may
 proceed with independent approval only within delegated authority and with
 adequate evidence for safe acceptance. A failed or missing mandatory check is
 not waived by a narrative justification alone. Escalate a material unresolved

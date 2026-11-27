@@ -4,7 +4,7 @@ This runbook is for the lead. It releases the image of ADR 0001
 (`ingest/Dockerfile`) to the Railway service `telemetry`, checks the
 release, and recovers from a failed release. STACK.md section 15 holds the
 Railway settings and the release rules. ADR 0001, "To verify at first
-deployment", holds the checks that the first release must answer.
+deployment", holds the deployment checks and their status.
 
 Rules:
 
@@ -57,15 +57,12 @@ Rules:
      "Deploy" without Alt.
    - Through the Railway API without staging, for example the tool
      `update-service` of the Railway MCP server; its answer says "Config
-     changes apply on the service's next deployment". The release of
-     27 November 2026 used this way: no deployment started.
+     changes apply on the service's next deployment". This way starts no
+     deployment.
 5. Check that nothing was deployed: the deployment list shows no new
    deployment, and the old deployment is still active. Check that the
-   vehicle is still connected while it is awake. Before the first release
-   (the image before ADR 0001), the old image logged each record, so
-   `railway logs --since 5m --lines 500 | wc -l` gave a count above 0
-   (count only; the lines held the VIN and the location). With the image
-   of ADR 0001, no record reaches the log; while the vehicle is awake,
+   vehicle is still connected while it is awake. No record reaches the
+   log; while the vehicle is awake,
    `railway logs --since 20m --filter "flushed"` shows a `flushed` line
    with `records` above 0 at least every 15 minutes. No such line while
    the vehicle is asleep is expected; check again when it is awake. Read the settings back in the dashboard, and the variable names
@@ -82,28 +79,25 @@ build log of the merge shows the result: it must build
 `ingest/Dockerfile` (section 2).
 
 If a deployment of the current `main` starts by mistake (for example
-"Deploy" without Alt), it cannot replace the active deployment. A
-deployment becomes active only after its healthcheck passes: "Only then
+"Deploy" without Alt), record the result. Assumption: such a deployment
+uses the new values with the image of the current `main`. If that image
+works with the new values, the deployment passes both gates and replaces
+the active deployment, and the vehicle reconnects. If it does not, the
+deployment stops, and the old deployment stays active. A deployment
+becomes active only after its pre-deploy command and its
+healthcheck pass. "If your command fails, it will not be retried and the
+deployment will not proceed"
+(<https://docs.railway.com/deployments/pre-deploy-command>). "Only then
 will the new deployment be made active and the previous deployment
 inactive" (<https://docs.railway.com/deployments/healthchecks>), and the
 old deployment gets SIGTERM only "once the new deployment is active"
-(<https://docs.railway.com/deployments/deployment-teardown>). Each of
-three steps of that deployment fails: the build (`main` has no
-`ingest/Dockerfile`), the pre-deploy command (the old image has no
-`/usr/local/bin/ingest`; "If your command fails, it will not be retried
-and the deployment will not proceed",
-<https://docs.railway.com/deployments/pre-deploy-command>), and the
-healthcheck (the old image has no `/health` on `PORT`). If Railway
-gives the pre-deploy command to the old `ENTRYPOINT` as arguments, the
-old entrypoint starts the old server and the pre-deploy step does not
-end; cancel the deployment, or the pre-deploy timeout ends it. In all
-cases the old deployment stays active and keeps the vehicle connection.
-Record the result.
+(<https://docs.railway.com/deployments/deployment-teardown>).
 
 What Railway builds at each step: steps 2 to 5 build nothing. The merge
-builds the merge commit with `ingest/Dockerfile`. A merge before step 3
-builds the Rust workspace with the Railway builder (Railpack), because the
-root has no `Dockerfile` and has a `Cargo.toml`. That build does not run
+builds the merge commit with `ingest/Dockerfile`. Without the Dockerfile
+path setting of step 4, a merge builds the Rust workspace with the Railway
+builder (Railpack), because the root has no `Dockerfile` and has a
+`Cargo.toml`. That build does not run
 the image of ADR 0001. Without the pre-deploy command and the healthcheck of
 step 4, nothing stops it from going live. So never merge before step 5
 has passed.
@@ -116,13 +110,13 @@ Railway builds the image. Watch the deployment:
 | Phase | Command | Expected |
 | ----- | ------- | -------- |
 | Build | `railway logs --build <deployment id>` | The `apt-get upgrade` step runs (not `CACHED`) and lists the installed versions. `cargo build --release --locked -p ingest` ends with `Finished`. |
-| Pre-deploy | `railway logs <deployment id> --filter "migrated OR migrate_failed"` | One line `migrated` with `applied` 1 and `embedded` 1 on the first release. |
+| Pre-deploy | `railway logs <deployment id> --filter "migrated OR migrate_failed"` | One line `migrated`: `applied` counts the migrations of this run, and `embedded` the migrations of the binary. |
 | Healthcheck | Railway deployment view | The healthcheck on `/health` passes; the status is `SUCCESS`. |
 | Start | `railway logs <deployment id> --filter "started OR gate_opened OR subscriber_settled OR database_check_passed"` | `subscriber_settled`, `database_check_passed`, and an `ingest_event` `gate_opened` within a few seconds. |
 
 If the healthcheck fails, Railway keeps the old deployment.
 
-A start that fails closed (issue #29): the container starts as root, and
+A start that fails closed: the container starts as root, and
 `ingest/entrypoint.sh` stops at the first failed command. If the write or
 the `chown` of the TLS files fails, or if `setpriv` cannot drop to user
 10001, the container stops before `ingest` starts. `/health` then never
@@ -157,19 +151,15 @@ deploy log, fix the cause in a new PR, and merge again.
 
 Record each result in the PR. A check that cannot run yet is "pending"
 with its reason. Section 3.1 runs at once; section 3.2 needs the vehicle
-awake; section 3.3 runs after one week. The first release (27 November
-2026) has its record on PR #23. The release of PR #30 on the same day
-(deployment `dcda346d-1934-4054-a25b-5a32cc286c6d`) recorded the checks
-of issue #29 and Linux check 2. ADR 0001, "To verify at first
+awake; section 3.3 runs after one week. ADR 0001, "To verify at first
 deployment", has the status of each point.
 
-Notes on `railway ssh` (observed at the first release):
+Notes on `railway ssh`:
 
 - On Railway, PID 1 is an init that Railway adds
   (`/run/podman-init -- /entrypoint.sh`), and `ingest` is PID 2 (ADR 0001,
-  "Process tree on Railway"). Since issue #29 the init runs as root and
-  `ingest` as user 10001 (observed at the release of PR #30). Do
-  not read `/proc/1/...` for `ingest`; find its PID first:
+  "Process tree on Railway"). The init runs as root, and `ingest` runs
+  as user 10001. Do not read `/proc/1/...` for `ingest`; find its PID first:
   `railway ssh -- sh -c 'for d in /proc/[0-9]*; do case "$(tr "\0" " " < "$d/cmdline" 2>/dev/null)" in "/usr/local/bin/ingest run ") echo "${d#/proc/}";; esac; done'`.
   The commands below write `<ingest pid>` for that PID.
 - The session runs as UID 0, but it cannot read `/proc/<pid>/environ` of a
@@ -181,23 +171,23 @@ Notes on `railway ssh` (observed at the first release):
   (names only).
 - `railway ssh` uses the local SSH agent. It can ask the owner for other,
   unrelated keys of the agent. The owner checks the SSH keys of the
-  Railway account personally (owner decision of 27 November 2026).
+  Railway account personally.
 
 ### 3.1 At once
 
 | Check (ADR 0001) | Command | Expected |
 | ---------------- | ------- | -------- |
 | TLS on the public port | `openssl s_client -connect telemetry.calmdonut.com:57438 -CAfile <Origin CA ECC root> -verify_return_error < /dev/null` | `verify return:1` for the chain. The server can end with an alert, because it asks for a client certificate. |
-| Process tree through the image `CMD` | `railway ssh -- sh -c 'for p in /proc/[0-9]*; do printf "%s " "${p#/proc/}"; tr "\0" " " < "$p/cmdline"; echo; done'`, then `railway ssh -- grep -e ^Uid -e ^PPid /proc/<ingest pid>/status /proc/1/status` | PID 1 is the init of Railway (`/run/podman-init -- /entrypoint.sh`); `/usr/local/bin/ingest run` has `PPid` 1 and `Uid` 10001; `fleet-telemetry` has the PID of `ingest` as `PPid`. Record the `Uid` of PID 1. At the release of 27 November 2026 it was 10001: then every process of UID 10001, also the child, could read the full service environment in `/proc/1/environ` (ADR 0001, "Process tree on Railway"; STACK.md section 15, accepted risks). Since issue #29 it must be 0 (next row). |
-| Init as root (issue #29) | `railway ssh -- grep ^Uid /proc/1/status` | `Uid: 0 0 0 0`. Any other value means that the init of Railway does not follow the image: the environment of the init stays readable by UID 10001. Report it to the owner (STACK.md section 15, accepted risks). Result at the release of PR #30: `Uid: 0 0 0 0` for `/run/podman-init -- /entrypoint.sh`. |
-| UID 10001 cannot read the environment of the init (issue #29) | `railway ssh -- setpriv --reuid 10001 --regid 10001 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs sh -c 'cat /proc/<ingest pid>/environ > /dev/null 2>&1; echo "control=$?"; cat /proc/1/environ > /dev/null 2>&1; echo "init=$?"'` | `control=0`: the positive control, a process of UID 10001 reads the environment of `ingest`. `init=1`: the same process cannot read `/proc/1/environ`. The command prints exit codes only, never an environment. A probe with the same `setpriv` arguments gave exit code 0 in the production container on 27 November 2026. If `setpriv` fails in the session, record that; the CI job `image-check` (check 10) is then the evidence. Result at the release of PR #30: from UID 10001, the read of `/proc/self/environ` exited with 0 (the positive control of that run) and the read of `/proc/1/environ` with 1. |
-| Credentials of `ingest` and `fleet-telemetry` (issue #29) | `railway ssh -- grep -e ^Uid -e ^Gid -e ^Groups -e ^Cap -e ^NoNewPrivs /proc/<ingest pid>/status /proc/<child pid>/status` (the child PID: next row) | For both processes: `Uid` and `Gid` 10001 four times, `Groups` empty, `CapInh`, `CapPrm`, `CapEff`, `CapBnd`, and `CapAmb` all `0000000000000000`, and `NoNewPrivs` 1. Result at the release of PR #30: as expected for `ingest` (PID 2) and `fleet-telemetry` (PID 15). |
-| Shutdown of the old deployment (Linux check 2) | The release of a new image is a redeploy. Use the command of the row "Shutdown on a redeploy" in section 3.2 with the ID of the old deployment. | The expected result of that row. It also shows that the init of Railway forwards SIGTERM to `ingest`, which no longer runs as the user of the init. Result at the release of PR #30: the previous deployment logged `shutdown_started`, `gate_stopped`, `child_killed`, a final `flushed`, and `shutdown_complete` within 2 s, with no `task_stop_timeout`, `gate_connections_open`, or `flush_incomplete`. |
+| Process tree through the image `CMD` | `railway ssh -- sh -c 'for p in /proc/[0-9]*; do printf "%s " "${p#/proc/}"; tr "\0" " " < "$p/cmdline"; echo; done'`, then `railway ssh -- grep -e ^Uid -e ^PPid /proc/<ingest pid>/status /proc/1/status` | PID 1 is the init of Railway (`/run/podman-init -- /entrypoint.sh`); `/usr/local/bin/ingest run` has `PPid` 1 and `Uid` 10001; `fleet-telemetry` has the PID of `ingest` as `PPid`. Record the `Uid` of PID 1: it must be 0 (next row). |
+| Init as root | `railway ssh -- grep ^Uid /proc/1/status` | `Uid: 0 0 0 0`. Any other value means that the init of Railway does not follow the image: the environment of the init stays readable by UID 10001. Report it to the owner (STACK.md section 15, accepted risks). |
+| UID 10001 cannot read the environment of the init | `railway ssh -- setpriv --reuid 10001 --regid 10001 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs sh -c 'cat /proc/<ingest pid>/environ > /dev/null 2>&1; echo "control=$?"; cat /proc/1/environ > /dev/null 2>&1; echo "init=$?"'` | `control=0`: the positive control, a process of UID 10001 reads the environment of `ingest`. `init=1`: the same process cannot read `/proc/1/environ`. The command prints exit codes only, never an environment. `setpriv` with these arguments runs in the production container. If `setpriv` fails in the session, record that; the CI job `image-check` (check 10) is then the evidence. |
+| Credentials of `ingest` and `fleet-telemetry` | `railway ssh -- grep -e ^Uid -e ^Gid -e ^Groups -e ^Cap -e ^NoNewPrivs /proc/<ingest pid>/status /proc/<child pid>/status` (the child PID: next row) | For both processes: `Uid` and `Gid` 10001 four times, `Groups` empty, `CapInh`, `CapPrm`, `CapEff`, `CapBnd`, and `CapAmb` all `0000000000000000`, and `NoNewPrivs` 1. |
+| Shutdown of the old deployment (Linux check 2) | The release of a new image is a redeploy. Use the command of the row "Shutdown on a redeploy" in section 3.2 with the ID of the old deployment. | The expected result of that row. It also shows that the init of Railway forwards SIGTERM to `ingest`, which runs as another user than the init. |
 | Open-file limit | `railway ssh -- grep "open files" /proc/<ingest pid>/limits` | Soft limit equals hard limit. Both are at least 4096: 2048 descriptors for 1024 gate connections, plus the descriptors of the child and a margin. Record the values. |
 | Child environment and descriptors (Linux check 6) | The child PID: `railway ssh -- sh -c 'for d in /proc/[0-9]*; do case "$(tr "\0" " " < "$d/cmdline" 2>/dev/null)" in "/fleet-telemetry -config "*) echo "${d#/proc/}";; esac; done'`. Then `railway ssh -- sh -c 'grep PPid /proc/<pid>/status; ls -l /proc/<pid>/fd'` and `railway ssh -- cat /proc/net/tcp` | `PPid` is the PID of `ingest`. No `socket:[<inode>]` of the child is a listening socket (state `0A`) of `ingest`: the gate port 4443 (hex `115B`) or the `PORT` of STACK.md section 15 (in hex). If the session cannot read `/proc/<pid>/fd` ("Permission denied"), record that; the CI job `image-check` is then the evidence. The environments of the child (empty) and of `ingest` (`DATABASE_URL`, no `TLS_CERT`, `TLS_KEY`, or `MIGRATION_DATABASE_URL`) come from the CI job `image-check`, because the session cannot read them (notes above). |
-| TLS files | `railway ssh -- stat -c "%a %u %n" /etc/fleet-telemetry/tls /etc/fleet-telemetry/tls/tls.crt /etc/fleet-telemetry/tls/tls.key` | `700 10001`, `600 10001`, `600 10001`. Result at the release of PR #30: as expected, owner and group 10001:10001. |
+| TLS files | `railway ssh -- stat -c "%a %u %n" /etc/fleet-telemetry/tls /etc/fleet-telemetry/tls/tls.crt /etc/fleet-telemetry/tls/tls.key` | `700 10001`, `600 10001`, `600 10001`. |
 | Kernel values | `railway ssh -- sh -c 'uname -r; cat /proc/sys/net/ipv4/tcp_retries2; cat /proc/sys/kernel/yama/ptrace_scope'` | Record all three. ADR 0001 assumes `tcp_retries2` 15. `ptrace_scope` 1 or higher keeps the child from reading the memory of `ingest` (STACK.md section 15, accepted risks); a missing file means that Yama is off, so record it as 0. |
-| No record in the log | `railway logs --since 1h --filter "<the VIN>"` on the lead's computer | No line. Record only the count. Before this release, every record had a line. |
+| No record in the log | `railway logs --since 1h --filter "<the VIN>"` on the lead's computer | No line. Record only the count. |
 | `dispatch_total` on the real binary (ADR 0001) | After the first records: `railway ssh -- perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new("127.0.0.1:9090") or die; print $s "GET /metrics HTTP/1.0\r\n\r\n"; print grep { /^dispatch_total/ } <$s>'` | Lines `dispatch_total{record_type="V"}` and others. The program prints only these lines; the other metric `vin_signal_count` holds the VIN. `perl-base` is part of every Debian image. |
 | Linux check 1 | The PR | Links to the green `ci` and `image-check` runs of the merged head. |
 | Release build: no `test_overrides` line (ADR 0001, "Test overrides") | `railway logs <deployment id> --filter "test_overrides"` | No line. The CI job `image-check` also starts the image with two `INGEST_TEST_*` variables and fails on this line. |
@@ -228,8 +218,8 @@ Notes on `railway ssh` (observed at the first release):
 | False positives of the stall rule (ADR 0001, "SUB socket defences") | `SELECT occurred_at, reason FROM raw.ingest_event WHERE kind = 'gate_closed' AND reason = 'subscriber_stalled' ORDER BY occurred_at;` and `railway logs --since 7d --filter "subscriber_stalled OR subscriber_rebuilt OR zmq_shortfall"` | No row and no `subscriber_rebuilt` with the reason `stalled`. Record each one with the `zmq_shortfall` lines and counts around it. |
 | A loss at the high water mark is followed by the older queued records (ADR 0001, "SUB socket defences") | `SELECT occurred_at, dropped_count FROM raw.ingest_event WHERE kind = 'zmq_shortfall' ORDER BY occurred_at;` and the same log query | For each `zmq_shortfall` event, no `subscriber_stalled` line follows within 60 s: the socket stayed live after the loss. With no `zmq_shortfall` event, record "not observed"; the premise then stays unverified. |
 | Neon compute | Neon console or API: effective compute size of `production` and `test`, and the CU-hours of the week | 0.25 CU for both. The consumption fits the budget of ADR 0001, "Why 15 minutes". |
-| A failed healthcheck keeps the old deployment | No test on purpose: it needs a failing release while the vehicle is connected. The healthcheck documentation states it ("Only then will the new deployment be made active and the previous deployment inactive"). | Record "documented, not observed". A first failed release, or a deployment of `main` by mistake in section 1, gives the observation. |
-| Forced end of `ingest` (Linux check 4) | On Railway, `ingest` is not PID 1, so the session can send it SIGKILL: `railway ssh -- sh -c 'kill -9 <ingest pid>'`. Run it only while the vehicle is asleep and after a `flushed` line, because SIGKILL loses the records that wait for the next flush. Then `railway logs --since 10m --filter "started"` and the process tree of section 3.1. If the session cannot signal the process, wait for the first watchdog exit or crash instead. | The init ends with `ingest`, the container ends, and the restart policy starts it again: a new `started` event follows, and the process tree has a new `ingest` and a new `fleet-telemetry`, and no `fleet-telemetry` without `ingest`. Not run at the first release (ADR 0001, "To verify at first deployment"). |
+| A failed healthcheck keeps the old deployment | No test on purpose: it needs a failing release while the vehicle is connected. The healthcheck documentation states it ("Only then will the new deployment be made active and the previous deployment inactive"). | Record "documented, not observed". A first failed release gives the observation. |
+| Forced end of `ingest` (Linux check 4) | On Railway, `ingest` is not PID 1, so the session can send it SIGKILL: `railway ssh -- sh -c 'kill -9 <ingest pid>'`. Run it only while the vehicle is asleep and after a `flushed` line, because SIGKILL loses the records that wait for the next flush. Then `railway logs --since 10m --filter "started"` and the process tree of section 3.1. If the session cannot signal the process, wait for the first watchdog exit or crash instead. | The init ends with `ingest`, the container ends, and the restart policy starts it again: a new `started` event follows, and the process tree has a new `ingest` and a new `fleet-telemetry`, and no `fleet-telemetry` without `ingest`. |
 
 ## 4. Recovery
 
@@ -249,19 +239,18 @@ the deployment's original variables". So the image before ADR 0001 can
 be restored by rollback only within 72 hours after the release removes
 it; later, a redeploy rebuilds it from the old commit.
 
-- **To an earlier deployment of the ADR 0001 image.** Roll back. The
-  migration of this release only adds the schema `raw`, so an earlier
-  image of the same schema version works. An image before issue #29
-  starts as user 10001: its init again holds the service variables where
-  UID 10001 can read them (STACK.md section 15, accepted risks). The
+- **To an earlier deployment of the ADR 0001 image.** Roll back.
+  Migration 0001 only adds the schema `raw`, so an earlier image of the
+  same schema version works. An earlier image with a `USER` line in its
+  `ingest/Dockerfile` starts as user 10001: its init holds the service variables where UID
+  10001 can read them (STACK.md section 15, accepted risks). The
   pre-deploy command stays the same for both images, so no setting
   changes for this rollback.
-- **To the image before ADR 0001** (the first release failed after it went
-  live). That image has no `/usr/local/bin/ingest` and no `/health`.
+- **To the image before ADR 0001.** That image has no `/usr/local/bin/ingest` and no `/health`.
   First clear the pre-deploy command and the healthcheck path, then roll
   back. The migration is compatible: the old image does not use the
-  database, and the tables stay. Warning: the old image writes every
-  record, with the VIN and the location, to the Railway log again. Fix
+  database, and the tables stay. Warning: that image writes every
+  record, with the VIN and the location, to the Railway log. Fix
   forward as soon as possible.
 - **After any rollback.** The rollback restores the custom variables
   (and, for a removed deployment, the settings) of the selected

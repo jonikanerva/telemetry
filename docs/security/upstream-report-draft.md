@@ -10,7 +10,7 @@ Status: draft for the owner. Not posted. Post it as a comment on the
 upstream issue `https://github.com/teslamotors/fleet-telemetry/issues/578`,
 or decide not to post it. The text contains no detail of this deployment.
 
-Reason for the draft (issue 15 of this repository): high-severity
+Reason for the draft: high-severity
 advisories of the bundled Go modules (gRPC CRITICAL and HIGH, logrus HIGH)
 have no fix in a `fleet-telemetry` release. v0.10.1 is the newest release,
 and `main` is at the same commit. Upstream issue 578 already reports the

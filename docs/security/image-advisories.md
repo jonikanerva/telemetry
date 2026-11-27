@@ -1,9 +1,11 @@
 # Image advisories: triage of the ingest image
 
-Status: triage of 26 November 2026 for issue #15. The reviewed ignore files
+Status: the triage covers the advisory data of 26 November 2026 and, for
+the programs of the entrypoint, of 27 November 2026 (the triage snapshot). The reviewed ignore files
 `docs/security/osv-scanner-tesla-fleet-telemetry.toml` and
 `docs/security/osv-scanner-debian.toml` record the decisions of this
-document for `mise run vuln`.
+document for `mise run vuln`. Each ignore entry expires on its date
+("Ignore files and deployment facts").
 
 ## Owner summary
 
@@ -32,19 +34,17 @@ The CRITICAL gRPC advisory CVE-2026-33186 is class P: the binary has no
 gRPC server. The 61 Debian 12 advisories of the upstream image are not in
 the production image, because the Dockerfile copies only the binary.
 
-**What was fixed.** The Debian 13 base image `debian:trixie-slim` has 4
+**What the build fixes.** The Debian 13 base image `debian:trixie-slim` has 4
 advisory groups with a Debian fix (libzstd DSA-6657-1, shadow DSA-6661-1).
-Debian published the fixes after the newest base image. The Dockerfile now
-runs `apt-get upgrade`, so the next Railway build installs them. The merge
-of this change is that build. 65 Debian 13 groups have no Debian fix; they
+Debian published the fixes after the newest base image. The Dockerfile
+runs `apt-get upgrade`, so each Railway build installs them. 65 Debian 13 groups have no Debian fix; they
 are accepted as a group with a reassessment rule. 14 of them are in
 libraries that the server process loads (glibc, libstdc++, libgcc).
 
 **Known exploited.** No compared CVE is in the CISA Known Exploited
-Vulnerabilities catalog (version 2026.11.25, 1805 entries, read twice on
-26 November 2026; 0 matches). Compared: the 152 CVE IDs of the two image
-scans, CVE-2025-69277 (libsodium, which the binary does not contain;
-kept from an earlier version of this triage), and 119 CVE IDs that OSV
+Vulnerabilities catalog (version 2026.11.25, 1805 entries; 0 matches).
+Compared: the 152 CVE IDs of the two image scans, CVE-2025-69277
+(libsodium, which the binary does not contain), and 119 CVE IDs that OSV
 lists for the static C libraries (see "Static C libraries").
 
 **Needs action.** None.
@@ -64,16 +64,14 @@ lists for the static C libraries (see "Static C libraries").
    of a valid Tesla vehicle certificate passes mTLS. A check fails when
    the configuration breaks one of these facts ("Ignore files and
    deployment facts").
-3. Know the consequence of the merge: Railway rebuilds and redeploys the
-   ingest service, and the vehicle reconnects after a short disconnect.
 
 ## Scope, sources, and method
 
 | Item | Value |
 | ---- | ----- |
 | Upstream image | `tesla/fleet-telemetry:v0.10.1`, linux/amd64 digest `sha256:dd3bfb47b730ab5c4c8a4efc7c7c6669ce21d4bf7e56e2a3ab1d25f30ce7adf0`, created 2026-11-25 |
-| Upstream source | tag `v0.10.1` = commit [`6689adb`](https://github.com/teslamotors/fleet-telemetry/tree/6689adb831691b1de211b4aa8220babf7309f31c). `main` was at the same commit on 26 November 2026. |
-| Binary | `/fleet-telemetry`, SHA-256 `6c52c888d42471f309491c00470202a72f4123134bd2e828070a8255a26375cd`, Go 1.27.4 (the newest Go release on 26 November 2026), `CGO_ENABLED=1`, linux/amd64 |
+| Upstream source | tag `v0.10.1` = commit [`6689adb`](https://github.com/teslamotors/fleet-telemetry/tree/6689adb831691b1de211b4aa8220babf7309f31c). In the triage snapshot, upstream `main` is at the same commit. |
+| Binary | `/fleet-telemetry`, SHA-256 `6c52c888d42471f309491c00470202a72f4123134bd2e828070a8255a26375cd`, Go 1.27.4, `CGO_ENABLED=1`, linux/amd64 |
 | Base image | `debian:trixie-slim`, linux/amd64 digest `sha256:ab3b3c8c5159eebfca4376430132d53c4d425f869c765ecbe47177a030da575d`. This is the same image as `trixie-20261123-slim`, the newest dated tag. Debian 13.8. |
 | Scanner | osv-scanner 2.7.1 (commit `02f96a4`), through `mise run vuln` |
 | Call-graph check | govulncheck v1.10.0, vulnerability database of 2026-11-24 |
@@ -147,8 +145,7 @@ Each decision relies on these facts. Each fact marked "checked" has a
 check ("Ignore files and deployment facts").
 
 1. **Image composition (checked).** The production Dockerfile
-   (`ingest/Dockerfile` since issue #14) copies only one file from the
-   upstream image:
+   (`ingest/Dockerfile`) copies only one file from the upstream image:
    `COPY --from=upstream /fleet-telemetry /fleet-telemetry`. The
    server reads the config that the Dockerfile copies: `ingest` starts
    the server with `-config` and `INGEST_CHILD_CONFIG`
@@ -186,8 +183,7 @@ check ("Ignore files and deployment facts").
 3. **Client CAs (checked).** `ingest/server_config.json` does not set
    `use_default_eng_ca` or `tls.ca_file`, so only the Tesla production CA
    is in the pool.
-4. **HTTP/2 on the TLS port.** Since issue #14, the Rust gate of `ingest`
-   owns port 4443 and copies the bytes of each connection without parsing
+4. **HTTP/2 on the TLS port.** The Rust gate of `ingest` owns port 4443 and copies the bytes of each connection without parsing
    them to `fleet-telemetry` on `127.0.0.1:4444` (ADR 0001, "Layout"), so
    the same peer bytes reach the same Go code. The server is the standard `net/http` server
    ([`server/streaming/server.go#L80-L84`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/server.go#L80-L84)).
@@ -197,7 +193,7 @@ check ("Ignore files and deployment facts").
    `google.golang.org/grpc`, `golang.org/x/text`, or `golang.org/x/sys`
    directly (search of all non-test `.go` files at the tag).
 5. **Dispatchers (checked).** `ingest/server_config.json` routes all
-   record types to `zmq` (issue #14; before, `logger`). The deployment
+   record types to `zmq`. The deployment
    test allows only `zmq` and requires `zmq.addr`
    `tcp://127.0.0.1:5284`, so that libzmq listens on the loopback
    interface only. `ConfigureProducers` creates a producer
@@ -215,7 +211,7 @@ check ("Ignore files and deployment facts").
    and `prometheus_metrics_host` is not set, so the metrics server binds
    `127.0.0.1:9090`
    ([`server/monitoring/metrics_server.go#L35-L47`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/monitoring/metrics_server.go#L35-L47)).
-   The loopback default exists since upstream commit
+   The loopback default comes from upstream commit
    [`d5ca0da`](https://github.com/teslamotors/fleet-telemetry/commit/d5ca0dab55812029fd38eb77f079f74ce4f47286)
    (v0.9.0). `profiler_port` is not set, so the profiler is off
    ([`#L49-L68`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/monitoring/metrics_server.go#L49-L68)).
@@ -440,7 +436,7 @@ the binary. Two sources put static C code into `/fleet-telemetry`:
 
 | Component | Version | Evidence of the version | Use in this deployment |
 | --------- | ------- | ----------------------- | ---------------------- |
-| libzmq | 4.3.4 | Upstream `Dockerfile#L15`; `zmq_version` in the binary returns 4, 3, 4. | At each start, the Go package `zmq4` creates a libzmq context, without a socket (see "Code that runs at each start"). Since issue #14, the `zmq` dispatcher binds a PUB socket on `tcp://127.0.0.1:5284` (see "Code that runs with the `zmq` dispatcher"). |
+| libzmq | 4.3.4 | Upstream `Dockerfile#L15`; `zmq_version` in the binary returns 4, 3, 4. | At each start, the Go package `zmq4` creates a libzmq context, without a socket (see "Code that runs at each start"). The `zmq` dispatcher binds a PUB socket on `tcp://127.0.0.1:5284` (see "Code that runs with the `zmq` dispatcher"). |
 | tweetnacl (copy in libzmq 4.3.4, `src/tweetnacl.c`) | the libzmq 4.3.4 copy | Binary: file symbol `tweetnacl.c` and its local functions (`car25519`, `pack25519`, `scalarmult`, ...); `sodium_init` is the tweetnacl stub; `randombytes` calls only `getrandom` and `sleep`. | Used by libzmq only for CURVE. The configuration does not enable CURVE. |
 | SHA-1 (copy in libzmq 4.3.4, `external/sha1`) | the libzmq 4.3.4 copy | Binary: file symbol `sha1`, next to the libzmq WebSocket files (`ws_engine`, `ws_listener`). | Used by the libzmq WebSocket transport only. Not configured. |
 | libsodium | not linked | See above: built by the upstream Dockerfile, but not used by the libzmq build; no libsodium symbol or string in the binary. | Not applicable. |
@@ -452,9 +448,7 @@ the binary. Two sources put static C code into `/fleet-telemetry`:
 | lz4 | 1.9.3 (librdkafka copy) | `LZ4_versionNumber` returns 10903; `src/lz4.h` of librdkafka v2.3.0. | Only behind the `kafka` dispatcher. |
 | Cyrus SASL | not linked | The bundle excludes GSSAPI, because Cyrus SASL needs dynamic linking ([`packaging/nuget/staticpackage.py#L17-L20`](https://github.com/confluentinc/librdkafka/blob/v2.3.0/packaging/nuget/staticpackage.py#L17-L20)). The binary has no Cyrus SASL symbol; `rd_kafka_sasl_client_new` is librdkafka code (PLAIN, SCRAM, OAUTHBEARER). | Not applicable. |
 
-Evidence against the binary itself, for each row (round 4 re-check,
-after the libsodium error of an earlier version, which took a component
-name from a build file):
+Evidence against the binary itself, for each row:
 
 - **From the binary alone:** libzmq (`zmq_version`), tweetnacl (file
   symbol and functions), SHA-1 (file symbol), librdkafka (version
@@ -491,7 +485,7 @@ functions (`go tool objdump`). The glibc start code calls `_init`
 | ELF `.init_array` | `frame_dummy` (C run time) and the libzmq constructor of `ctx.cpp`, which only sets `zmq::ctx_t::max_socket_id` to 0. | None. | Disassembly of both entries. |
 | Go `zmq4.init.0` | `zmq_version`, then `zmq4_ctx_new` (libzmq `zmq_ctx_new`): it allocates a `ctx_t`, reads `getpid`, and creates the local signalling descriptor of the terminate mailbox (`eventfd`; `make_fdpair` calls `eventfd@plt`). `zmq::random_open()` is a single `retq` in this build, so no random source is read. It opens no network socket and starts no I/O thread: libzmq starts the reaper and the I/O threads only with the first socket. | None (the process ID only). No network input. | `go tool objdump`: the only Go `init` with a direct call into C is `zmq4.init.0` (calls `Version` and `_C2func_zmq4_ctx_new`); [`zmq4.go#L129-L158`](https://github.com/pebbe/zmq4/blob/v1.2.10/zmq4.go#L129-L158). libzmq 4.3.4 [`zmq.cpp#L130-L148`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/zmq.cpp#L130-L148), [`ctx.cpp#L76-L105`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L76-L105), [`ctx.cpp#L478-L491`](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ctx.cpp#L478-L491) (`start` only in `create_socket`). |
 
-**Code that runs with the `zmq` dispatcher (issue #14).** The deployed
+**Code that runs with the `zmq` dispatcher.** The deployed
 configuration sends every record type to `zmq`. At start,
 `zmq.NewProducer` creates a PUB socket (libzmq starts its reaper and one
 I/O thread) and binds `tcp://127.0.0.1:5284`
@@ -524,10 +518,9 @@ loopback interface. Railway exposes only the TCP proxy to port 4443, and
 the deployment test requires `zmq.addr` on the literal address
 `127.0.0.1`. The container runs two processes, `ingest` and
 `fleet-telemetry`, both as user 10001 without capabilities, and no shell
-or other program stays running. Since issue #29 the container starts as
-root: on Railway the init of Railway (PID 1) runs as root (observed at
-the release of PR #30 on 27 November 2026), and the entrypoint runs as root until it
-replaces itself with `ingest` through `setpriv`. A process of that user that ran in the container (for
+or other program stays running. The container starts as root: on
+Railway the init of Railway (PID 1) runs as root, and the entrypoint runs
+as root until it replaces itself with `ingest` through `setpriv`. A process of that user that ran in the container (for
 example after a code-execution fault in `fleet-telemetry`; a
 `railway ssh` session has at least the same access) could connect to
 port 5284 and subscribe: it
@@ -536,8 +529,9 @@ could send malformed ZMTP to libzmq. Such a process could already read
 the records and the TLS key directly (same user, same files and
 memory), so the listener adds no access that the user does not have.
 
-Decision: unchanged. The new code is reachable only from inside the
-container, and only by the user that already holds the data.
+Decision: the listener changes no decision. The code is reachable only
+from inside the container, and only by the user that already holds the
+data.
 
 The direct-call scan does not follow indirect calls from a Go `init`
 function. The Go packages with C calls in the binary are `kafka` of
@@ -567,8 +561,8 @@ The start code takes no network input, so the decision for OpenSSL and
 libcurl stays class D: the network-facing code of these components is
 reachable only through the `kafka` dispatcher.
 
-**Manual advisory comparison** (26 November 2026, OSV queries by release
-commit, not a scanner result):
+**Manual advisory comparison** (OSV queries by release commit, not a
+scanner result):
 
 | Component | Release commit | OSV records | Decision |
 | --------- | -------------- | ----------- | -------- |
@@ -636,12 +630,12 @@ the build".
 
 ### No Debian fix: accepted as a group
 
-65 groups have no fix in Debian 13 on 26 November 2026. Decision:
+65 groups have no fix in Debian 13 in the triage snapshot. Decision:
 **accepted.** The only network input to the service is the mTLS port, and
 the running service does not execute the affected package tools.
 
-Loaded by the running server process and by `ingest` (14 groups). Since
-issue #14, `ingest` (Rust; PID 1 under Docker, PID 2 under the init of Railway) runs in the same image. Premise
+Loaded by the running server process and by `ingest` (14 groups).
+`ingest` (Rust; PID 1 under Docker, PID 2 under the init of Railway) runs in the same image. Premise
 (checked): it links only glibc (`libc.so.6`, `libm.so.6`, the ELF
 interpreter) and `libgcc_s.so.1` (gcc-14), the packages of this table;
 the C code of `aws-lc-sys` is linked statically. This is the expected
@@ -654,17 +648,17 @@ image lists another library.
 | glibc (`libc6`) | DEBIAN-CVE-2026-84243 (7.0), -100290 (3.7), -115819 (4.8), -121757 (5.9), -121758 (5.9), -124024 (5.9), -126765 (3.7) |
 | gcc-14 (`libstdc++6`, `libgcc-s1`) | DEBIAN-CVE-2026-95619 (7.7), -102010 (7.0), -114690 (6.2), -114691 (5.9), -115455 (6.5), -115456 (3.7), -125709 (4.2) |
 
-Run by the entrypoint, not affected (5 groups, issue #29). Since issue
-#29, `ingest/entrypoint.sh` runs as root at each start, before the drop
+Run by the entrypoint, not affected (5 groups). `ingest/entrypoint.sh`
+runs as root at each start, before the drop
 to user 10001. Besides the builtins of `/bin/sh` (dash), it runs three
 programs once, with fixed arguments and no input from the network: `rm`
 and `chown` (coreutils 9.7-3) and `setpriv` (util-linux
-2.41.5-0+deb13u1). Checked in `debian:trixie-slim` for linux/amd64 on
-27 November 2026 (`crane export` and `objdump -p`): `rm` and `chown` load
+2.41.5-0+deb13u1). Checked in `debian:trixie-slim` for linux/amd64
+(`crane export` and `objdump -p`): `rm` and `chown` load
 only `libc.so.6`; `setpriv` loads `libcap-ng.so.0` (libcap-ng
 0.8.5-4+b1) and `libc.so.6`. The scan has no gating advisory for
 coreutils, libcap-ng, or dash. The five util-linux groups are in other
-programs of the package (OSV details, read on 27 November 2026):
+programs of the package (OSV details):
 DEBIAN-CVE-2026-3184 is in `login -h`; -76642, -78409, and -78410 are
 in `mount` and its `X-mount.*` options (libmount); -78408 is in
 `nsenter --join-cgroup`. `setpriv` does not load libmount and does not
@@ -677,9 +671,8 @@ the file fails `vuln` and repeats this split.
 | util-linux | DEBIAN-CVE-2026-3184 (5.3), -76642 (8.5), -78408 (7.9), -78409 (7.0), -78410 (7.8) |
 
 On disk only; the running service does not execute or load these
-packages (46 groups). Before issue #29, the entrypoint (since issue #14)
-ran shell builtins only. Since issue #29 it also runs `rm`, `chown`, and
-`setpriv` (above); dash and these programs load only the libraries
+packages (46 groups). Besides its shell builtins, the entrypoint runs
+only `rm`, `chown`, and `setpriv` (above); dash and these programs load only the libraries
 named above. The `chmod` and `install` steps run at build time.
 
 | Source package | Groups (max score) |
@@ -712,8 +705,8 @@ Reassessment rule:
   the fix. A build can reuse a cached layer of the `apt-get` step, so the
   build log must show that the step ran. The ignore entry does not show
   that a fix appeared; this gap lasts until the expiry date.
-- When the Rust ingest process joins the image (ADR 0001), repeat the
-  split above for the libraries that it loads.
+- When `ingest` loads another library (the `ldd` check of the CI job
+  `image-check` fails), repeat the split above for that library.
 
 ## Ignore files and deployment facts
 
@@ -750,8 +743,7 @@ The checks of the deployment facts (`deployment.rs` is
 
 ## `vuln` and `verify`
 
-STACK.md §3 kept `vuln` out of `verify` until a reviewed ignore list
-exists. With the ignore files, `vuln` passes (exit 0 on 26 November 2026,
+In the triage snapshot, `vuln` exits with 0 with the ignore files (about
 54 s, about 67 MB of image downloads). Decision: `vuln` stays a separate
 required check and does not join `verify`. Evidence:
 
@@ -789,7 +781,7 @@ the gating advisory rate falls below one each month over 60 days.
 
 ## Reproduction
 
-1. `mise run vuln` (needs the network). Expected on 26 November 2026:
+1. `mise run vuln` (needs the network). Expected for the triage snapshot:
    exit 0; "Filtered 44 vulnerabilities" for the upstream image and
    "Filtered 159 vulnerabilities" for the Debian image.
 2. Raw counts: run `osv-scanner scan image --archive <tar>` without
@@ -800,7 +792,7 @@ the gating advisory rate falls below one each month over 60 days.
 4. KEV: download
    `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`,
    collect the CVE IDs and the `upstream` CVE IDs of the osv-scanner JSON
-   output (152 IDs on 26 November 2026), add CVE-2025-69277 (libsodium,
+   output (152 IDs in the triage snapshot), add CVE-2025-69277 (libsodium,
    not linked) and the CVE IDs of the OSV commit queries for the static C libraries (119 IDs), and
    intersect with `.vulnerabilities[].cveID` of the catalog.
 5. Static C libraries: `POST https://api.osv.dev/v1/query` with

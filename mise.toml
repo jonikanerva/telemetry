@@ -144,19 +144,18 @@ run = [
   "awk '/^FROM/ { print \"pinned image: \" $2 }' ingest/Dockerfile",
   # An unreadable tag list fails the task: a missing check is not a pass.
   "work=\"$(mktemp -d)\"; printf '{}' > \"$work/config.json\"; tag=\"$(DOCKER_CONFIG=\"$work\" crane ls tesla/fleet-telemetry | grep -E '^v[0-9]+[.][0-9]+[.][0-9]+$' | sort -V | tail -1)\"; rm -rf \"$work\"; test -n \"$tag\" || { echo 'deps: cannot read the tesla/fleet-telemetry tags'; exit 1; }; echo \"latest tesla/fleet-telemetry tag: $tag\"",
-  # The builder tag is <Rust version>-slim-<Debian codename> (vuln task).
+  # The builder tag is <Rust version>-slim-<Debian codename>.
   "codename=\"$(sed -n 's/^FROM debian:\\([a-z]*\\).*$/\\1/p' ingest/Dockerfile)\"; test -n \"$codename\" || { echo 'deps: cannot read the Debian codename of ingest/Dockerfile'; exit 1; }; work=\"$(mktemp -d)\"; printf '{}' > \"$work/config.json\"; tag=\"$(DOCKER_CONFIG=\"$work\" crane ls rust | grep -E \"^[0-9]+[.][0-9]+[.][0-9]+-slim-$codename\\$\" | sort -V | tail -1)\"; rm -rf \"$work\"; test -n \"$tag\" || { echo 'deps: cannot read the rust image tags'; exit 1; }; echo \"latest rust builder tag: $tag\"",
   "curl -fsS https://deb.debian.org/debian/dists/stable/Release | grep -E '^(Codename|Version):'",
   # Pins of the CI workflow (STACK.md §15): each action, the mise version,
   # and the runner label, with the newest release tags. git ls-remote reads
   # the public tags; no token is needed. The step fails when it cannot read a tag
   # list, or when an action SHA is not the commit of its tag comment.
-  # The workflow check is a strict allowlist, not a YAML parser (like the
-  # Dockerfile check of `vuln`):
+  # The workflow check is a strict allowlist, not a YAML parser:
   # - `.github/` holds only `workflows/` and `pull_request_template.md`,
   #   and `.github/workflows/` holds only `ci.yml`. A new workflow file or
   #   a new directory (for example a composite action in
-  #   `.github/actions/`) fails until this check covers it in the same PR.
+  #   `.github/actions/`) fails. Extend this check in the same PR.
   # - In `ci.yml`, each line with a `uses`, `version`, or `runs-on` key
   #   must have the one allowed form. The only allowed image is the
   #   PostgreSQL image of the database tests: one `postgres_image` line
