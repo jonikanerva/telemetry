@@ -183,6 +183,9 @@ Decided by the owner on 27 November 2026:
   Privacy Posture; ADR 0003).
 - Price source for charging cost: the owner's `spot-price` service, for
   charging at home (Product Shape).
+- Codex in this repository: no `AGENTS.md`; on the lead's request, a
+  read-only second review of a single security-critical PR (Persistence
+  and Privacy Posture).
 
 Delegated technical choices, recorded as ADRs when significant:
 
