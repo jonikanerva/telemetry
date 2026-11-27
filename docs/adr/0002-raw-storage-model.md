@@ -504,8 +504,8 @@ cannot create objects in `raw` or `public`.
   the measured growth. `raw.ingest_event` has no expiry. If the
   measurement of the first week shows that the 1 GB of the project fills
   before the web phase, the lead reports it to the owner at once.
-- The privacy table of `VISION.md` does not yet list the two database
-  credentials in the Railway variables. `VISION.md` is the owner's file.
+- The privacy table of `VISION.md` lists the two database credentials in
+  the Railway variables.
 - `raw.ingest_event` makes the gaps of the ingest process visible next to
   the vehicle's own gaps.
 - The stored history has no backup beyond the 6 hours of Neon restore
