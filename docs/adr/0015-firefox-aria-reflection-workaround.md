@@ -5,7 +5,10 @@
   authority, with approval by an independent reviewer (qa-enforcer) in PR
   #51: <https://github.com/jonikanerva/telemetry/pull/51#pullrequestreview-6093024203>,
   with the conditions of the addendum
-  <https://github.com/jonikanerva/telemetry/pull/51#issuecomment-7227466133>.
+  <https://github.com/jonikanerva/telemetry/pull/51#issuecomment-7227466133>,
+  and kept for the extended evidence in the delta review
+  <https://github.com/jonikanerva/telemetry/pull/51#pullrequestreview-6093266302>
+  on the condition of the corrected limits below.
 - Responsible lead: the lead agent of the delivery task.
 - Scope: the Playwright journeys of `e2e/` in the project `firefox` only,
   with Playwright 1.65.1 and its Firefox 159.0, build 1572. The workaround
@@ -82,9 +85,11 @@
 3. A test that needs a further browser context opens it with
    `newBrowserContext` of `e2e/support.ts`. In Firefox, that context gets
    the same init script. The lint rule `no-restricted-properties` for
-   `e2e/**` fails on `newContext`, `launch`, `launchPersistentContext`,
-   `launchServer`, `connect`, and `connectOverCDP` of any object, and on
-   `browser.newPage`, outside `e2e/support.ts`. A page of a context from
+   `e2e/**` fails, outside `e2e/support.ts`, on the property names
+   `newContext`, `launch`, `launchPersistentContext`, `launchServer`,
+   `connect`, and `connectOverCDP` on any object, when the code names the
+   property directly, with a string literal key, or in a destructuring
+   pattern. It also fails on `browser.newPage`. A page of a context from
    the fixture or from `newBrowserContext` gets the init script.
 4. Each slice that adds a page or a state with an axe check adds the page
    or state to the equivalence test.
@@ -125,10 +130,16 @@ fail:
 The lint rules of decisions 2 and 3 support these tests: they keep the
 fixture in front of every page. Their known limits:
 
-- They do not find a dynamic `import()` or a `require()` of a Playwright
-  module.
+- They do not find an `import()` with a computed module name, or a
+  `require` function from `createRequire`. A literal `import()` fails
+  `no-restricted-imports`, and a plain `require()` fails
+  `typescript/no-require-imports`.
+- They do not find a computed property name, for example `browser[name]()`
+  with `const name = 'newContext'`. In Firefox, a page of such a context
+  does not get the workaround, and no check fails.
 - The rule for `newPage` names the object `browser` only. A `Browser`
-  under another variable name can call `newPage` without a finding.
+  under another name, or reached through an expression such as
+  `page.context().browser()`, can call `newPage` without a finding.
   `context.newPage()` stays allowed, because the context comes from the
   fixture or from `newBrowserContext`.
 
