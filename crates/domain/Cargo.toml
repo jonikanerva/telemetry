@@ -6,5 +6,14 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# Pure rules: no HTTP, runtime, database, or serde crate (web profile §0).
+# Time comes in as values; the crate reads no clock.
+[dependencies]
+jiff.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true
