@@ -27,6 +27,7 @@ struct TestGate {
     upstream: TcpListener,
     readiness: Arc<Readiness>,
     sink: RecordingSink,
+    slots: Slots,
     task: JoinHandle<()>,
 }
 
@@ -37,6 +38,7 @@ impl TestGate {
         let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let sink = RecordingSink::default();
         let readiness = Arc::new(Readiness::new(Arc::new(sink.clone())));
+        let slots = Slots::new(&limits);
         let task = tokio::spawn(run(
             listener,
             upstream.local_addr().unwrap(),
@@ -44,12 +46,14 @@ impl TestGate {
             Arc::new(sink.clone()),
             heartbeat,
             limits,
+            slots.clone(),
         ));
         Self {
             address,
             upstream,
             readiness,
             sink,
+            slots,
             task,
         }
     }
@@ -267,6 +271,7 @@ async fn each_copy_direction_reads_into_a_buffer_of_8_kib() {
             &LIMITS,
             gate,
             epoch,
+            (),
         )
         .await
     });
@@ -298,6 +303,7 @@ async fn a_panic_in_the_copy_task_is_reported_as_a_panic() {
             &LIMITS,
             gate,
             epoch,
+            (),
         ),
     )
     .await
@@ -353,6 +359,7 @@ async fn forward_returns_only_after_both_streams_are_closed() {
             &LIMITS,
             gate,
             epoch,
+            (),
         ),
     )
     .await
@@ -379,10 +386,12 @@ async fn poll_once<F: Future>(future: F) -> Poll<F::Output> {
     std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_aborted_gate_task_ends_every_forwarded_connection() {
-    // The shutdown aborts the gate task when it passes its bound; the
-    // connection set and the copy tasks must end with it.
+/// The abort of the gate task by shutdown step 1, then the wait of step 1
+/// for the slots. When the join of the aborted gate task returns, the
+/// runtime may not have cancelled the connection tasks and their copy
+/// tasks yet, and a copy task can still move bytes. After the wait, no copy
+/// task is left: both sockets are closed, and no later byte passes.
+async fn abort_the_gate_and_wait_for_the_slots() {
     let gate = TestGate::start_open().await;
     let mut client = gate.connect().await;
     let mut upstream = gate.accept_upstream().await;
@@ -392,9 +401,198 @@ async fn an_aborted_gate_task_ends_every_forwarded_connection() {
 
     gate.task.abort();
     assert!(gate.task.await.unwrap_err().is_cancelled());
+    assert_eq!(gate.slots.wait_free(Instant::now() + WAIT).await, 0);
+    // Checked in the kernel, without a yield, so that no task can end the
+    // connection between the wait and the check.
+    assert!(
+        closed_without_yield(&upstream),
+        "the upstream socket is open"
+    );
+    assert!(closed_without_yield(&client), "the client socket is open");
     client.write_all(b"after").await.ok();
     assert_eq!(read_until_closed(&mut upstream).await, b"");
     assert_eq!(read_until_closed(&mut client).await, b"");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_aborted_gate_task_ends_every_forwarded_connection() {
+    abort_the_gate_and_wait_for_the_slots().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_aborted_gate_task_ends_every_forwarded_connection_on_one_thread() {
+    // On one thread, in a spawned task, the copy task is still alive when
+    // the join of the gate task returns (the run queue holds its cancel
+    // after this task). Without the wait for the slots, the sockets stay
+    // open in every run.
+    tokio::spawn(abort_the_gate_and_wait_for_the_slots())
+        .await
+        .unwrap();
+}
+
+/// Whether the peer has closed `stream`, seen in the kernel without a
+/// yield to the runtime. Waits at most 1 s for the end of the stream, with
+/// the thread blocked, so on a current-thread runtime no task runs meanwhile.
+fn closed_without_yield(stream: &TcpStream) -> bool {
+    let socket = SockRef::from(stream);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let mut byte = [std::mem::MaybeUninit::uninit(); 1];
+        match socket.peek(&mut byte) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            // The end of the stream or a reset.
+            Ok(0) | Err(_) => return true,
+            Ok(_) => return false,
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Limits with a short wait for the slots, for the tests of the stop.
+const SHORT_ABORT_WAIT: GateLimits = GateLimits {
+    abort_wait: Duration::from_millis(300),
+    ..LIMITS
+};
+
+#[tokio::test]
+async fn the_stop_waits_for_a_taken_slot_before_gate_stopped() {
+    // A slot that is still taken stands for a copy task that the runtime
+    // has not cancelled yet.
+    let gate = TestGate::start(SHORT_ABORT_WAIT, Watchdog::new().register(GATE_ACCEPTOR)).await;
+    let slot = gate.slots.try_take().unwrap();
+    let started = Instant::now();
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(100)).await;
+        drop(slot);
+    });
+    let (capture, _guard) = capture::install(ALLOWED_FIELDS);
+    gate.stop().await;
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_millis(100), "{elapsed:?}");
+    assert!(elapsed < SHORT_ABORT_WAIT.abort_wait, "{elapsed:?}");
+    let text = capture.text();
+    assert!(text.contains("gate_stopped"), "{text}");
+    assert!(!text.contains("gate_connections_open"), "{text}");
+}
+
+#[tokio::test]
+async fn the_stop_logs_a_slot_that_is_still_taken_at_its_bound() {
+    let gate = TestGate::start(SHORT_ABORT_WAIT, Watchdog::new().register(GATE_ACCEPTOR)).await;
+    let slot = gate.slots.try_take().unwrap();
+    let started = Instant::now();
+    let (capture, _guard) = capture::install(ALLOWED_FIELDS);
+    gate.stop().await;
+    assert!(started.elapsed() >= SHORT_ABORT_WAIT.abort_wait);
+    let lines: Vec<serde_json::Value> = capture
+        .text()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let messages: Vec<&str> = lines
+        .iter()
+        .filter_map(|line| line["message"].as_str())
+        .collect();
+    assert_eq!(messages, ["gate_connections_open", "gate_stopped"]);
+    assert_eq!(lines[0]["connections"], 1);
+    drop(slot);
+}
+
+/// A client stream whose first read blocks its worker thread until the
+/// test lets it go. It notes when it is dropped.
+struct BlockingClient {
+    entered: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AsyncRead for BlockingClient {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        self.entered.send(()).ok();
+        self.release.recv().ok();
+        // No waker: the task is cancelled after this poll.
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for BlockingClient {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for BlockingClient {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abort_frees_the_slot_only_after_the_copy_task_has_dropped_its_sockets() {
+    // The copy task is inside a read on a worker thread when the
+    // connection task is aborted, so the runtime cannot cancel the copy
+    // task until that read returns. Meanwhile the slot must stay taken.
+    let semaphore = Arc::new(Semaphore::new(1));
+    let slot = Arc::clone(&semaphore).try_acquire_owned().unwrap();
+    let (entered, in_read) = mpsc::channel();
+    let (let_go, release) = mpsc::channel();
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let client = BlockingClient {
+        entered,
+        release,
+        dropped: Arc::clone(&dropped),
+    };
+    let (gate_upstream, _upstream) = duplex(1024);
+    let (_readiness, gate) = open_gate();
+    let epoch = gate.borrow().epoch();
+    let task = tokio::spawn(async move {
+        forward(
+            client,
+            async { Ok(gate_upstream) },
+            Instant::now(),
+            &LIMITS,
+            gate,
+            epoch,
+            slot,
+        )
+        .await
+    });
+    tokio::task::spawn_blocking(move || in_read.recv_timeout(WAIT))
+        .await
+        .unwrap()
+        .unwrap();
+
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let early = tokio::time::timeout(Duration::from_millis(100), semaphore.acquire()).await;
+    assert!(early.is_err(), "the slot is free while the copy task runs");
+    assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
+
+    let_go.send(()).unwrap();
+    let _free = tokio::time::timeout(WAIT, semaphore.acquire())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 /// An in-memory stream for the tests of a flow without pause. A flowing
@@ -471,6 +669,7 @@ fn start_endless_flow(
             &limits,
             gate,
             epoch,
+            (),
         )
         .await
     })
@@ -1009,6 +1208,7 @@ fn start_forward(
             &LIMITS,
             gate,
             epoch,
+            (),
         )
         .await
     });
@@ -1135,6 +1335,7 @@ async fn rule_1_covers_a_connect_that_does_not_finish() {
         &LIMITS,
         gate,
         epoch,
+        (),
     ))
     .await;
     assert_eq!(report.end, End::NoFirstByte);
@@ -1153,6 +1354,7 @@ async fn a_failed_upstream_connect_closes_the_connection() {
         &LIMITS,
         gate,
         epoch,
+        (),
     ))
     .await;
     assert_eq!(report.end, End::UpstreamUnavailable);

@@ -31,10 +31,15 @@
 //!
 //! 1. Shut the gate. The acceptor closes every forwarded connection. Bound:
 //!    [`ShutdownBudget::gate_close`]. The sequence waits until the gate task
-//!    has ended, also after an abort, so that no forwarded byte reaches
-//!    `fleet-telemetry` during step 2. A copy task that an abort leaves can
-//!    run for one more scheduler step; the drain of step 2 waits for 1 s
-//!    without a message, which covers that step.
+//!    has ended (it aborts the task at the bound minus [`STEP_MARGIN`]),
+//!    and then until every slot of the gate is free, at most until the
+//!    bound ([`gate::Slots`]). A free slot means that the copy task of the
+//!    connection has ended, so no forwarded byte reaches `fleet-telemetry`
+//!    after step 1, and no acknowledgement reaches a vehicle. An abort ends
+//!    a copy task only when the runtime cancels it, so without this wait a
+//!    copy task could still forward a record and its acknowledgement after
+//!    the drain of step 2. A slot that is still taken at the bound is
+//!    logged (`gate_connections_open`).
 //! 2. Drain the SUB socket: read until no message arrives for 1 s, at most
 //!    3 s. Bound: [`ShutdownBudget::zmq_drain`].
 //! 3. The final shortfall read. Bound: [`ShutdownBudget::shortfall_read`].
@@ -62,7 +67,7 @@ use tokio::net::TcpListener;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::{Notify, oneshot, watch};
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -283,6 +288,7 @@ pub async fn run(config: RunConfig) -> Result<(), RunError> {
         .clone()
         .start(watchdog::CHECK_PERIOD, watchdog::expire)
         .map_err(RunError::Watchdog)?;
+    let gate_slots = gate::Slots::new(&gate::LIMITS);
     let gate_task = tokio::spawn(gate::run(
         gate_listener,
         SocketAddr::from((Ipv4Addr::LOCALHOST, config.upstream_port)),
@@ -290,6 +296,7 @@ pub async fn run(config: RunConfig) -> Result<(), RunError> {
         Arc::clone(&sink),
         watchdog.register(watchdog::GATE_ACCEPTOR),
         gate::LIMITS,
+        gate_slots.clone(),
     ));
     let (stop_child, child_stop) = oneshot::channel();
     let supervisor = tokio::spawn(child::supervise(
@@ -380,7 +387,7 @@ pub async fn run(config: RunConfig) -> Result<(), RunError> {
     stop_health.send(()).ok();
     // Step 1.
     readiness.shut();
-    stop_task(gate_task, budget.gate_close, Task::Gate).await;
+    stop_gate(gate_task, &gate_slots, budget.gate_close).await;
     // Step 2.
     start_drain
         .send(budget.zmq_drain.saturating_sub(STEP_MARGIN))
@@ -457,6 +464,21 @@ async fn first_ended(tasks: &mut [(Task, JoinHandle<()>)]) -> Task {
     .await
 }
 
+/// Step 1: waits for the gate task, at most `bound` minus [`STEP_MARGIN`],
+/// then until every slot of the gate is free, at most until the end of
+/// `bound`. An abort of the gate task ends its connection tasks and their
+/// copy tasks only when the runtime cancels them, and until then a copy
+/// task can still move bytes to `fleet-telemetry`. A free slot means that
+/// the copy task of the connection has ended ([`gate::Slots`]).
+async fn stop_gate(task: Option<JoinHandle<()>>, slots: &gate::Slots, bound: Duration) {
+    let end = Instant::now() + bound;
+    stop_task(task, bound.saturating_sub(STEP_MARGIN), Task::Gate).await;
+    let open = slots.wait_free(end).await;
+    if open > 0 {
+        warn!(connections = open, "gate_connections_open");
+    }
+}
+
 /// Waits for a task that was asked to stop, at most `bound`. After the
 /// bound, aborts the task and waits until it has ended: an aborted task
 /// ends at its next `await`.
@@ -500,11 +522,72 @@ mod tests {
 
     #[test]
     fn the_inner_bounds_fit_their_steps() {
-        assert!(gate::LIMITS.close_deadline < BUDGET.gate_close);
+        // The gate stop ends before step 1 aborts it, and step 1 keeps time
+        // to wait for the slots after an abort.
+        assert!(
+            gate::LIMITS.close_deadline + gate::LIMITS.abort_wait
+                < BUDGET.gate_close.saturating_sub(STEP_MARGIN)
+        );
         assert!(child::LIMITS.kill_wait + child::LIMITS.output_drain < BUDGET.child_stop);
         // The drain quiet time fits the drain bound that the reader gets.
         assert!(Some(Limits::PRODUCTION.drain_quiet) < BUDGET.zmq_drain.checked_sub(STEP_MARGIN));
         assert!(STEP_MARGIN < BUDGET.shortfall_read);
+    }
+
+    /// A task that holds one slot of `slots` for `held`, like a copy task
+    /// that the runtime cancels late.
+    fn hold_slot(slots: &gate::Slots, held: Duration) -> JoinHandle<()> {
+        let slot = slots.try_take().expect("a free slot");
+        tokio::spawn(async move {
+            tokio::time::sleep(held).await;
+            drop(slot);
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn step_1_waits_for_the_slots_after_the_gate_task_has_ended() {
+        let slots = gate::Slots::new(&gate::LIMITS);
+        let holder = hold_slot(&slots, Duration::from_millis(100));
+        let started = Instant::now();
+        let gate_task = tokio::spawn(async {});
+        stop_gate(Some(gate_task), &slots, BUDGET.gate_close).await;
+        assert_eq!(started.elapsed(), Duration::from_millis(100));
+        holder.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn step_1_aborts_the_gate_task_and_ends_at_its_bound_with_a_slot_taken() {
+        let slots = gate::Slots::new(&gate::LIMITS);
+        let holder = hold_slot(&slots, Duration::from_secs(60));
+        let (capture, guard) = crate::logging::capture::install(crate::logging::ALLOWED_FIELDS);
+        let started = Instant::now();
+        let (dropped, gone) = oneshot::channel::<()>();
+        let gate_task = tokio::spawn(async move {
+            let _keep = dropped;
+            std::future::pending::<()>().await;
+        });
+        // Notes when the abort drops the gate task.
+        let aborted = tokio::spawn(async move {
+            gone.await.ok();
+            Instant::now()
+        });
+        stop_gate(Some(gate_task), &slots, BUDGET.gate_close).await;
+        assert_eq!(started.elapsed(), BUDGET.gate_close);
+        assert_eq!(
+            aborted.await.unwrap() - started,
+            BUDGET.gate_close.saturating_sub(STEP_MARGIN)
+        );
+        drop(guard);
+        let messages: Vec<String> = capture
+            .text()
+            .lines()
+            .map(|line| {
+                let line: serde_json::Value = serde_json::from_str(line).unwrap();
+                line["message"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        assert_eq!(messages, ["task_stop_timeout", "gate_connections_open"]);
+        holder.abort();
     }
 
     #[tokio::test(start_paused = true)]
