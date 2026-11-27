@@ -1,6 +1,7 @@
 # Product Vision
 
-> Draft for owner review. The owner approves this file with the adoption PR.
+> Approved by the owner on 27 November 2026. A change of this file needs the
+> owner's approval.
 > This file owns product direction, not technology.
 
 ## Vision

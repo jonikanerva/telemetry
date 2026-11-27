@@ -69,7 +69,7 @@ repo/
   mise.toml
   pnpm-workspace.yaml
   pnpm-lock.yaml
-  STACK.md  VISION.md  DOCTRINE.md  CLAUDE.md / AGENTS.md
+  STACK.md  VISION.md  DOCTRINE.md  CLAUDE.md
 ```
 
 - `domain` MUST NOT depend on Axum, Tokio, SQLx, reqwest, server code, or storage adapters. It receives time, identifiers, and other external values explicitly. It MUST NOT read the environment, filesystem, ambient clock, or random sources.
