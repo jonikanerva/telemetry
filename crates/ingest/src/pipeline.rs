@@ -158,10 +158,10 @@ mod tests {
         // A connect attempt beats its watchdog: it is far below the 30 s of
         // the reader.
         assert!(limits.connect_attempt < crate::watchdog::READER.limit);
-        // The loss bound of the stall rule (ADR 0001, "SUB socket",
-        // "Detection bound"): (2 + f) periods, plus the read deadline of
-        // 0.75 s and the grace, with at most f = 2 * (unreadable_after - 1)
-        // failed reads while the gate is open. These are its inputs.
+        // The inputs of the loss bound of the stall rule (ADR 0001, "SUB
+        // socket", "Detection bound"): less than 4P + 2D + G with the gate
+        // open for one stall, with the read period P, the read deadline D
+        // of 0.75 s, and the grace G.
         assert_eq!(limits.stall_grace, Duration::from_secs(2));
         assert_eq!(limits.unreadable_after, 2);
         // More than one failed read: one slow read does not close the gate.

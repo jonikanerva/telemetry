@@ -502,7 +502,7 @@ visible:
 | Restart during a database outage, including a Neon suspension after 100 CU-hours, which lasts until the next billing period [N1] | The queue that existed before the restart is lost (crash line). After the restart the gate stays closed for 120 s (vehicle buffer only), then opens in degraded mode. Then as in the outage line. | As in the crash and outage lines. A Neon suspension also shows as failed writes in the log. |
 | Shutdown flush fails within 20 s, for example a deploy during a database outage | The queue at shutdown. | The log has the count. A `stopped` event cannot be written. |
 | The child dies by itself | Messages in its libzmq send queue: milliseconds of data. | `child_exited` event. The count is unknown. |
-| The SUB socket stops receiving while the gate is open (for example the `zeromq` defect of "SUB socket", or a lost `Disconnected` event) | The records that the child dispatches and acks until the stall rule decides: "SUB socket", "Detection bound" (less than 32.75 s with no failed metrics read, less than 62.75 s with failed reads; two failed reads in a row close the gate). This holds each time the gate opens a stalled socket; after repeated stalls the gate stays closed for 30 s, doubling to 15 minutes, and the vehicle buffers. The vehicle does not resend acked records. | `zmq_shortfall` events with the count, the `gate_closed` event with the reason `subscriber_stalled`, and the log line `subscriber_rebuilt`. |
+| The SUB socket stops receiving while the gate is open (for example the `zeromq` defect of "SUB socket", or a lost `Disconnected` event) | The records that the child dispatches and acks with the gate open until the stall rule decides: "SUB socket", "Detection bound" (less than 4P + 2D + G = 63.5 s for one stall in every case, over up to three openings of the gate; less than 32.75 s, 47.75 s, and 62.75 s with 0, 1, and 2 failed metrics reads while the gate stays open). Between two stalls in a row the gate stays closed for 30 s, doubling to 15 minutes, and the vehicle buffers. The vehicle does not resend acked records. | `zmq_shortfall` events with the count, the `gate_closed` event with the reason `subscriber_stalled`, and the log line `subscriber_rebuilt`. |
 | A connection closes with messages that were sent but not acked (gate closing, deploy, rate limit) | Those messages, if the vehicle does not resend them (fact 1, not verified). | None in `ingest`. Stored `is_resend` values show whether resends happen. |
 | Accepted risk: a peer that stalls inside the TLS handshake | A live peer holds one connection until it closes it. A peer that goes away holds it until the dead-peer bound closes it (gate rule 3): about 150 s after its last answer when no data is unacknowledged (keep-alive), about 925 to 1,045 s when data is unacknowledged (retransmission timeout, `tcp_retries2` 15). Both are below the vehicle buffer of at least 2,500 s. This is the same class of exposure that upstream has today. If the Railway proxy terminates TCP, the close of a gone peer depends on the proxy (deployment check). | None for a single peer. |
 | Accepted risk: a flood that fills the 1024-connection bound | No new connection while the flood holds the bound: while the flooding peers keep their connections alive, plus the dead-peer bound after they go away (about 150 s idle, about 925 to 1,045 s with unacknowledged data). The vehicle cannot connect and relies on its own buffer (at least 2,500 s). Then as in the next line. | `gate_full` events, and gaps between `connectivity_event` rows. |
@@ -632,35 +632,75 @@ sections above leave open. Each point has a test.
     gate; the reads each 1 s open the condition about 1 s after the
     metrics of the new child answer.
   - **Detection bound.** This is the one statement of the bound; the
-    other texts refer to it. Let `P` be the read period (15 s), `G` the
-    grace (2 s), `D` the read deadline (0.75 s), and `f` the number of
-    failed reads between the start of the stall and the decision. For a
-    child that dispatches without a pause, the rule decides less than
-    `(2 + f) × P + D + G` after the first record that the stalled socket
-    did not receive. Two failed reads in a row close the gate ("Unreadable
-    metrics"), so while the gate is open at most one failed read lies
-    between two successful reads, and `f` is at most 2. With 15 s: less
-    than 32.75 s with no failed read, 47.75 s with one, and 62.75 s with
-    two. The worst case is a stall that starts just after the snapshot of
-    a read: the next read cannot decide, because its comparison still sees
-    the last received record. For a new socket of the same child, the
-    first lost record counts from the new socket. For a child that
-    dispatches with pauses, the bound counts time with dispatches: the
-    lost records come from at most two intervals between successful
-    reads (the interval in which the stall starts, and the interval of
-    the decision), and an interval without a dispatch loses nothing. The
-    decision clears gate condition 2 first, so the loss ends with it. The
-    bound holds for each time that the gate opens a stalled socket;
-    between two such times the gate stays closed ("Repeated stalls"). The
-    tests `the_worst_case_timeline_meets_the_bound_of_adr_0001` and
-    `sporadic_dispatch_loses_records_of_two_dispatching_intervals_at_most`
-    (`pipeline/shortfall.rs`) pin these values. In
-    that window `fleet-telemetry` acks each record after
-    it hands the record to the PUB socket, and PUB drops it without a
-    subscriber (fact 2, the `zmq` row of fact 3). So the vehicle does not
-    resend these records: they are lost, and the `zmq_shortfall` events
-    show the count. When the gate closes, the vehicle keeps its new data
-    in its own buffer (at least 2,500 s), as for every closed gate.
+    other texts refer to it. Let `P` be the read period (15 s), `D` the
+    read deadline (0.75 s), and `G` the grace (2 s). The values are for
+    the schedule of the reads; the timer and scheduling delay of the
+    process (milliseconds) add to them.
+    - The decision comes at the second successful read after the start of
+      the stall, one grace after its response. The worst case is a stall
+      that starts just after the snapshot of a read: the first successful
+      read after it cannot decide, because its comparison still sees the
+      last received record.
+    - While the gate is open, at most two failed reads come before each
+      of these two successful reads, so at most four in total. Two failed
+      reads in a row close the gate ("Unreadable metrics"), and the reads
+      of such an episode, while the gate is closed, lose nothing. The read
+      that ends an episode opens the gate, and it can be the first of the
+      two successful reads; so one stall can span up to three openings of
+      the gate.
+    - For a child that dispatches without a pause, the time with the gate
+      open from the start of the stall to the decision is less than
+      `4P + 2D + G` (63.5 s) in every case: each of the two stretches up
+      to a successful read gives at most `2P + D` with the gate open, and
+      the grace after the decision adds `G`.
+    - While the gate stays open the whole time, with `f` failed reads
+      (0, 1, or 2), the time is less than `(2 + f) × P + D + G`: 32.75 s,
+      47.75 s, and 62.75 s.
+    - For a new socket of the same child, the first lost record counts
+      from the new socket. For a new generation, the first successful read
+      after the first dispatch can decide.
+    - For a child that dispatches with pauses, the bound counts time with
+      dispatches: the lost records come from at most two intervals
+      between successful reads (the interval in which the stall starts,
+      and the interval of the decision), plus two short tails: the records
+      that the child dispatches between the snapshot and the response of
+      the read before the stall (less than `D`), and the records of the
+      grace after the decision (`G`). An interval without a dispatch loses
+      nothing.
+    - The decision clears gate condition 2 first, so the loss ends with
+      it. Between two stalls in a row the gate stays closed ("Repeated
+      stalls").
+    - Tests: `the_worst_case_timeline_meets_the_bound_of_adr_0001` and
+      `sporadic_dispatch_loses_records_of_two_dispatching_intervals_at_most`
+      pin the rule on synthetic reads. `loop_tests` in
+      `pipeline/shortfall.rs` runs the production read loop with a
+      scripted metrics server and scaled times: the cases with 0, 1, and
+      2 failed reads and the cases with episodes of unreadable metrics,
+      and an evidence test (`#[ignore]`) that runs every pattern of seven
+      reads, with fast and with slow answers. In that run (scaled times:
+      `4P + 2D + G` = 1,850 ms), all 256 patterns decided, at most four
+      failed reads came with the gate open and at most three openings,
+      and the largest values were 1,850 to 1,863 ms, all in patterns with
+      two episodes of unreadable metrics (for example `F F S F F S`); the
+      excess is the scheduling delay of the test machine.
+    - In the time with the gate open, `fleet-telemetry` acks each record
+      after it hands the record to the PUB socket, and PUB drops it
+      without a subscriber (fact 2, the `zmq` row of fact 3). So the
+      vehicle does not resend these records: they are lost, and the
+      `zmq_shortfall` events show the count. When the gate closes, the
+      vehicle keeps its new data in its own buffer (at least 2,500 s), as
+      for every closed gate.
+  - **Known behaviour: a reopening read that decides (review round 4 of
+    PR #22, note N15).** After unreadable metrics, the read that ends the
+    episode opens gate condition 2 before the grace, and it can itself
+    decide the stall. Then the gate opens for the grace (2 s) and closes
+    again with the reason `subscriber_stalled`. Cost: up to 2 s of acked
+    records, which the bound above includes (the last `G` of `4P + 2D +
+    G`), and one pair of `gate_opened` and `gate_closed` events; a
+    vehicle that connects in that time is cut again. A change that lets
+    this read decide before it opens the gate would remove the opening;
+    it is left for a later change, because this change keeps the code of
+    the reviewed version.
   - **Replacement order.** The reader first clears gate condition 2, so
     the gate closes and no new record is dispatched. Then it reads the old
     socket to its end: the `Disconnected` event of the peer, after which
