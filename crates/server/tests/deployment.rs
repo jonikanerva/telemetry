@@ -32,6 +32,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde_json::Value;
+use telemetry_web_server::auth::origin::{ORIGIN_VARIABLE, PublicOrigin};
+use telemetry_web_server::auth::password::HASH_VARIABLE;
 use telemetry_web_server::shutdown::SHUTDOWN_DEADLINE;
 
 const DOCKERFILE: &str = "webapp/Dockerfile";
@@ -60,6 +62,8 @@ mod railway {
     /// The port of the server and of the healthcheck (`PORT`).
     pub const PORT: u16 = 8080;
     pub const DRAINING_SECONDS: u64 = 15;
+    /// The public origin of the CSRF rule (`WEB_PUBLIC_ORIGIN`, ADR 0012).
+    pub const PUBLIC_ORIGIN: &str = "https://tesla.calmdonut.com";
     pub const OVERLAP_SECONDS: u64 = 0;
     /// Every input of the image, and nothing else: a change of the ingest
     /// sources, of the browser tests, or of the documentation does not
@@ -322,6 +326,10 @@ fn the_settings_table_of_stack_md_holds_the_same_values() {
         ("`NO_CACHE`", format!("`{}`", railway::NO_CACHE)),
         ("TCP proxy", "None".to_owned()),
         ("Custom domain", "None".to_owned()),
+        (
+            "`WEB_PUBLIC_ORIGIN`",
+            format!("`{}`", railway::PUBLIC_ORIGIN),
+        ),
     ] {
         assert_eq!(value_cell(&stack_row(name)), value, "{name}");
     }
@@ -331,6 +339,18 @@ fn the_settings_table_of_stack_md_holds_the_same_values() {
         .map(|item| item.trim_matches('`'))
         .collect();
     assert_eq!(listed, BTreeSet::from(railway::WATCH_PATHS));
+}
+
+/// The server accepts the documented public origin at its start, and the
+/// hash row names the variable that the server reads.
+#[test]
+fn the_public_origin_and_the_hash_variable_agree_with_the_code() {
+    assert!(PublicOrigin::parse(railway::PUBLIC_ORIGIN).is_ok());
+    assert_eq!(ORIGIN_VARIABLE, "WEB_PUBLIC_ORIGIN");
+    assert_eq!(HASH_VARIABLE, "WEB_PASSWORD_HASH");
+    let hash = stack_row(&format!("`{HASH_VARIABLE}`"));
+    assert!(hash.contains("set by the owner"), "{hash}");
+    assert!(hash.contains("a secret"), "{hash}");
 }
 
 /// The settings agree with the image and the code. The shutdown deadline

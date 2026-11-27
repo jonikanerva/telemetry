@@ -178,7 +178,7 @@ reads the Rust version from `rust-toolchain.toml`
 | `build`  | `cargo build --workspace --release --locked`, `vite build` of the SPA into `web/dist` with gzip copies, and the bundle-size check (`scripts/bundle-size.sh`). The build uses the committed client; it does not export or generate it. |
 | `contract` | Writes `contract/openapi.json` (`telemetry-web-server export-openapi`) and generates `packages/api-client/src/generated/` from it with Hey API. Run it after a change of an HTTP type or route, and commit both. |
 | `contract-check` | `scripts/contract-check.sh`: exports and generates in a scratch directory and compares the complete trees with `diff -r` (also added and deleted files). It never writes the working tree. |
-| `test`   | `cargo nextest run --workspace --locked` (all tests), the server tests with the feature `test-server`, `cargo test --doc --workspace --locked` (task `doctest`), and task `test-web`: Vitest, then the Playwright journeys in chromium, firefox, and webkit against the debug test server (`telemetry-web-server serve-test`) with the real router, middleware, and built SPA. |
+| `test`   | `cargo nextest run --workspace --locked` (all tests), the server tests with the feature `test-server`, `cargo test --doc --workspace --locked` (task `doctest`), and task `test-web`: Vitest, then the Playwright journeys in chromium, firefox, and webkit against the debug test server (`telemetry-web-server serve-test`) with the real router, middleware, and built SPA, in one worker (the session store and the login throttle of the test server are global, ADR 0012). |
 | `test-ci` | CI only: `cargo nextest run --workspace --locked --no-fail-fast` against the PostgreSQL server of the runner, without the tests that need Neon (below), the server tests with `test-server`, `doctest`, and `test-web`. |
 | `verify` | The static checks of task `checks` (Rust and Prettier format checks, `lint`, `contract-check`, `cargo deny --locked check`, `pnpm audit --prod=false`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, `.bin/`, or `node_modules/` path), then `sqlx-check`, `build`, and `test`. |
 | `ci`     | The CI job `ci`: `checks`, `sqlx-check`, `build`, and `test-ci` against the PostgreSQL server of the runner (`scripts/ci-postgres.sh`). It does not replace `verify`. |
@@ -406,6 +406,8 @@ of the web server. A feature that only the web server uses is in
 | tower, web dev | 0.5.3 | server tests: `util` | `oneshot` in the HTTP tests | MIT |
 | rustls, web test server | 0.23.46 | server crate, optional (feature `test-server`): `aws_lc_rs`, `std`, `tls12` | TLS 1.2 and 1.3 of `serve-test` with the explicit aws-lc-rs provider; PEM parser of `rustls-pki-types` | Apache-2.0 OR ISC OR MIT |
 | tokio-rustls, web test server | 0.26.6 | server crate, optional (feature `test-server`): none | Tokio TLS acceptor of `serve-test` | MIT OR Apache-2.0 |
+| argon2, web | 0.6.0 | server crate: `alloc`, `password-hash` | Argon2id verification of the login and the command `hash-password` (ADR 0012); `opt-level = 3` in the dev profile | MIT OR Apache-2.0 |
+| subtle, web | 2.6.1 | none | Constant-time compare of session tokens (ADR 0012) | BSD-3-Clause |
 
 The web server adds the axum features `json` and `matched-path` and, in the
 tests, the tokio feature `test-util`, in `crates/server/Cargo.toml`.
@@ -801,10 +803,15 @@ and checks that this table holds the same values.
 | `NO_CACHE`              | `1` | Variable `NO_CACHE` | Each build runs the `apt-get` step without the layer cache, so the image gets the Debian security fixes of the build date. |
 | TCP proxy               | None | Service settings | No TCP port for the internet. |
 | Custom domain           | None | Service settings | No public URL before the login exists (`VISION.md`, drift signs); `tesla.calmdonut.com` comes with the login. |
+| `WEB_PUBLIC_ORIGIN`     | `https://tesla.calmdonut.com` | Variable `WEB_PUBLIC_ORIGIN` | The origin of the CSRF rule (ADR 0012); the server stops at the start without it. |
+| `WEB_PASSWORD_HASH`     | The Argon2id PHC string of the owner password; a secret | Variable `WEB_PASSWORD_HASH`, set by the owner | The login checks the password against it (ADR 0003, ADR 0012); the server stops at the start without a valid hash. |
 
 The variable `RAILWAY_GIT_COMMIT_SHA`, which Railway sets, gives the
 version that `/health` reports. The image `ENV` line sets `WEB_STATIC_DIR`;
 do not set it as a service variable. `webapp/Dockerfile` has no `ARG` line.
+The owner makes `WEB_PASSWORD_HASH` with `telemetry-web-server
+hash-password` on the owner's computer (README, "Web password"); the hash
+never passes through an agent, a PR, or a log.
 
 ### Lead authority (ADR 0004, ADR 0007)
 

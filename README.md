@@ -169,6 +169,48 @@ Local files that must never be committed. `.gitignore` excludes them.
 | `secrets/tls.*`          | Server certificate and key                            |
 | `.bin/`                  | Locally built Tesla tools                             |
 
+## Web password
+
+One password protects the web service `telemetry-web` (ADR 0003, ADR
+0012). The service holds only an Argon2id hash of the password in the
+Railway variable `WEB_PASSWORD_HASH`. The owner makes the hash on the
+owner's computer; the password and the hash never pass through an agent,
+a PR, an issue, or a log.
+
+1. Make a long random password in the password manager. Use 20 or more
+   characters. The command accepts 16 to 1024 bytes.
+2. Copy the password to the clipboard. In the repository on macOS, run
+   these commands. They make the hash and set the variable without a
+   deployment. Neither the password nor the hash appears on the screen,
+   in the shell history, or in the process list. `&&` stops the second
+   step when `hash-password` fails; its error goes to standard error:
+
+   ```sh
+   HASH="$(pbpaste | cargo run --quiet --locked -p telemetry-web-server -- hash-password)" \
+     && printf '%s' "$HASH" \
+     | railway variable set -s telemetry-web -e production --skip-deploys --stdin WEB_PASSWORD_HASH
+   unset HASH
+   ```
+
+   On another system, replace `pbpaste` with `(IFS= read -rs PW &&
+   printf '%s' "$PW")`: `read -s` reads without an echo, and `printf` is a
+   shell builtin.
+3. Clear the clipboard.
+4. The new value applies at the next deployment of the service. A
+   deployment ends every session, so log in again afterwards.
+
+`hash-password` removes one line end at the end of the input. Every other
+character, also a space, is part of the password. Its output is one line
+that starts with `$argon2id$v=19$m=65536,t=3,p=1$`. The shell command
+substitution `$(...)` removes its line end, and `printf '%s'` adds none.
+
+The server stops at the start when the hash is missing or outside the
+accepted parameters (`crates/server/src/auth/password.rs`). The error
+names the variable and the reason, never the value.
+
+To change the password, repeat the steps. To end every session without a
+password change, redeploy or restart the service.
+
 ## Deployment
 
 Railway builds `ingest/Dockerfile` from `main` and deploys it. A merge to

@@ -38,6 +38,13 @@ Rules:
    `railway variable set --skip-deploys <NAME>=<value>`. Do not set
    `WEB_STATIC_DIR`: the image sets it, and a service variable replaces
    the image value.
+   - The server stops at the start without a valid `WEB_PUBLIC_ORIGIN`
+     and `WEB_PASSWORD_HASH` (ADR 0012). Both must exist before the merge
+     of a version with the login.
+   - The owner sets `WEB_PASSWORD_HASH` (README, "Web password"). The
+     lead does not ask for the value and does not read it back. To check
+     that the variable exists, list only the names:
+     `railway variable list --json | jq -r 'keys[]'`.
 4. Set the service settings: the rows of the same table whose column
    "Where the lead sets it" names the service settings (the watch paths
    one pattern each line). Apply them without a deployment, as in
@@ -70,7 +77,9 @@ with its reason.
 | Deployed revision      | `railway ssh -- sh -c 'echo $RAILWAY_GIT_COMMIT_SHA'`, or the deployment view               | The merge commit SHA.                                                                                        |
 | Health and version     | `railway ssh -- perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new("127.0.0.1:$ENV{PORT}") or die; print $s "GET /health HTTP/1.0\r\n\r\n"; print <$s>'` | `200` and `{"status":"ok","version":"<merge commit SHA>"}`. Without a public domain, the check runs inside the container. |
 | User of the process    | `railway ssh -- grep -e ^Uid -e ^Gid /proc/1/status /proc/[0-9]*/status`                    | The server process has `Uid` and `Gid` 10001.                                                                |
-| No secret in the log   | `railway logs --since 1h`                                                                   | No line holds a variable value. Record only the count of such lines.                                        |
+| No secret in the log   | `railway logs --since 1h`                                                                   | No line holds a variable value, a password, a hash, or a cookie. Record only the count of such lines.       |
+| API without a session  | `railway ssh -- perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new("127.0.0.1:$ENV{PORT}") or die; print $s "GET /api/v1/session HTTP/1.0\r\n\r\n"; print <$s>'` | `401` and a problem with the code `unauthenticated`. No database query runs. |
+| Login (owner, S5)      | After the custom domain exists, the owner opens `https://tesla.calmdonut.com/`, logs in, sees the start page, and logs out | The login page, the start page after the login, and the login page after the logout. The log has one `login_succeeded` and one `logout` line. Pending until the domain exists; the release verification stays pending until the owner reports the result. |
 | Public checks (S5)     | After the custom domain exists: `curl -sI https://tesla.calmdonut.com/` and `/health`        | TLS, the security headers of ADR 0010, `200` for `/health`, and the SPA. Pending until the domain exists.     |
 
 ## 4. Recovery
