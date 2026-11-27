@@ -93,10 +93,11 @@ vehicle ──TCP──▶ gate (ingest, port 4443) ──▶ fleet-telemetry (1
 | `.dockerignore`                | Allowlist of the build inputs of `ingest/Dockerfile`           |
 | `config/telemetry_config.json` | Telemetry config for the vehicle: host, port, CA, and signals  |
 | `crates/ingest/`               | Rust ingest process                                            |
+| `crates/ingest/.sqlx/`         | Query metadata of the SQLx macros of `ingest`                  |
+| `crates/domain/`, `crates/server/` | Web application packages `telemetry-web-domain` and `telemetry-web-server`; skeletons without function now |
 | `migrations/`                  | SQLx migrations of the raw schema (ADR 0002)                   |
 | `db/roles.sql`                 | Database roles, schema, and privileges (ADR 0002)              |
-| `.sqlx/`                       | Query metadata of the SQLx macros                              |
-| `scripts/sqlx-metadata.sh`     | Checks or writes `.sqlx/` against a test database              |
+| `scripts/sqlx-metadata.sh`     | Checks or writes `crates/<crate>/.sqlx/` against a test database |
 | `scripts/image-check.sh`       | Builds the image and checks the container (CI job `image-check`) |
 | `Cargo.toml`, `Cargo.lock`     | Rust workspace, lints, and locked dependencies                 |
 | `rust-toolchain.toml`          | Rust toolchain version                                         |
@@ -221,7 +222,8 @@ connection verifies the server certificate (`sslmode=verify-full`), also
 when the URL says `sslmode=require`.
 
 After a change of a query or a migration, write the query metadata again
-and commit `.sqlx/`:
+and commit the `.sqlx/` directory of each crate with queries (for example
+`crates/ingest/.sqlx/`):
 
 ```sh
 mise run sqlx-prepare

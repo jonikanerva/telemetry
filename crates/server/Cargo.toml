@@ -1,0 +1,10 @@
+[package]
+name = "telemetry-web-server"
+version = "0.1.0"
+description = "Web application server"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

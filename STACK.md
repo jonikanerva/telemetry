@@ -35,15 +35,24 @@ repo/
   ingest/                # Dockerfile, entrypoint, and fleet-telemetry config (ADR 0001)
   crates/ingest/src/     # Ingest process: gate, supervisor, ZMQ reader, PostgreSQL writer
   crates/ingest/proto/   # Vendored upstream .proto files of the deployed fleet-telemetry tag
+  crates/ingest/.sqlx/   # Committed query metadata of the SQLx macros of ingest
+  crates/domain/         # Package telemetry-web-domain: web domain rules; an empty library now
+  crates/server/         # Package telemetry-web-server: web application server; a program without function now
   migrations/            # SQLx migrations (ADR 0002)
   db/roles.sql           # Roles, schema, and privileges (ADR 0002); run once by the owner role
   scripts/               # Check scripts: SQLx metadata, image check, CI PostgreSQL
-  .sqlx/                 # Committed query metadata of the SQLx macros
   Cargo.toml  Cargo.lock  rust-toolchain.toml  clippy.toml  deny.toml  mise.toml
 ```
 
-The web phase adds `crates/domain`, `crates/server`, `packages/api-client`,
-`web/`, `contract/openapi.json`, and `e2e/` (web profile §0).
+The web phase fills `crates/domain` and `crates/server`, and adds
+`packages/api-client`, `web/`, `contract/openapi.json`, and `e2e/` (web
+profile §0). Each crate with SQLx query macros keeps its metadata in
+`crates/<crate>/.sqlx/`. The ingest image reads only `crates/ingest` in
+full and the `Cargo.toml` of each other member, with a stub target (§15),
+so a change of the web sources does not release ingest. Each first-party
+package name other than `ingest` starts with `telemetry-`: osv-scanner
+reads a `Cargo.lock` package by its name as a crates.io package, so a
+crates.io name gets the advisories of that crate.
 
 ---
 
@@ -137,8 +146,8 @@ reads the Rust version from `rust-toolchain.toml`
 | `test-ci` | CI only: `cargo nextest run --workspace --locked --no-fail-fast` against the PostgreSQL server of the runner, without the tests that need Neon (below), and `doctest`. |
 | `verify` | The static checks of task `checks` (format check, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, or `.bin/` path), then `sqlx-check`, `build`, and `test`. |
 | `ci`     | The CI job `ci`: `checks`, `sqlx-check`, `build`, and `test-ci` against the PostgreSQL server of the runner (`scripts/ci-postgres.sh`). It does not replace `verify`. |
-| `sqlx-check` | `scripts/sqlx-metadata.sh check`: `cargo sqlx prepare --workspace --check` against a new database on the server of `TEST_DATABASE_URL` (the Neon branch `test` locally, the PostgreSQL server of the runner in CI), migrated with `migrations/`, then dropped. |
-| `sqlx-prepare` | `scripts/sqlx-metadata.sh prepare`: writes `.sqlx/` the same way after a change of a query or a migration. |
+| `sqlx-check` | `scripts/sqlx-metadata.sh check`: `cargo sqlx prepare --check` in each crate with a SQLx dependency, against a new database on the server of `TEST_DATABASE_URL` (the Neon branch `test` locally, the PostgreSQL server of the runner in CI), migrated with `migrations/`, then dropped. Each crate has its metadata in `crates/<crate>/.sqlx/`; a `.sqlx/` at the root fails the check. |
+| `sqlx-prepare` | `scripts/sqlx-metadata.sh prepare`: writes `crates/<crate>/.sqlx/` the same way after a change of a query or a migration. |
 | `deps`   | The dependency freshness check (below). |
 | `vuln`   | The vulnerability check (below). |
 | `image-check` | `scripts/image-check.sh` (CI only): builds `ingest/Dockerfile` and checks the running container without a database, without an init, with the init of Docker (`--init`, as on Railway), and as user 10001 (must fail). The script header lists each check. |
@@ -155,7 +164,7 @@ Gitleaks 8.30.1, osv-scanner 2.7.1, SQLx CLI 0.9.1 (features `postgres` and
 branch `test` (§5), in CI the URL that `scripts/ci-postgres.sh` sets. A
 missing URL is a failure, not a skipped check. Export it
 before the command (`set -a; . ./.env.test; set +a; mise run verify`, value
-in quotes); mise does not read the file. The query macros read `.sqlx/`
+in quotes); mise does not read the file. The query macros read `crates/<crate>/.sqlx/`
 (`SQLX_OFFLINE=true`), so `build` and `lint` never connect to a database;
 every `sqlx` call uses `--no-dotenv`. The SQLx check MUST use an isolated
 migrated database. Checks never silently regenerate missing evidence. A
@@ -544,6 +553,13 @@ environment; its pins are the rows that start with "CI".
   records. The container starts as root (no `USER` line); the entrypoint
   drops to user and group 10001 with no capabilities (`setpriv`) before it
   starts `ingest`.
+- Build isolation: the image build reads `crates/ingest` in full and only
+  the `Cargo.toml` of each other workspace member, with an empty
+  `src/lib.rs` as a stub target. A member other than `ingest` must not
+  declare a target path or a build script path. The deployment test checks
+  that the stub list equals the other workspace members. A change of
+  `Cargo.lock` or of a member `Cargo.toml` still releases ingest, because
+  it can change the ingest binary.
 - The service has no `railway.json` and no config file in its place. The
   lead sets each value of the table below by hand. Infrastructure as Code
   (`.railway/railway.ts`) waits for a reassessment in December 2026 with a
@@ -585,9 +601,9 @@ table holds the same values. Source: the Railway documentation
 
 | Setting                 | Value | Where the lead sets it | Reason |
 | ----------------------- | ----- | ---------------------- | ------ |
-| Root directory          | `/` (unchanged) | Service settings | The build context holds `Cargo.toml`, `crates/`, `db/`, `migrations/`, and `.sqlx/`. |
+| Root directory          | `/` (unchanged) | Service settings | The build context holds `Cargo.toml`, `crates/ingest/`, the `Cargo.toml` of each other member, `db/`, and `migrations/`. |
 | Dockerfile path         | `/ingest/Dockerfile` | Service settings (`dockerfilePath`, relative form `ingest/Dockerfile`), not `RAILWAY_DOCKERFILE_PATH` | Without it, Railpack builds the workspace and no image of ADR 0001. |
-| Watch paths             | `/ingest/**`, `/crates/**`, `/db/**`, `/migrations/**`, `/.sqlx/**`, `/.cargo/**`, `/Cargo.toml`, `/Cargo.lock`, `/rust-toolchain.toml`, `/.dockerignore` | Service settings, one pattern each line | Each input of the image; another change starts no deployment. |
+| Watch paths             | `/ingest/**`, `/crates/ingest/**`, `/crates/*/Cargo.toml`, `/db/**`, `/migrations/**`, `/.cargo/**`, `/Cargo.toml`, `/Cargo.lock`, `/rust-toolchain.toml`, `/.dockerignore` | Service settings, one pattern each line | Each input of the image; another change starts no deployment. |
 | Custom start command    | None | Service settings | The image `CMD` runs `/entrypoint.sh`; a start command would replace the `ENTRYPOINT`. |
 | Pre-deploy command      | `/usr/local/bin/ingest migrate` | Service settings | Migrations as a separate release step (ADR 0002); one string; runs as root in its own container; a failure stops the deployment. |
 | Pre-deploy timeout      | 1200 s | Service settings | Longer than the 15-minute deadline of `ingest migrate`; ends a command that never ends. |

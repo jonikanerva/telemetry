@@ -96,7 +96,7 @@ description = "Check the committed SQLx query metadata against a migrated, isola
 run = "scripts/sqlx-metadata.sh check"
 
 [tasks.sqlx-prepare]
-description = "Write the SQLx query metadata in .sqlx/ after a query or migration change"
+description = "Write the SQLx query metadata in crates/<crate>/.sqlx/ after a query or migration change"
 run = "scripts/sqlx-metadata.sh prepare"
 
 [tasks.verify]

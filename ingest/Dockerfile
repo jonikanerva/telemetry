@@ -7,7 +7,9 @@
 # The build context is the repository root:
 #   docker build -f ingest/Dockerfile .
 # Each COPY line names one input of the build. The Railway watch paths and
-# .dockerignore list the same paths (STACK.md section 15).
+# .dockerignore list the same paths (STACK.md section 15). The build reads
+# crates/ingest in full, but only the Cargo.toml of each other workspace
+# member, so a change of the web sources does not change this image.
 #
 # The vuln task of mise.toml compares each instruction line with a strict
 # allowlist. Change the allowlist and docs/security/image-advisories.md in
@@ -20,15 +22,21 @@
 # which the build does not need and the slim image does not have.
 FROM rust:1.100.0-slim-trixie AS build
 WORKDIR /build
-# The query macros read the committed metadata in .sqlx/ and never connect
-# to a database. .cargo/config.toml sets the same value.
+# The query macros read the committed metadata in crates/ingest/.sqlx/ and
+# never connect to a database. .cargo/config.toml sets the same value.
 ENV SQLX_OFFLINE=true
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo .cargo
-COPY crates crates
+COPY crates/ingest crates/ingest
+# Cargo loads the whole workspace, also for -p ingest. Each other member
+# gets its Cargo.toml and an empty src/lib.rs as a stub target. The build
+# does not compile the stubs. The deployment test checks that this list
+# equals the workspace members other than ingest.
+COPY crates/domain/Cargo.toml crates/domain/Cargo.toml
+COPY crates/server/Cargo.toml crates/server/Cargo.toml
+RUN for member in crates/domain crates/server; do mkdir -p "$member/src" && : > "$member/src/lib.rs"; done
 COPY db db
 COPY migrations migrations
-COPY .sqlx .sqlx
 # A release build never reads the INGEST_TEST_* variables (ADR 0001).
 RUN cargo build --release --locked -p ingest
 

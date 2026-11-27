@@ -1,15 +1,16 @@
 # The build context of ingest/Dockerfile is the repository root. This file
 # is an allowlist: it excludes everything, and then includes only the
 # inputs that the COPY lines of ingest/Dockerfile name. So no .env file,
-# secrets/, .bin/, .git, or target/ directory reaches the builder.
+# secrets/, .bin/, .git, or target/ directory reaches the builder. Of the
+# other workspace members, only the Cargo.toml files reach the builder.
 *
 !Cargo.toml
 !Cargo.lock
 !.cargo/config.toml
-!crates/
+!crates/ingest/
+!crates/*/Cargo.toml
 !db/
 !migrations/
-!.sqlx/
 !ingest/
 # Exclude these again inside the included directories.
 **/.env*

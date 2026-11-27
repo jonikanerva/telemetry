@@ -1,0 +1,10 @@
+[package]
+name = "telemetry-web-domain"
+version = "0.1.0"
+description = "Domain rules of the web application"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
