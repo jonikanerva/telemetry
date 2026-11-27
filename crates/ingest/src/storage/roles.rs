@@ -35,6 +35,8 @@ pub const ROLES_SQL: &str = include_str!("../../../../db/roles.sql");
 pub const INGEST_ROLE: &str = "telemetry_ingest";
 /// The role names of ADR 0002.
 pub const MIGRATOR_ROLE: &str = "telemetry_migrator";
+/// The read-only role of the web application.
+pub const WEB_ROLE: &str = "telemetry_web";
 
 /// The parameters of `db/roles.sql`.
 #[derive(Debug)]
@@ -43,27 +45,41 @@ pub struct RoleSetup {
     pub ingest_role: String,
     /// The role of `ingest migrate`. It owns the schema.
     pub migrator_role: String,
+    /// The read-only role of the web application.
+    pub web_role: String,
     /// The schema of the raw tables.
     pub schema: Schema,
-    /// The new password of the ingest role. `None` keeps the password.
+    /// The new password of the ingest role. `Some` gives the role LOGIN and
+    /// this password. `None` keeps the password and the LOGIN attribute;
+    /// a role that the script creates without a password has NOLOGIN.
     pub ingest_password: Option<SecretString>,
-    /// The new password of the migrator role. `None` keeps the password.
+    /// The new password of the migrator role. `Some` gives the role LOGIN and
+    /// this password. `None` keeps the password and the LOGIN attribute;
+    /// a role that the script creates without a password has NOLOGIN.
     pub migrator_password: Option<SecretString>,
+    /// The new password of the web role. `Some` gives the role LOGIN and
+    /// this password. `None` keeps the password and the LOGIN attribute;
+    /// a role that the script creates without a password has NOLOGIN.
+    pub web_password: Option<SecretString>,
 }
 
 impl RoleSetup {
-    /// The production names of ADR 0002 with the given passwords.
+    /// The production names of ADR 0002 and the web role with the given
+    /// passwords.
     #[must_use]
     pub fn production(
         ingest_password: Option<SecretString>,
         migrator_password: Option<SecretString>,
+        web_password: Option<SecretString>,
     ) -> Self {
         Self {
             ingest_role: INGEST_ROLE.to_owned(),
             migrator_role: MIGRATOR_ROLE.to_owned(),
+            web_role: WEB_ROLE.to_owned(),
             schema: Schema::raw(),
             ingest_password,
             migrator_password,
+            web_password,
         }
     }
 }
@@ -99,13 +115,17 @@ pub async fn apply_roles(conn: &mut PgConnection, setup: &RoleSetup) -> Result<(
                 set_config('telemetry.migrator_role', $2, true),
                 set_config('telemetry.schema', $3, true),
                 set_config('telemetry.ingest_password', $4, true),
-                set_config('telemetry.migrator_password', $5, true)
+                set_config('telemetry.migrator_password', $5, true),
+                set_config('telemetry.web_role', $6, true),
+                set_config('telemetry.web_password', $7, true)
             ) AS \"nulls!\"",
             setup.ingest_role,
             setup.migrator_role,
             setup.schema.as_str(),
             text(&setup.ingest_password),
             text(&setup.migrator_password),
+            setup.web_role,
+            text(&setup.web_password),
         )
         .fetch_one(&mut *tx)
         .await
@@ -134,10 +154,15 @@ mod tests {
             Some(SecretString::new(
                 "migratorSecret0123456789abcdefABCD".to_owned(),
             )),
+            Some(SecretString::new(
+                "webSecret0123456789abcdefABCDEFGHI".to_owned(),
+            )),
         );
         for text in [format!("{setup:?}"), format!("{setup:#?}")] {
             assert!(!text.contains("ingestSecret"), "{text}");
             assert!(!text.contains("migratorSecret"), "{text}");
+            assert!(!text.contains("webSecret"), "{text}");
+            assert!(text.contains("telemetry_web"), "{text}");
             assert!(text.contains("[redacted]"), "{text}");
         }
     }

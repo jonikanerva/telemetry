@@ -1,9 +1,9 @@
 //! The test database: guard, isolation, cleanup, and fixtures.
 //!
 //! Every test runs in a schema of its own on the Neon branch `test`, named
-//! `itest_<unix seconds>_<random>`. A test that needs roles gets two roles
-//! with the same prefix, because roles are shared by every database of the
-//! branch. The harness:
+//! `itest_<unix seconds>_<random>`. A test that needs roles gets three
+//! roles with the same prefix, because roles are shared by every database
+//! of the branch. The harness:
 //!
 //! - reads `TEST_DATABASE_URL` and stops with a clear message when it is
 //!   missing;
@@ -148,6 +148,8 @@ pub struct TestRoles {
     pub setup: RoleSetup,
     pub ingest: PgConnectOptions,
     pub migrator: PgConnectOptions,
+    /// The read-only role of the web application.
+    pub web: PgConnectOptions,
     /// The password of the ingest role, for a URL of `ingest run`.
     pub ingest_password: SecretString,
 }
@@ -186,9 +188,39 @@ where
     .await;
 }
 
+/// The roles whose password the first run of `db/roles.sql` gives.
+#[derive(Debug, Clone, Copy)]
+pub struct Given {
+    pub ingest: bool,
+    pub migrator: bool,
+    pub web: bool,
+}
+
+impl Given {
+    /// All three passwords, as the first production run gives them.
+    pub const ALL: Self = Self {
+        ingest: true,
+        migrator: true,
+        web: true,
+    };
+}
+
 /// Runs `body` with roles and a schema made by `db/roles.sql`, as the
 /// production procedure does. The schema is empty.
 pub async fn with_roles<F, Fut>(body: F)
+where
+    F: FnOnce(TestDb, TestRoles) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    with_roles_given(Given::ALL, body).await;
+}
+
+/// Runs `body` with roles and a schema made by one run of `db/roles.sql`
+/// that gives only the passwords of `given`. The connection settings of
+/// [`TestRoles`] hold a new random password for each role, also for a
+/// role whose password the run does not give: a login with that password
+/// must fail.
+pub async fn with_roles_given<F, Fut>(given: Given, body: F)
 where
     F: FnOnce(TestDb, TestRoles) -> Fut,
     Fut: Future<Output = ()>,
@@ -199,12 +231,19 @@ where
     sweep(&mut admin).await;
     let ingest_password = random_password(&mut admin).await;
     let migrator_password = random_password(&mut admin).await;
+    let web_password = random_password(&mut admin).await;
     let setup = RoleSetup {
         ingest_role: format!("{prefix}_ingest"),
         migrator_role: format!("{prefix}_migrator"),
+        web_role: format!("{prefix}_web"),
         schema: schema.clone(),
-        ingest_password: Some(SecretString::new(ingest_password.clone())),
-        migrator_password: Some(SecretString::new(migrator_password.clone())),
+        ingest_password: given
+            .ingest
+            .then(|| SecretString::new(ingest_password.clone())),
+        migrator_password: given
+            .migrator
+            .then(|| SecretString::new(migrator_password.clone())),
+        web_password: given.web.then(|| SecretString::new(web_password.clone())),
     };
     let applied = apply_roles(&mut admin, &setup).await;
     admin.close().await.unwrap();
@@ -221,6 +260,11 @@ where
         migrator: migrate_options(&schema)
             .username(&setup.migrator_role)
             .password(&migrator_password),
+        web: db
+            .options
+            .clone()
+            .username(&setup.web_role)
+            .password(&web_password),
         ingest_password: SecretString::new(ingest_password),
         setup,
     };
@@ -307,7 +351,7 @@ async fn admin() -> PgConnection {
 }
 
 /// A password from the random source of the server: 122 random bits.
-async fn random_password(conn: &mut PgConnection) -> String {
+pub async fn random_password(conn: &mut PgConnection) -> String {
     sqlx::query_scalar("SELECT gen_random_uuid()::text")
         .fetch_one(conn)
         .await
@@ -360,7 +404,11 @@ async fn drop_prefix(conn: &mut PgConnection, prefix: &str) -> Vec<String> {
         "SELECT pg_advisory_lock(hashtext('telemetry.roles'))".to_owned(),
     )
     .await;
-    for role in [format!("{prefix}_migrator"), format!("{prefix}_ingest")] {
+    for role in [
+        format!("{prefix}_migrator"),
+        format!("{prefix}_ingest"),
+        format!("{prefix}_web"),
+    ] {
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT FROM pg_roles WHERE rolname = $1)")
                 .bind(&role)
