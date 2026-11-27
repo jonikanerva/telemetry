@@ -222,6 +222,87 @@ mod tests {
         assert_eq!(presented(&HeaderMap::new()), Presented::None);
     }
 
+    /// Hand-written vectors with the expected result written down, not
+    /// computed: the forms a browser or another client can send.
+    #[test]
+    fn hand_written_vectors() {
+        let t = "0a".repeat(32);
+        let none = Presented::None;
+        let one_token = Presented::One(Some(SessionToken::from_bytes([0x0a; TOKEN_BYTES])));
+        let one_bad = Presented::One(None);
+        let cases: Vec<(String, Presented)> = vec![
+            (String::new(), none.clone()),
+            (";;;".to_owned(), none.clone()),
+            (format!("{COOKIE_NAME}={t}"), one_token.clone()),
+            (format!("   {COOKIE_NAME}={t}   "), one_token.clone()),
+            (format!("a=1;{COOKIE_NAME}={t};b=2"), one_token.clone()),
+            (format!("a=1; ; {COOKIE_NAME}={t}; "), one_token.clone()),
+            (format!("{COOKIE_NAME} ={t}"), none.clone()),
+            (format!("{COOKIE_NAME}= {t}"), one_bad.clone()),
+            (format!("{COOKIE_NAME}=\"{t}\""), one_bad.clone()),
+            (COOKIE_NAME.to_owned(), none.clone()),
+            (format!("{COOKIE_NAME}="), one_bad.clone()),
+            (format!("{COOKIE_NAME}={t}={t}"), one_bad.clone()),
+            (format!("x={COOKIE_NAME}={t}"), none.clone()),
+            (
+                format!("{COOKIE_NAME}={t}; {COOKIE_NAME}={t}"),
+                Presented::Many,
+            ),
+            (format!("{COOKIE_NAME}=; {COOKIE_NAME}="), Presented::Many),
+            (
+                format!("{COOKIE_NAME}=1;x=2;{COOKIE_NAME}=3"),
+                Presented::Many,
+            ),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(presented(&headers(&[&text])), expected, "{text:?}");
+        }
+    }
+
+    /// A name of a generated pair: the session name or another name.
+    fn name() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just(COOKIE_NAME.to_owned()),
+            Just("__host-telemetry_session".to_owned()),
+            Just(format!("{COOKIE_NAME}2")),
+            "[a-z_]{1,10}",
+        ]
+    }
+
+    proptest! {
+        /// An independent oracle: the header is built from a list of
+        /// pairs, and the expected result comes from that list, not from a
+        /// parse of the text.
+        #[test]
+        fn the_result_follows_the_generated_pairs(
+            pairs in proptest::collection::vec(
+                (name(), prop_oneof![
+                    proptest::array::uniform32(any::<u8>()).prop_map(|b| SessionToken::from_bytes(b).to_hex()),
+                    "[a-zA-Z0-9]{0,12}",
+                ]),
+                0..6,
+            ),
+            separator in prop_oneof![Just(";"), Just("; "), Just(" ;  ")],
+        ) {
+            let text = pairs
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join(separator);
+            let session: Vec<&String> = pairs
+                .iter()
+                .filter(|(name, _)| name == COOKIE_NAME)
+                .map(|(_, value)| value)
+                .collect();
+            let expected = match session.as_slice() {
+                [] => Presented::None,
+                [value] => Presented::One(SessionToken::from_hex(value)),
+                _ => Presented::Many,
+            };
+            prop_assert_eq!(presented(&headers(&[&text])), expected);
+        }
+    }
+
     /// The number of pairs with the exact session name, counted in a
     /// second, independent way: the rule is "0 is none, 1 is one, more is
     /// many".
