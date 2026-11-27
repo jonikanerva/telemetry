@@ -13,6 +13,11 @@
 //
 // The failure page offers a retry. One click sends one request; there is
 // no automatic retry.
+//
+// The failure page is shown only after a failed logout in this page
+// session: the flow sets a mark in memory, and the route of `/logout`
+// leaves at once without it (a direct visit, a reload, or a bookmark), so
+// the page never claims a failure of a logout that was not sent.
 import type { QueryClient } from '@tanstack/react-query';
 import type { ApiResult } from 'telemetry-web-api-client';
 
@@ -29,10 +34,23 @@ export type LogoutTarget = {
   readonly replace: boolean;
 };
 
+/** The mark of an unconfirmed logout in this page session. */
+export type LogoutFailureMark = { failed: boolean };
+
+/** The mark of the running page; memory only, so a reload drops it. */
+export const logoutFailureMark: LogoutFailureMark = { failed: false };
+
+/** Whether `/logout` may show the failure page. */
+export function mayShowLogoutFailure(mark: LogoutFailureMark = logoutFailureMark): boolean {
+  return mark.failed;
+}
+
 export type LogoutDeps = {
   readonly logout: () => Promise<ApiResult<undefined>>;
   readonly queryClient: QueryClient;
   readonly navigate: (target: LogoutTarget) => Promise<void>;
+  /** The mark to set; the default is the mark of the running page. */
+  readonly mark?: LogoutFailureMark;
 };
 
 /** Sends the logout request once. Only an ok result is a confirmation. */
@@ -53,6 +71,7 @@ export async function performLogout(deps: LogoutDeps): Promise<LogoutOutcome> {
   // Clear first: the login page sends an existing session back to the
   // target page, and the failure page must show no cached data.
   deps.queryClient.clear();
+  (deps.mark ?? logoutFailureMark).failed = outcome !== 'confirmed';
   await deps.navigate({ to: outcome === 'confirmed' ? LOGIN_PATH : LOGOUT_PATH, replace: false });
   return outcome;
 }
@@ -82,6 +101,7 @@ export async function retryLogout(attempt: LogoutAttempt, deps: LogoutRetryDeps)
     const outcome = await revokeSession(deps.logout);
     if (outcome === 'confirmed') {
       deps.queryClient.clear();
+      (deps.mark ?? logoutFailureMark).failed = false;
       // Replace: Back must not return to the failure page.
       await deps.navigate({ to: LOGIN_PATH, replace: true });
     } else {

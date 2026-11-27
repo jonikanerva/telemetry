@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { fi } from '../i18n/fi.js';
 import { createQueryClient } from '../query-client.js';
-import { performLogout, retryLogout } from './logout.js';
-import type { LogoutAttempt, LogoutTarget } from './logout.js';
+import { mayShowLogoutFailure, performLogout, retryLogout } from './logout.js';
+import type { LogoutAttempt, LogoutFailureMark, LogoutTarget } from './logout.js';
 import { SESSION_QUERY_KEY } from './session.js';
 import { SESSION, problemError } from './test-support.js';
 
@@ -132,5 +132,38 @@ describe('retryLogout', () => {
     resolve({ ok: false, error: { kind: 'network' } });
     await expect(second).resolves.toBe('unconfirmed');
     expect(logout).toHaveBeenCalledTimes(2);
+  });
+});
+
+const NETWORK_FAILURE: ApiResult<undefined> = { ok: false, error: { kind: 'network' } };
+
+describe('the failure page needs a failed logout of this page session', () => {
+  it('is not shown without a mark: a direct visit, a reload, or a bookmark', () => {
+    expect(mayShowLogoutFailure({ failed: false })).toBe(false);
+  });
+
+  it('is shown after an unconfirmed logout and not after a confirmed one', async () => {
+    const mark: LogoutFailureMark = { failed: false };
+    const failed = setup(() => Promise.resolve(NETWORK_FAILURE));
+    await performLogout({ logout: failed.logout, queryClient: failed.queryClient, navigate: failed.navigate, mark });
+    expect(mayShowLogoutFailure(mark)).toBe(true);
+    const confirmed = setup(() => Promise.resolve(SUCCESS));
+    await performLogout({
+      logout: confirmed.logout,
+      queryClient: confirmed.queryClient,
+      navigate: confirmed.navigate,
+      mark,
+    });
+    expect(mayShowLogoutFailure(mark)).toBe(false);
+  });
+
+  it('drops the mark when a retry is confirmed and keeps it when the retry fails', async () => {
+    const mark: LogoutFailureMark = { failed: true };
+    const failing = retrySetup(() => Promise.resolve(NETWORK_FAILURE));
+    await retryLogout(failing.attempt, { ...failing.deps, mark });
+    expect(mark.failed).toBe(true);
+    const working = retrySetup(() => Promise.resolve(SUCCESS));
+    await retryLogout(working.attempt, { ...working.deps, mark });
+    expect(mark.failed).toBe(false);
   });
 });
