@@ -12,8 +12,10 @@
 //!   the last beat of a task is older than its limit, the thread calls the
 //!   late action once with the task name and stops checking. The production
 //!   action is [`expire`]: it logs the task name and ends the process with
-//!   `std::process::exit`. PID 1 then ends, the kernel kills the child, and
-//!   Railway restarts the container.
+//!   `std::process::exit`. Under Docker without an init, `ingest` is PID 1:
+//!   its end makes the kernel kill the child. On Railway, `ingest` is PID 2:
+//!   the init (PID 1) exits with it, and then the kernel kills the child
+//!   (ADR 0001, "Process tree on Railway"). Railway restarts the container.
 //! - A task that ends on purpose calls [`Heartbeat::retire`]. A dropped
 //!   heartbeat that was not retired stays registered, so a task that panics
 //!   or is cancelled still makes the watchdog act.

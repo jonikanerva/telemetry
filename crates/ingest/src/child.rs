@@ -2,9 +2,10 @@
 //!
 //! - **Start.** The supervisor starts the program of [`ChildCommand`] with
 //!   the arguments `-config <path>`, a cleared environment (ADR 0002,
-//!   "Roles and privileges"), standard input from `/dev/null`, and standard
-//!   output and standard error through [`crate::child_output`]. After a
-//!   successful start it sets gate condition 1 ([`Readiness`]).
+//!   "Roles and privileges"), the user of `ingest` (10001, without
+//!   capabilities; `ingest/entrypoint.sh`), standard input from `/dev/null`,
+//!   and standard output and standard error through [`crate::child_output`].
+//!   After a successful start it sets gate condition 1 ([`Readiness`]).
 //! - **Exit by itself.** The supervisor clears gate condition 1, so the gate
 //!   closes. It logs `child_exited` with the exit code or the signal,
 //!   records a `child_exited` event (ADR 0002), and starts the child again
@@ -25,13 +26,17 @@
 //!   the supervisor starts no new child, so that a new child cannot reset
 //!   the counters of the final shortfall read (step 3).
 //!
-//! PID 1 duties: `ingest` is PID 1 in the container. Tokio reaps the child
-//! that the supervisor waits for. The supervisor also sets kill-on-drop, so
-//! a dropped child handle sends SIGKILL, and Tokio reaps such a child in the
-//! background. A process that another process leaves behind is adopted by
-//! PID 1 and is not reaped: the first-party Go source of `fleet-telemetry`
-//! v0.10.1 starts no process (no `os/exec`, `syscall.ForkExec`, or
-//! `os.StartProcess`), and `ingest/entrypoint.sh` ends with `exec`, so no such
+//! PID 1 duties: under Docker without an init, `ingest` is PID 1 in the
+//! container. On Railway, an init is PID 1 and reaps every orphan, and
+//! `ingest` is PID 2 (ADR 0001, "Process tree on Railway"). Tokio reaps the
+//! child that the supervisor waits for. The supervisor also sets
+//! kill-on-drop, so a dropped child handle sends SIGKILL, and Tokio reaps
+//! such a child in the background. When `ingest` is PID 1, a process that
+//! another process leaves behind is adopted by `ingest` and is not reaped:
+//! the first-party Go source of `fleet-telemetry` v0.10.1 starts no process
+//! (no `os/exec`, `syscall.ForkExec`, or `os.StartProcess`), and
+//! `ingest/entrypoint.sh` waits for each program that it starts and ends
+//! with `exec` (through `setpriv`, which also ends with `exec`), so no such
 //! process exists in the deployment. Reaping any process with
 //! `waitpid(-1)` would need `unsafe` code or another crate, and it would
 //! race with the wait of Tokio. The lead decided for no general reaping (PR

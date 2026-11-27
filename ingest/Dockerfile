@@ -1,5 +1,8 @@
-# The ingest image (ADR 0001, "Layout"). The Rust process ingest is PID 1.
-# It starts the upstream fleet-telemetry server as its child.
+# The ingest image (ADR 0001, "Layout"). The container starts as root. The
+# entrypoint writes the TLS files and then replaces itself with the Rust
+# process ingest as user 10001 (setpriv). ingest takes the process of the
+# entrypoint: PID 1 under Docker without an init, PID 2 under the init of
+# Railway. ingest starts the upstream fleet-telemetry server as its child.
 #
 # The build context is the repository root:
 #   docker build -f ingest/Dockerfile .
@@ -47,7 +50,7 @@ COPY --from=build /build/target/release/ingest /usr/local/bin/ingest
 COPY ingest/server_config.json /etc/fleet-telemetry/config.json
 COPY ingest/entrypoint.sh /entrypoint.sh
 # The entrypoint writes the TLS files into the directory at each start.
-# Only the user 10001 can read the directory.
+# Only the user 10001 (and root) can read the directory.
 RUN chmod 0755 /entrypoint.sh \
     && install -d -m 0700 -o 10001 -g 10001 /etc/fleet-telemetry/tls
 
@@ -62,9 +65,14 @@ ENV INGEST_METRICS_PORT=9090
 ENV INGEST_CHILD_PROGRAM=/fleet-telemetry
 ENV INGEST_CHILD_CONFIG=/etc/fleet-telemetry/config.json
 
-# No part of the service needs root: all ports are above 1023, and no
-# process writes outside the TLS directory.
-USER 10001:10001
+# No USER line: the container starts as root, so that the init of Railway
+# (PID 1) and its environment with every service variable belong to root
+# and a process of user 10001 cannot read /proc/1/environ (ADR 0001,
+# "Process tree on Railway"). Only the entrypoint runs as root. It drops to
+# user 10001 with no capabilities before it starts ingest. ingest and
+# fleet-telemetry do not need root: all ports are above 1023, and they write
+# no file. The Railway pre-deploy command (ingest migrate) runs as root in
+# its own short-lived container (STACK.md section 15).
 
 # The Railway TCP proxy forwards the public port to this port.
 EXPOSE 4443

@@ -312,7 +312,6 @@ expected="$(printf '%s\n' \
   'ENV INGEST_METRICS_PORT=9090' \
   'ENV INGEST_CHILD_PROGRAM=/fleet-telemetry' \
   'ENV INGEST_CHILD_CONFIG=/etc/fleet-telemetry/config.json' \
-  'USER 10001:10001' \
   'EXPOSE 4443' \
   'CMD ["/entrypoint.sh"]')"
 if [ -z "$rust_tag" ] || [ -z "$upstream_tag" ] || [ -z "$base_tag" ] || [ "$instructions" != "$expected" ]; then
@@ -332,10 +331,15 @@ fi
 # The server reads the config that the Dockerfile copies: the allowlist
 # above fixes the copy and INGEST_CHILD_CONFIG, ingest starts the server
 # with -config and that path (crates/ingest/src/child.rs), and the
-# entrypoint starts ingest run and nothing else. Entrypoint premise: a
-# strict allowlist like the Dockerfile check. The first line is the
-# shebang #!/bin/sh; after removal of empty lines and of lines that start
-# with #, the lines must equal the expected lines; printable ASCII only.
+# entrypoint starts ingest run and nothing else. The Dockerfile allowlist
+# has no USER line, so the container (and the init of Railway) starts as
+# root; the entrypoint allowlist fixes the drop to user 10001: the chown of
+# the TLS files, and the exact setpriv arguments of the last line (user
+# and group 10001, no groups, no inheritable or bounding capabilities,
+# no_new_privs). Entrypoint premise: a strict allowlist like the
+# Dockerfile check. The first line is the shebang #!/bin/sh; after removal
+# of empty lines and of lines that start with #, the lines must equal the
+# expected lines; printable ASCII only.
 entrypoint_fail() {
   echo "vuln: $1. Update the entrypoint allowlist of the vuln task (mise.toml) together with $entrypoint."
   status=1
@@ -351,14 +355,19 @@ expected_entrypoint="$(cat <<'EOF'
 set -eu
 : "${TLS_CERT:?Set TLS_CERT to the full certificate chain in PEM format}"
 : "${TLS_KEY:?Set TLS_KEY to the private key in PEM format}"
-umask 077
-printf '%s\n' "$TLS_CERT" > /etc/fleet-telemetry/tls/tls.crt
-printf '%s\n' "$TLS_KEY" > /etc/fleet-telemetry/tls/tls.key
+cert="$TLS_CERT"
+key="$TLS_KEY"
 unset TLS_CERT TLS_KEY MIGRATION_DATABASE_URL
+rm -f /etc/fleet-telemetry/tls/tls.crt /etc/fleet-telemetry/tls/tls.key
+umask 077
+set -C
+printf '%s\n' "$cert" > /etc/fleet-telemetry/tls/tls.crt
+printf '%s\n' "$key" > /etc/fleet-telemetry/tls/tls.key
+chown 10001:10001 /etc/fleet-telemetry/tls/tls.crt /etc/fleet-telemetry/tls/tls.key
 if ! ulimit -S -n "$(ulimit -H -n)"; then
   echo '{"level":"WARN","message":"entrypoint_open_file_limit_not_raised"}' >&2
 fi
-exec /usr/local/bin/ingest run
+exec setpriv --reuid 10001 --regid 10001 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs /usr/local/bin/ingest run
 EOF
 )"
 if [ "$entrypoint_lines" != "$expected_entrypoint" ]; then
