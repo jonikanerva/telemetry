@@ -345,11 +345,10 @@ and decimal-related features must agree with actual serialization.
 
 Known conflict: the baseline names `jiff` 1, but
 utoipa 6.0.0, the newest release, has only the feature `jiff_0_2`. The
-ingest phase has no utoipa dependency, so the conflict does not affect it.
-The first web PR must resolve the utoipa and `jiff` pairing with
-compatibility evidence: a utoipa release with `jiff` 1 support, explicit
-schema overrides for the time types, or a reviewed §13 exception. Reassess
-when utoipa publishes `jiff` 1 support or when the first web PR starts.
+project does not enable that feature. The time types of the HTTP contract
+use an explicit schema override (`wire::Instant` in `crates/server`, ADR
+0010) with round-trip tests and the executed Zod checks of experiment E1.
+Reassess when utoipa publishes `jiff` 1 support.
 Pin selected Cargo feature sets; avoid enabling everything by convenience.
 Authentication packages and their compatible store remain conditional §2.5
 adoption decisions. Snapshot, mutation, and coverage tools are optional when

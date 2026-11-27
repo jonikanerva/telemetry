@@ -1,19 +1,39 @@
-# The build context of ingest/Dockerfile is the repository root. This file
+# The build context of ingest/Dockerfile and of webapp/Dockerfile is the
+# repository root. This one file serves both images: Railway support for a
+# separate ignore file next to each Dockerfile is not verified. This file
 # is an allowlist: it excludes everything, and then includes only the
-# inputs that the COPY lines of ingest/Dockerfile name. So no .env file,
-# secrets/, .bin/, .git, or target/ directory reaches the builder. Of the
-# other workspace members, only the Cargo.toml files reach the builder.
+# inputs that the COPY lines of the two Dockerfiles name. So no .env file,
+# secrets/, .bin/, .git, target/, node_modules/, or dist/ directory reaches
+# a builder. Each image reads only its own inputs: the COPY lines, not this
+# file, keep the sources of the web image out of the ingest image, and the
+# reverse (crates/ingest/tests/deployment.rs and
+# crates/server/tests/deployment.rs check both).
 *
+# Both images: the Cargo workspace.
 !Cargo.toml
 !Cargo.lock
 !.cargo/config.toml
-!crates/ingest/
 !crates/*/Cargo.toml
+# The ingest image.
+!crates/ingest/
 !db/
 !migrations/
 !ingest/
+# The web image.
+!crates/server/
+!crates/domain/
+!webapp/
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!.npmrc
+!tsconfig.base.json
+!packages/
+!web/
 # Exclude these again inside the included directories.
 **/.env*
 **/secrets
 **/.bin
 **/target
+**/node_modules
+**/dist

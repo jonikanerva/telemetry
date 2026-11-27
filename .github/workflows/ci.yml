@@ -31,7 +31,8 @@ jobs:
     # A pinned image version, not ubuntu-latest, so that the platform
     # changes only with a change of this file.
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    # The job also installs three browsers and their system packages.
+    timeout-minutes: 60
     env:
       # The configuration is the checked-out repository; the run has no
       # secret, so a trusted mise.toml grants nothing more.
@@ -78,13 +79,14 @@ jobs:
         run: mise run vuln
 
   image-check:
-    # Builds ingest/Dockerfile with the Docker engine of the hosted runner
-    # and checks the running container (STACK.md §3, task image-check). The
-    # job pushes nothing and uses no secret and no database.
+    # Builds ingest/Dockerfile and webapp/Dockerfile with the Docker engine
+    # of the hosted runner and checks the running containers (STACK.md §3,
+    # task image-check). The job pushes nothing and uses no secret and no
+    # database.
     name: mise run image-check (linux/amd64)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:

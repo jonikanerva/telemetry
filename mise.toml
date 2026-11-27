@@ -16,13 +16,17 @@ gitleaks = "8.30.1"
 osv-scanner = "2.7.1"
 jq = "1.8.2"
 crane = "0.22.1"
+# The build-time runtime and the package manager of the SPA (STACK.md §1).
+# Node is not a production requirement: the web image serves the built files.
+node = "24.22.3"
+pnpm = "12.23.0"
 
 [tasks.setup]
-description = "Install the pinned tools, the Rust toolchain, and the locked dependencies"
+description = "Install the pinned tools, the Rust toolchain, the locked dependencies, and the browsers of the tests"
 run = [
   # Name the tools: a plain `mise install` also installs the tools of the
   # global mise config. Keep this list equal to [tools].
-  "mise install cargo-nextest cargo-deny github:Boshen/cargo-shear cargo:sqlx-cli gitleaks osv-scanner jq crane",
+  "mise install cargo-nextest cargo-deny github:Boshen/cargo-shear cargo:sqlx-cli gitleaks osv-scanner jq crane node pnpm",
   # An install of sqlx-cli 0.9.1 from an older pin (`bin = "sqlx"`) has no
   # `cargo-sqlx`, and `mise install` keeps it because the version matches.
   # Reinstall only in that case, so that `cargo sqlx prepare` works.
@@ -30,22 +34,49 @@ run = [
   "rustup toolchain install",
   "rustup show active-toolchain",
   "cargo fetch --locked",
+  "pnpm install --frozen-lockfile",
+  # The browsers of the Playwright tests. In CI (GitHub sets CI=true), also
+  # the system packages that the browsers need.
+  "if [ \"${CI:-}\" = true ]; then pnpm exec playwright install --with-deps chromium firefox webkit; else pnpm exec playwright install chromium firefox webkit; fi",
   "echo 'setup: the database tests need TEST_DATABASE_URL, the URL of the Neon branch test (README.md, Verification).'",
 ]
 
 [tasks.format]
-description = "Format the Rust code"
-run = "cargo fmt --all"
+description = "Format the Rust code and the TypeScript packages with their config files"
+run = ["cargo fmt --all", "pnpm run format"]
 
 [tasks.lint]
-description = "Run Clippy with warnings as errors for the host"
+description = "Run Clippy, Oxlint, and the TypeScript compiler with warnings as errors for the host"
 # The host is the platform that runs the command. The `ci` task runs on
-# linux/amd64, the production platform (STACK.md §3).
-run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+# linux/amd64, the production platform (STACK.md §3). Clippy runs for the
+# two supported feature sets: the default set and the test server.
+run = [
+  "cargo clippy --workspace --all-targets --locked -- -D warnings",
+  "cargo clippy -p telemetry-web-server --all-targets --locked --features test-server -- -D warnings",
+  "pnpm run lint",
+  "pnpm run typecheck",
+]
 
 [tasks.build]
-description = "Build the release binary with the locked dependencies"
-run = "cargo build --workspace --release --locked"
+description = "Build the release binaries and the SPA, and check the bundle size"
+# The SPA uses the committed client (packages/api-client/src/generated);
+# the build does not export or generate it (`contract-check` compares it).
+run = [
+  "cargo build --workspace --release --locked",
+  "pnpm run build:web",
+  "pnpm run bundle-size",
+]
+
+[tasks.contract]
+description = "Export contract/openapi.json from the server and generate the API client from it"
+run = [
+  "cargo run --quiet --locked -p telemetry-web-server -- export-openapi contract/openapi.json",
+  "pnpm --filter telemetry-web-api-client run generate -- --input ../../contract/openapi.json --output src/generated",
+]
+
+[tasks.contract-check]
+description = "Check that the committed contract and client equal a new export and generation"
+run = "scripts/contract-check.sh"
 
 [tasks.test]
 description = "Run all tests and the doctests; the database tests need TEST_DATABASE_URL"
@@ -53,7 +84,20 @@ run = [
   # A missing URL is a failure, not a skipped check (STACK.md §3).
   "test -n \"${TEST_DATABASE_URL:-}\" || { echo 'test: TEST_DATABASE_URL is not set. Export the URL of the Neon branch test (README.md, Verification).' >&2; exit 1; }",
   "cargo nextest run --workspace --locked",
+  "cargo nextest run -p telemetry-web-server --locked --features test-server",
   { task = "doctest" },
+  { task = "test-web" },
+]
+
+[tasks.test-web]
+description = "Run the Vitest tests and the Playwright journeys against the test server with the built SPA"
+hide = true
+run = [
+  "pnpm run test:unit",
+  # The journeys need the test server binary and the built SPA (web/dist).
+  "cargo build --locked -p telemetry-web-server --features test-server",
+  "pnpm run build:web",
+  "pnpm run test:e2e",
 ]
 
 [tasks.test-ci]
@@ -67,7 +111,9 @@ description = "Run the tests of CI against the PostgreSQL server of the runner, 
 run = [
   "test -n \"${TEST_DATABASE_URL:-}\" || { echo 'test-ci: TEST_DATABASE_URL is not set. In CI, scripts/ci-postgres.sh sets it.' >&2; exit 1; }",
   "cargo nextest run --workspace --locked --no-fail-fast -E 'not (binary_id(ingest::storage) and (test(/^pipeline::/) or test(=roles::the_roles_get_the_privileges_of_adr_0002) or test(=roles::the_role_script_is_idempotent)))'",
+  "cargo nextest run -p telemetry-web-server --locked --no-fail-fast --features test-server",
   { task = "doctest" },
+  { task = "test-web" },
 ]
 
 [tasks.doctest]
@@ -80,15 +126,22 @@ description = "Run the static checks that verify and ci share"
 hide = true
 run = [
   "cargo fmt --all --check",
+  "pnpm run format:check",
   { task = "lint" },
+  { task = "contract-check" },
   "cargo deny --locked check",
+  # The JS dependencies, also the development tools (STACK.md §3, §14).
+  "pnpm audit --prod=false",
   "cargo shear",
   "gitleaks git --redact --no-banner .",
-  "jq empty ingest/server_config.json config/telemetry_config.json",
+  "jq empty ingest/server_config.json config/telemetry_config.json contract/openapi.json",
   "sh -n ingest/entrypoint.sh",
   "sh -n scripts/sqlx-metadata.sh",
   "sh -n scripts/image-check.sh",
-  "! git ls-files | grep -E '^(\\.env|secrets/|\\.bin/)'",
+  "sh -n scripts/image-check-web.sh",
+  "sh -n scripts/contract-check.sh",
+  "sh -n scripts/bundle-size.sh",
+  "! git ls-files | grep -E '(^|/)(\\.env|secrets/|\\.bin/|node_modules/)'",
 ]
 
 [tasks.sqlx-check]
@@ -122,10 +175,12 @@ run = [
 ]
 
 [tasks.image-check]
-description = "Build the ingest image and check the running container (needs Docker; the CI job image-check runs it)"
+description = "Build the ingest image and the web image and check each running container (needs Docker; the CI job image-check runs it)"
 # STACK.md §3. The development machine has no container runtime, so this
 # task runs in CI on linux/amd64. It pushes no image and uses no secret.
-run = "scripts/image-check.sh"
+# Each script has its own containers, ports, and cleanup. The task stops
+# at the first failure.
+run = ["scripts/image-check.sh", "scripts/image-check-web.sh"]
 
 [tasks.deps]
 description = "Dependency freshness check (STACK.md §3); reads crates.io, the Rust release channel, the image tags, and the tags of the CI pins"
@@ -146,6 +201,42 @@ run = [
   "work=\"$(mktemp -d)\"; printf '{}' > \"$work/config.json\"; tag=\"$(DOCKER_CONFIG=\"$work\" crane ls tesla/fleet-telemetry | grep -E '^v[0-9]+[.][0-9]+[.][0-9]+$' | sort -V | tail -1)\"; rm -rf \"$work\"; test -n \"$tag\" || { echo 'deps: cannot read the tesla/fleet-telemetry tags'; exit 1; }; echo \"latest tesla/fleet-telemetry tag: $tag\"",
   # The builder tag is <Rust version>-slim-<Debian codename>.
   "codename=\"$(sed -n 's/^FROM debian:\\([a-z]*\\).*$/\\1/p' ingest/Dockerfile)\"; test -n \"$codename\" || { echo 'deps: cannot read the Debian codename of ingest/Dockerfile'; exit 1; }; work=\"$(mktemp -d)\"; printf '{}' > \"$work/config.json\"; tag=\"$(DOCKER_CONFIG=\"$work\" crane ls rust | grep -E \"^[0-9]+[.][0-9]+[.][0-9]+-slim-$codename\\$\" | sort -V | tail -1)\"; rm -rf \"$work\"; test -n \"$tag\" || { echo 'deps: cannot read the rust image tags'; exit 1; }; echo \"latest rust builder tag: $tag\"",
+  # The web image and the JS tools: the pinned FROM lines of
+  # webapp/Dockerfile, the newest node builder tag of the pinned Node major
+  # on the Debian release of the final stage, the newest Node LTS release,
+  # the newest pnpm release, and the locked JS packages that are behind
+  # their latest release. The rust builder tag of webapp/Dockerfile is the
+  # same as for ingest/Dockerfile (crates/server/tests/deployment.rs). The
+  # deps task, like `cargo update --dry-run`, does not apply the minimum
+  # release age: a release younger than 1440 minutes is not due.
+  '''
+  dockerfile=webapp/Dockerfile
+  awk '/^FROM/ { print "pinned image: " $2 }' "$dockerfile"
+  node_pin="$(awk -F'"' '/^node = / { print $2 }' mise.toml)"
+  pnpm_pin="$(awk -F'"' '/^pnpm = / { print $2 }' mise.toml)"
+  codename="$(sed -n 's/^FROM debian:\([a-z]*\)-slim$/\1/p' "$dockerfile")"
+  if [ -z "$node_pin" ] || [ -z "$pnpm_pin" ] || [ -z "$codename" ]; then
+    echo "deps: cannot read the Node or pnpm pin of mise.toml or the Debian codename of $dockerfile"; exit 1
+  fi
+  major="${node_pin%%.*}"
+  work="$(mktemp -d)"; printf '{}' > "$work/config.json"
+  tag="$(DOCKER_CONFIG="$work" crane ls node | grep -E "^$major[.][0-9]+[.][0-9]+-$codename-slim\$" | sort -V | tail -1)"
+  rm -rf "$work"
+  [ -n "$tag" ] || { echo "deps: cannot read the node image tags"; exit 1; }
+  echo "pinned Node: $node_pin; latest node builder tag of Node $major: $tag"
+  lts="$(curl -fsS https://nodejs.org/dist/index.json | jq -r '[.[] | select(.lts != false)][0] | "\(.version) (\(.lts))"')"
+  [ -n "$lts" ] || { echo "deps: cannot read the Node releases"; exit 1; }
+  echo "newest Node LTS release: $lts"
+  pnpm_latest="$(curl -fsS https://registry.npmjs.org/pnpm/latest | jq -r '.version')"
+  [ -n "$pnpm_latest" ] || { echo "deps: cannot read the newest pnpm release"; exit 1; }
+  echo "pinned pnpm: $pnpm_pin; latest pnpm release: $pnpm_latest"
+  # pnpm outdated exits with 1 when a package is behind. The JSON form
+  # tells that result from a failed read: a read gives one JSON object.
+  outdated="$(pnpm outdated --recursive --format json)" || true
+  printf '%s\n' "$outdated" | jq -e 'type == "object"' > /dev/null ||
+    { echo "deps: cannot read the outdated JS packages (pnpm outdated)"; exit 1; }
+  printf '%s\n' "$outdated" | jq -r 'to_entries[] | "outdated JS package: \(.key) \(.value.current) (latest: \(.value.latest), \(.value.dependencyType))"'
+  ''',
   "curl -fsS https://deb.debian.org/debian/dists/stable/Release | grep -E '^(Codename|Version):'",
   # Pins of the CI workflow (STACK.md §15): each action, the mise version,
   # and the runner label, with the newest release tags. git ls-remote reads
@@ -270,8 +361,12 @@ run = [
 ]
 
 [tasks.vuln]
-description = "Vulnerability check (STACK.md §3): Rust dependencies and the runtime FROM images of ingest/Dockerfile"
+description = "Vulnerability check (STACK.md §3): Rust and JS dependencies and the runtime FROM images of ingest/Dockerfile and webapp/Dockerfile"
 # Runs every scan and fails when one scan fails or finds a vulnerability.
+# The source scan reads Cargo.lock and pnpm-lock.yaml; it skips the
+# workspace links of pnpm-lock.yaml, so the first-party package names get
+# no advisory, and it skips the git-ignored node_modules/. pnpm audit
+# reads every JS dependency, also the development tools.
 # crane downloads each runtime FROM image for linux/amd64 as a Docker
 # archive, so no container runtime is needed. crane reads its credentials
 # from $DOCKER_CONFIG/config.json when that file exists. The task points
@@ -282,9 +377,15 @@ description = "Vulnerability check (STACK.md §3): Rust dependencies and the run
 # on deployment facts (docs/security/image-advisories.md, "Deployment
 # facts"). crates/ingest/tests/deployment.rs checks most of them. The task
 # checks the three facts that no other check holds, and fails when one
-# breaks, so that the triage is done again.
-# The builder image (FROM ... AS build) is not scanned: no file of it
-# reaches the final image except the ingest binary (STACK.md §13).
+# breaks, so that the triage is done again. For the web image, it checks
+# the copies between stages (docs/security/image-advisories.md, "Web
+# image").
+# The builder images are not scanned: ingest/Dockerfile stage build and
+# webapp/Dockerfile stages web and build. No file of them reaches a final
+# image except the binary and the SPA files (STACK.md §13).
+# Each Dockerfile has its own number of runtime FROM images. Both final
+# stages use the same debian image; the task scans each image once, and
+# counts each scanned image for each Dockerfile that names it.
 # The script is a TOML literal string: backslashes reach the shell as written.
 run = '''
 status=0
@@ -294,6 +395,14 @@ dockerfile=ingest/Dockerfile
 copies="$(grep -iE 'from=' "$dockerfile" | grep -vE '^[[:space:]]*#' || true)"
 if [ "$copies" != "$(printf '%s\n' 'COPY --from=upstream /fleet-telemetry /fleet-telemetry' 'COPY --from=build /build/target/release/ingest /usr/local/bin/ingest')" ]; then
   echo "vuln: $dockerfile copies other files between stages. Repeat the triage of docs/security/image-advisories.md."
+  status=1
+fi
+# The web image takes only the server binary from the build stage and the
+# SPA files from the web stage (image-advisories.md, "Web image").
+web_dockerfile=webapp/Dockerfile
+copies="$(grep -iE 'from=' "$web_dockerfile" | grep -vE '^[[:space:]]*#' || true)"
+if [ "$copies" != "$(printf '%s\n' 'COPY --from=build /build/target/release/telemetry-web-server /usr/local/bin/telemetry-web-server' 'COPY --from=web /build/web/dist /usr/local/share/telemetry-web')" ]; then
+  echo "vuln: $web_dockerfile copies other files between stages. Repeat the triage of docs/security/image-advisories.md, \"Web image\"."
   status=1
 fi
 # The entrypoint runs rm, chown, and setpriv as root and nothing else
@@ -328,17 +437,30 @@ if ! jq -n -e --stream '
   status=1
 fi
 cargo deny --locked check advisories || status=1
+pnpm audit --prod=false || status=1
 # .claude/ holds old agent worktrees with their own Cargo.lock files.
 osv-scanner scan source -r --x-exclude 'g:**/.claude/worktrees' . || status=1
-# The runtime FROM images: every stage except the builder stage.
-images="$(awk 'toupper($1) == "FROM" && !(toupper($3) == "AS" && $4 == "build") { print $2 }' "$dockerfile")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 printf '{}' > "$work/config.json"
 export DOCKER_CONFIG="$work"
-scanned=0
-for image in $images; do
-  echo "image: $image"
+# The runtime FROM images of each Dockerfile: every stage except its
+# builder stages. Each line: the Dockerfile, its builder stages (with
+# commas), and its number of runtime images. ingest/Dockerfile has two
+# (tesla/fleet-telemetry and debian), webapp/Dockerfile has one (debian).
+cat > "$work/specs" <<'EOF'
+ingest/Dockerfile build 2
+webapp/Dockerfile web,build 1
+EOF
+# One line for each runtime FROM line: the Dockerfile and the image.
+: > "$work/runtime"
+while read -r file builders expected; do
+  awk -v f="$file" -v b=",$builders," 'toupper($1) == "FROM" && !(toupper($3) == "AS" && index(b, "," $4 ",")) { print f, $2 }' "$file" >> "$work/runtime"
+done < "$work/specs"
+# Each image once, also when both Dockerfiles name it.
+: > "$work/scanned"
+for image in $(cut -d ' ' -f 2 "$work/runtime" | sort -u); do
+  echo "image: $image ($(awk -v i="$image" '$2 == i { printf "%s ", $1 }' "$work/runtime"))"
   if crane pull --platform linux/amd64 "$image" "$work/image.tar"; then
     crane digest --platform linux/amd64 "$image"
     ignore_file="docs/security/osv-scanner-$(printf '%s' "${image%%[:@]*}" | tr '/' '-').toml"
@@ -349,17 +471,23 @@ for image in $images; do
       osv-scanner scan image --archive "$work/image.tar" || true
       status=1
     fi
-    scanned=$((scanned + 1))
+    echo "$image" >> "$work/scanned"
   else
     echo "vuln: cannot download $image"
     status=1
   fi
   rm -f "$work/image.tar"
 done
-# Exactly two runtime images: tesla/fleet-telemetry and debian.
-if [ "$scanned" -ne 2 ]; then
-  echo "vuln: scanned $scanned runtime images of $dockerfile, expected 2"
-  status=1
-fi
+# Each Dockerfile: the number of its runtime FROM lines and the number of
+# those that the loop scanned must both equal the expected number.
+while read -r file builders expected; do
+  listed="$(awk -v f="$file" '$1 == f { n++ } END { print n + 0 }' "$work/runtime")"
+  scanned="$(awk -v f="$file" 'NR == FNR { ok[$1] = 1; next } $1 == f && ($2 in ok) { n++ } END { print n + 0 }' "$work/scanned" "$work/runtime")"
+  echo "runtime images of $file: $listed listed, $scanned scanned, $expected expected"
+  if [ "$listed" -ne "$expected" ] || [ "$scanned" -ne "$expected" ]; then
+    echo "vuln: scanned $scanned of $listed runtime images of $file, expected $expected"
+    status=1
+  fi
+done < "$work/specs"
 exit "$status"
 '''
