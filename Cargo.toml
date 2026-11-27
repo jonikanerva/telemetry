@@ -28,6 +28,17 @@ prost = { version = "0.14.6", default-features = false, features = ["derive", "s
 prost-types = { version = "0.14.6", default-features = false, features = ["std"] }
 uuid = { version = "1.29.3", default-features = false, features = ["std"] }
 zeromq = { version = "0.7.0", default-features = false, features = ["tcp-transport", "tokio-runtime"] }
+# Web server only (crates/server). `crates/server/Cargo.toml` selects the
+# features of tower and tower-http.
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+tower = { version = "0.5.3", default-features = false }
+tower-http = { version = "0.7.1", default-features = false }
+utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
+utoipa-axum = { version = "0.3.0", default-features = false }
+# TLS of the test server only (crates/server feature `test-server`). The
+# server crate selects the features. The release build does not build them.
+rustls = { version = "0.23.46", default-features = false }
+tokio-rustls = { version = "0.26.6", default-features = false }
 # Build only: protobuf code generation without a protoc binary (ADR 0001).
 prost-build = { version = "0.14.6", default-features = false }
 protox = { version = "0.10.0", default-features = false }

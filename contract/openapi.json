@@ -1,0 +1,165 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "telemetry web API",
+    "description": "HTTP API of the telemetry web application. Every failure is application/problem+json.",
+    "version": "1"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Returns the state and the version of the server.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "The server answers requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the limit.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected error occurred.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The request took too long.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "description": "The body of `GET /health`.",
+        "required": [
+          "status",
+          "version"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus",
+            "description": "Always `ok`."
+          },
+          "version": {
+            "type": "string",
+            "description": "The commit SHA of the deployment, or `unknown`.",
+            "example": "0123abc"
+          }
+        }
+      },
+      "HealthStatus": {
+        "type": "string",
+        "description": "The state of the server. The only value is `ok`.",
+        "enum": [
+          "ok"
+        ]
+      },
+      "Problem": {
+        "type": "object",
+        "description": "A problem details body (RFC 9457) and its status.",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "detail"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ProblemCode",
+            "description": "The application code."
+          },
+          "detail": {
+            "type": "string",
+            "description": "A static English text for the code.",
+            "example": "The request took too long. Try again later."
+          },
+          "retry_after_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds to wait before a new attempt. Present only with the status\n429 and 503; the `Retry-After` header holds the same value.",
+            "example": 5,
+            "maximum": 86400,
+            "minimum": 1
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The HTTP status of the response.",
+            "example": 503,
+            "maximum": 599,
+            "minimum": 100
+          },
+          "title": {
+            "type": "string",
+            "description": "The reason phrase of the status.",
+            "example": "Service Unavailable"
+          },
+          "type": {
+            "type": "string",
+            "description": "Always `about:blank`.",
+            "example": "about:blank"
+          }
+        }
+      },
+      "ProblemCode": {
+        "type": "string",
+        "description": "The application code of a problem. The set is closed: a new code is a\ncontract change.",
+        "enum": [
+          "unauthenticated",
+          "invalid_credentials",
+          "login_throttled",
+          "forbidden_origin",
+          "invalid_request",
+          "unsupported_media_type",
+          "payload_too_large",
+          "not_found",
+          "method_not_allowed",
+          "database_unavailable",
+          "service_busy",
+          "timeout",
+          "data_contract_violation",
+          "internal_error"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "health",
+      "description": "Liveness and version"
+    }
+  ]
+}

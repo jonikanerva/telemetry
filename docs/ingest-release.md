@@ -44,6 +44,9 @@ Rules:
    field is `skipDeploys` of `variableUpsert`, "Don't trigger a redeploy
    after change"
    (<https://docs.railway.com/integrations/api/manage-variables>).
+   The variable `NO_CACHE` turns off the layer cache of the build, so
+   that the `apt-get` step runs at each build (STACK.md section 15,
+   "Build cache").
    Make sure that no variable starts with `INGEST_`. A service variable
    replaces the value of the image.
 4. Set the service settings: the rows of the same table whose column
@@ -109,7 +112,7 @@ Railway builds the image. Watch the deployment:
 
 | Phase | Command | Expected |
 | ----- | ------- | -------- |
-| Build | `railway logs --build <deployment id>` | The `apt-get upgrade` step runs (not `CACHED`) and lists the installed versions. `cargo build --release --locked -p ingest` ends with `Finished`. |
+| Build | `railway logs --build <deployment id>` | The `apt-get upgrade` step runs (not `CACHED`) and lists the installed versions. A `CACHED` step means that the variable `NO_CACHE` of the table is missing or wrong: set it and build again. `cargo build --release --locked -p ingest` ends with `Finished`. |
 | Pre-deploy | `railway logs <deployment id> --filter "migrated OR migrate_failed"` | One line `migrated`: `applied` counts the migrations of this run, and `embedded` the migrations of the binary. |
 | Healthcheck | Railway deployment view | The healthcheck on `/health` passes; the status is `SUCCESS`. |
 | Start | `railway logs <deployment id> --filter "started OR gate_opened OR subscriber_settled OR database_check_passed"` | `subscriber_settled`, `database_check_passed`, and an `ingest_event` `gate_opened` within a few seconds. |

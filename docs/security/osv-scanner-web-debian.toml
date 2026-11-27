@@ -1,0 +1,398 @@
+# Reviewed ignore list for the image scan of debian:trixie-slim as the
+# runtime image of webapp/Dockerfile (`mise run vuln`). Each entry records
+# a decision of docs/security/image-advisories.md#web-image for the web
+# image. The ingest image has its own file,
+# docs/security/osv-scanner-debian.toml. Do not add an entry without a
+# decision in that section. Do not add an entry for a "needs action"
+# finding.
+#
+# The entries have the IDs and the expiry dates of the ingest file; the web
+# image does not extend an expiry. The glibc and gcc-14 entries apply only
+# while the service telemetry-web has no public domain and no TCP proxy
+# (W4). Before the service gets a public domain, repeat that decision in
+# this file.
+#
+# The scan reads the FROM image, not the image that Railway builds. The
+# Dockerfile runs `apt-get upgrade`, so an advisory with a fix in
+# trixie-security is fixed in the built image, but the scan still shows it.
+# After `effectiveUntil`, an entry stops to apply and `vuln` fails again.
+# Then repeat the triage and set a new date, or remove the entry.
+# Only advisories that Debian rates above "unimportant" are listed: the
+# others do not fail the scan.
+
+# --- acl ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-54369"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-54370"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- attr ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-54371"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- bzip2 ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-42250"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- dpkg ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-91094"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- gcc-14 ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-95619"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-102010"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-114690"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-114691"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-115455"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-115456"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-125709"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+
+# --- glibc ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-84243"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-100290"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-115819"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-121757"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-121758"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-124024"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-126765"
+effectiveUntil = 2027-01-25
+reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+
+
+# --- libzstd ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-124851"
+effectiveUntil = 2027-01-25
+reason = "Web image, group fixed in the build: webapp/Dockerfile runs the same apt-get upgrade, which installs the fixed version from trixie-security. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DSA-6657-1"
+effectiveUntil = 2027-01-25
+reason = "Web image, group fixed in the build: webapp/Dockerfile runs the same apt-get upgrade, which installs the fixed version from trixie-security. See docs/security/image-advisories.md#web-image"
+
+
+# --- ncurses ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2025-6141"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2025-69720"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- openssl ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-35190"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-84785"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-84786"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-88822"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-88823"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-95690"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-95691"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-95692"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-107493"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-107494"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-107496"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-121481"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-121482"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-124709"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- pam ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2025-8941"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-54411"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- perl ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-9538"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-15534"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-40558"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-82560"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- shadow ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2024-56433"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-135901"
+effectiveUntil = 2027-01-25
+reason = "Web image, group fixed in the build: webapp/Dockerfile runs the same apt-get upgrade, which installs the fixed version from trixie-security. See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DSA-6661-1"
+effectiveUntil = 2027-01-25
+reason = "Web image, group fixed in the build: webapp/Dockerfile runs the same apt-get upgrade, which installs the fixed version from trixie-security. See docs/security/image-advisories.md#web-image"
+
+
+# --- sqlite3 ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-50812"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-50813"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119371"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119372"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119373"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119374"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119375"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119376"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119377"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119378"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119379"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119586"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-119591"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- systemd ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-15059"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-16742"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- tar ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-5704"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-18477"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-18508"
+effectiveUntil = 2027-01-25
+reason = "Web image, group on disk only: accepted, not affected. No fix in Debian 13 on 2026-11-26. The server does not execute or load this package (W2, W3). See docs/security/image-advisories.md#web-image"
+
+
+# --- util-linux ---
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-3184"
+effectiveUntil = 2027-01-25
+reason = "Web image, group util-linux: accepted, not affected. No fix in Debian 13 on 2026-11-26. The web image has no entrypoint, and the server runs no program of this package (W2). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-76642"
+effectiveUntil = 2027-01-25
+reason = "Web image, group util-linux: accepted, not affected. No fix in Debian 13 on 2026-11-26. The web image has no entrypoint, and the server runs no program of this package (W2). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-78408"
+effectiveUntil = 2027-01-25
+reason = "Web image, group util-linux: accepted, not affected. No fix in Debian 13 on 2026-11-26. The web image has no entrypoint, and the server runs no program of this package (W2). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-78409"
+effectiveUntil = 2027-01-25
+reason = "Web image, group util-linux: accepted, not affected. No fix in Debian 13 on 2026-11-26. The web image has no entrypoint, and the server runs no program of this package (W2). See docs/security/image-advisories.md#web-image"
+
+[[IgnoredVulns]]
+id = "DEBIAN-CVE-2026-78410"
+effectiveUntil = 2027-01-25
+reason = "Web image, group util-linux: accepted, not affected. No fix in Debian 13 on 2026-11-26. The web image has no entrypoint, and the server runs no program of this package (W2). See docs/security/image-advisories.md#web-image"
+

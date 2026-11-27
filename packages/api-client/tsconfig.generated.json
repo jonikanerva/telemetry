@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": false,
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "rootDir": "src/generated",
+    "outDir": "node_modules/.cache/tsc/generated",
+    "tsBuildInfoFile": "node_modules/.cache/tsc/generated.tsbuildinfo"
+  },
+  "include": ["src/generated/**/*.ts"]
+}

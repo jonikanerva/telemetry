@@ -18,8 +18,8 @@ import it.
 
 - **Project risk rationale:** one person, the owner, depends on the system. The data contains the vehicle location history and the VIN; a leak shows where the owner is and when the owner is away. A collection failure loses history that cannot be collected again. Usage above the Tesla billing limit removes the vehicle telemetry configuration and suspends the Tesla API for the owner's Home Assistant. No other system depends on this product. The product sends no commands to the vehicle.
 - **Change risk:** assess each changed surface against that rationale. A risk label does not waive required evidence or review. Changes to the ingest service, the vehicle telemetry configuration, access control, and stored location data are material.
-- **Phase scope (ADR 0009):** the first phase builds the ingest path and the raw storage. The web application and the derived periods (drives, charges, parked) come later. These parts become binding with the first web PR: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. The general text of the other sections in `docs/stack-web-profile.md` binds the ingest code now, wherever the code has that concern; read the section when a change touches its topic.
-- **Shape:** a monorepo. The Railway service `telemetry` runs one image with Tesla's `fleet-telemetry` server (upstream Go binary) and the Rust ingest process, which supervises it and writes the records to PostgreSQL (ADR 0001). The web application comes later as a second service: one Rust service and one SPA on one origin. The application server uses Rust (ADR 0009).
+- **Phase scope (ADR 0009):** the ingest path and the raw storage are live. The web phase has started: these parts of `docs/stack-web-profile.md` are binding: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. The derived periods (drives, charges, parked) come later. The general text of the other sections in `docs/stack-web-profile.md` binds all code wherever the code has that concern; read the section when a change touches its topic.
+- **Shape:** a monorepo with two Railway services. The service `telemetry` runs one image with Tesla's `fleet-telemetry` server (upstream Go binary) and the Rust ingest process, which supervises it and writes the records to PostgreSQL (ADR 0001). The service `telemetry-web` runs one image with the Rust web server and the built SPA on one origin (ADR 0010). The application server uses Rust (ADR 0009).
 
 ### Repository layout and boundaries
 
@@ -36,17 +36,28 @@ repo/
   crates/ingest/src/     # Ingest process: gate, supervisor, ZMQ reader, PostgreSQL writer
   crates/ingest/proto/   # Vendored upstream .proto files of the deployed fleet-telemetry tag
   crates/ingest/.sqlx/   # Committed query metadata of the SQLx macros of ingest
-  crates/domain/         # Package telemetry-web-domain: web domain rules; an empty library now
-  crates/server/         # Package telemetry-web-server: web application server; a program without function now
+  crates/domain/         # Package telemetry-web-domain: pure web domain rules; an empty library now
+  crates/server/         # Package telemetry-web-server: HTTP server, problem mapping, static files, contract export (ADR 0010)
+  contract/openapi.json  # Committed OpenAPI 3.1 export of the server
+  packages/api-client/   # Package telemetry-web-api-client: generated client and Zod validators, handwritten facade
+  web/                   # Package telemetry-web-spa: the SPA (Vite, React, TanStack Router and Query)
+  e2e/                   # Package telemetry-web-e2e: Playwright journeys against the test server
+  webapp/                # Dockerfile of the web image (ADR 0010)
   migrations/            # SQLx migrations (ADR 0002)
   db/roles.sql           # Roles, schema, and privileges (ADR 0002); run once by the owner role
-  scripts/               # Check scripts: SQLx metadata, image check, CI PostgreSQL, Gitleaks guard
+  scripts/               # Check scripts: SQLx metadata, image check, contract check, bundle size, CI PostgreSQL, Gitleaks guard
   Cargo.toml  Cargo.lock  rust-toolchain.toml  clippy.toml  deny.toml  mise.toml
+  package.json  pnpm-workspace.yaml  pnpm-lock.yaml  .npmrc  tsconfig*.json
 ```
 
-The web phase fills `crates/domain` and `crates/server`, and adds
-`packages/api-client`, `web/`, `contract/openapi.json`, and `e2e/` (web
-profile §0). Each crate with SQLx query macros keeps its metadata in
+Boundaries of the web parts (ADR 0010): `crates/domain` depends on no
+HTTP, runtime, or database crate. `crates/server` depends on `domain` and
+shares no code with `crates/ingest`. `web` reaches the API only through
+`telemetry-web-api-client`; Oxlint `no-restricted-imports` enforces this.
+Nothing edits `packages/api-client/src/generated/` by hand. Each
+first-party npm package is private, and its name starts with
+`telemetry-`, for the same reason as the Cargo package names below.
+Each crate with SQLx query macros keeps its metadata in
 `crates/<crate>/.sqlx/`. The ingest image reads only `crates/ingest` in
 full and the `Cargo.toml` of each other member, with a stub target (§15),
 so a change of the web sources does not release ingest. Each first-party
@@ -101,6 +112,29 @@ lint limitation; a stale expectation fails verification, and it cannot
 waive an acceptance criterion. Do not ban lossless numeric casts as a
 class.
 
+### Frontend
+
+- TypeScript 7.0.2 (native compiler) for every type check. The profile
+  flags of `docs/stack-web-profile.md` §1 are in `tsconfig.base.json`;
+  each package extends it. Exceptions (§13): TypeScript 6.0.3 resolves only
+  for the generator in `packages/api-client`, and the generated directory
+  has its own `tsconfig.generated.json` that turns off only
+  `exactOptionalPropertyTypes`.
+- Node.js 24.22.3 (LTS) and pnpm 12.23.0, pinned in `mise.toml`. Node is a
+  build-time runtime only.
+- pnpm workspace (`pnpm-workspace.yaml`): exact versions, committed
+  `pnpm-lock.yaml`, `--frozen-lockfile` installs, `minimumReleaseAge: 1440`
+  (strict), `strictDepBuilds: true`. pnpm 12 reads only the registry, auth,
+  TLS, and proxy settings from `.npmrc`.
+- Oxlint 1.95.0 with `oxlint-tsgolint` 7.0.2009, type-aware, with
+  `--deny-warnings` (`.oxlintrc.json`). It enables every rule of
+  typescript-eslint `strict-type-checked`, the React hook rules, and
+  `no-restricted-imports` for the import boundaries (§0). Gap: a computed
+  `import(x)` is not checked; review covers it.
+- Prettier 3.10.1 for the TypeScript packages and their config files.
+- Zod 4 runs with `jitless: true` (`packages/api-client/src/zod-config.ts`),
+  because its `new Function` probe is a CSP `script-src` violation.
+
 ### Provisioning
 
 `rust-toolchain.toml` owns the Rust version; mise owns the other tool pins.
@@ -138,26 +172,29 @@ reads the Rust version from `rust-toolchain.toml`
 
 | Task     | Content |
 | -------- | ------- |
-| `setup`  | The pinned tools of `mise.toml`, the Rust toolchain, and the locked crates. |
-| `format` | `cargo fmt --all` |
-| `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings` for the host (linux/amd64 in CI). |
-| `build`  | `cargo build --workspace --release --locked` |
-| `test`   | `cargo nextest run --workspace --locked` (all tests) and `cargo test --doc --workspace --locked` (task `doctest`). |
-| `test-ci` | CI only: `cargo nextest run --workspace --locked --no-fail-fast` against the PostgreSQL server of the runner, without the tests that need Neon (below), and `doctest`. |
-| `verify` | The static checks of task `checks` (format check, `lint`, `cargo deny --locked check`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, or `.bin/` path), then `sqlx-check`, `build`, and `test`. |
+| `setup`  | The pinned tools of `mise.toml`, the Rust toolchain, the locked crates, `pnpm install --frozen-lockfile`, and the Playwright browsers chromium, firefox, and webkit (in CI with `--with-deps`). |
+| `format` | `cargo fmt --all` and Prettier in write mode over the TypeScript packages and their config files. |
+| `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings` for the host (linux/amd64 in CI), Clippy of `telemetry-web-server` with the feature `test-server`, type-aware Oxlint with `--deny-warnings`, and `tsc` of TypeScript 7 for `web`, `packages/api-client`, and `e2e`. |
+| `build`  | `cargo build --workspace --release --locked`, `vite build` of the SPA into `web/dist` with gzip copies, and the bundle-size check (`scripts/bundle-size.sh`). The build uses the committed client; it does not export or generate it. |
+| `contract` | Writes `contract/openapi.json` (`telemetry-web-server export-openapi`) and generates `packages/api-client/src/generated/` from it with Hey API. Run it after a change of an HTTP type or route, and commit both. |
+| `contract-check` | `scripts/contract-check.sh`: exports and generates in a scratch directory and compares the complete trees with `diff -r` (also added and deleted files). It never writes the working tree. |
+| `test`   | `cargo nextest run --workspace --locked` (all tests), the server tests with the feature `test-server`, `cargo test --doc --workspace --locked` (task `doctest`), and task `test-web`: Vitest, then the Playwright journeys in chromium, firefox, and webkit against the debug test server (`telemetry-web-server serve-test`) with the real router, middleware, and built SPA. |
+| `test-ci` | CI only: `cargo nextest run --workspace --locked --no-fail-fast` against the PostgreSQL server of the runner, without the tests that need Neon (below), the server tests with `test-server`, `doctest`, and `test-web`. |
+| `verify` | The static checks of task `checks` (Rust and Prettier format checks, `lint`, `contract-check`, `cargo deny --locked check`, `pnpm audit --prod=false`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, `.bin/`, or `node_modules/` path), then `sqlx-check`, `build`, and `test`. |
 | `ci`     | The CI job `ci`: `checks`, `sqlx-check`, `build`, and `test-ci` against the PostgreSQL server of the runner (`scripts/ci-postgres.sh`). It does not replace `verify`. |
 | `sqlx-check` | `scripts/sqlx-metadata.sh check`: `cargo sqlx prepare --check` in each crate with a SQLx dependency, against a new database on the server of `TEST_DATABASE_URL` (the Neon branch `test` locally, the PostgreSQL server of the runner in CI), migrated with `migrations/`, then dropped. Each crate has its metadata in `crates/<crate>/.sqlx/`; a `.sqlx/` at the root fails the check. |
 | `sqlx-prepare` | `scripts/sqlx-metadata.sh prepare`: writes `crates/<crate>/.sqlx/` the same way after a change of a query or a migration. |
 | `deps`   | The dependency freshness check (below). |
 | `vuln`   | The vulnerability check (below). |
-| `image-check` | `scripts/image-check.sh` (CI only): builds `ingest/Dockerfile` and checks the running container without a database, without an init, with the init of Docker (`--init`, as on Railway), and as user 10001 (must fail). The script header lists each check. |
+| `image-check` | CI only. `scripts/image-check.sh` builds `ingest/Dockerfile` and checks the running container without a database, without an init, with the init of Docker (`--init`, as on Railway), and as user 10001 (must fail). `scripts/image-check-web.sh` builds `webapp/Dockerfile` and checks the web container: user 10001, `/health`, the security headers, the problem document of an unknown API path, a missing asset (404, never `index.html`), the version in `index.html`, gzip assets, SIGTERM, the image size, and no secret in the log. Each script header lists its checks. |
 
 Tests that need Neon: the four end-to-end tests of `tests/storage/pipeline.rs` (the binary gets a new URL and an empty environment, so it trusts only the Mozilla roots, not the test CA) and the two tests of `tests/storage/roles.rs` that read the membership of `neon_superuser` (`the_roles_get_the_privileges_of_adr_0002`, `the_role_script_is_idempotent`). They run only in the local `verify` (ADR 0008).
 
 Pinned tools: cargo-nextest 0.9.152, cargo-deny 0.22.1, cargo-shear 1.14.1,
 Gitleaks 8.30.1, osv-scanner 2.7.1, SQLx CLI 0.9.1 (features `postgres` and
 `rustls`, built from source, both programs `sqlx` and `cargo-sqlx`), jq
-1.8.2, and crane 0.22.1.
+1.8.2, crane 0.22.1, Node.js 24.22.3, and pnpm 12.23.0. `package.json` and
+`pnpm-lock.yaml` pin the npm tools (§6).
 
 **Database tests.** `test`, `test-ci`, `verify`, and `sqlx-check` need
 `TEST_DATABASE_URL`: locally the URL of the role `neondb_owner` on the Neon
@@ -183,8 +220,16 @@ Scope and gaps of `verify`:
 - The end-to-end tests need a debug build, because only a debug build
   reads the test overrides (ADR 0001). The ignored test
   `measure_the_size_of_a_signal_row` runs only on request (ADR 0002).
-- Each task stops at the first failure. Prettier, Oxlint, `tsc`, Vitest,
-  Playwright, and `pnpm audit` join `verify` with the first web change.
+- Each task stops at the first failure.
+- The journeys need the host tool `openssl` (LibreSSL on macOS, OpenSSL on
+  the runner) for the test certificate (`e2e/tls-cert.sh`). It is not
+  pinned; a missing tool fails `test-web`.
+- The Playwright journeys run against `serve-test` of a debug build with
+  the feature `test-server`, which the release image does not build.
+  `pnpm audit` sends the package names and versions of `pnpm-lock.yaml` to
+  the audit endpoint of the npm registry; it sends no product data.
+- Prettier formats the TypeScript packages and their config files, not the
+  Markdown documents.
 
 **CI (GitHub Actions).** `.github/workflows/ci.yml` runs the jobs `ci`
 (with `postgres:18.7-trixie` on the runner, TLS, a test CA, and
@@ -210,9 +255,11 @@ Merge conditions (`CLAUDE.md`, ADR 0008):
 
 **Dependency freshness check** (`mise run deps`): `cargo update --dry-run
 --verbose` (also lists crates behind across major versions), `mise outdated
---bump`, `pnpm outdated --recursive` with the first web PR, and the newest
-releases of `rust-toolchain.toml`, the `FROM` images of
-`ingest/Dockerfile`, and the CI pins. Compare the other §15 versions by
+--bump`, `pnpm outdated --recursive`, and the newest releases of
+`rust-toolchain.toml`, Node.js (LTS lines), pnpm, the `FROM` images of
+`ingest/Dockerfile` and `webapp/Dockerfile`, and the CI pins. pnpm applies
+`minimumReleaseAge` (1440 minutes) to each install; `deps` prints the
+newest npm releases without that filter. Compare the other §15 versions by
 hand. A crate release younger than 1440 minutes is not due, except a
 security fix (ADR 0006). `deps` checks the workflow against a strict line
 allowlist (`mise.toml`, task `deps`) that changes together with the
@@ -223,16 +270,25 @@ runner label, check in the README of `actions/runner-images` that the image
 is generally available.
 
 **Vulnerability check** (`mise run vuln`, ADR 0005): `cargo deny --locked
-check advisories`, `osv-scanner scan source -r .` (without
-`.claude/worktrees/`), and `osv-scanner scan image --archive` of each
-runtime `FROM` image (every stage except `build`), downloaded anonymously
-with crane for `linux/amd64`. Each image scan reads its reviewed ignore
-file `docs/security/osv-scanner-<repository, / as ->.toml`. First the task
+check advisories`, `pnpm audit --prod=false`, `osv-scanner scan source -r .`
+(`Cargo.lock` and `pnpm-lock.yaml`, without `.claude/worktrees/`; the
+workspace links of `pnpm-lock.yaml` and the ignored `node_modules/` are not
+read), and `osv-scanner scan image --archive` of each runtime `FROM` image
+of `ingest/Dockerfile` and `webapp/Dockerfile` (every stage except the
+builder stages), downloaded anonymously with crane for `linux/amd64`. The
+task scans the runtime images of each Dockerfile, so an image that both
+Dockerfiles name is scanned once for each. Each image scan reads the
+reviewed ignore file of its Dockerfile:
+`docs/security/osv-scanner-<repository, / as ->.toml` for
+`ingest/Dockerfile` and `docs/security/osv-scanner-web-<repository, / as ->.toml`
+for `webapp/Dockerfile`; a missing file fails the task. First the task
 checks the three deployment facts that no other check holds
 (`docs/security/image-advisories.md`, "Ignore files and deployment facts").
 It fails when a fact breaks, a scan fails or finds an uncovered
-vulnerability, or it did not scan exactly two runtime images. `pnpm audit`
-joins with the first web PR. Compare the Rust toolchain and each §15
+vulnerability, or the scanned runtime images of a Dockerfile differ from
+its expected number (two for `ingest/Dockerfile`, one for
+`webapp/Dockerfile`). The `COPY --from` lines of each Dockerfile must equal
+an allowlist in the task. Compare the Rust toolchain and each §15
 version with its vendor advisories.
 
 Scope and gaps of `vuln`:
@@ -254,9 +310,11 @@ Scope and gaps of `vuln`:
   - A green `vuln` job is a merge condition of a PR that changes an input:
     `Cargo.lock`, each `Cargo.toml`, `deny.toml`, the `vuln` task or the
     scanner pins in `[tools]` of `mise.toml` (cargo-deny, osv-scanner,
-    crane, jq), the `vuln` job of `.github/workflows/ci.yml`, any lockfile
-    that `osv-scanner scan source -r .` reads, any `osv-scanner.toml`,
-    `ingest/Dockerfile`, `ingest/entrypoint.sh`,
+    crane, jq, pnpm), the `vuln` job of `.github/workflows/ci.yml`, any
+    lockfile that `osv-scanner scan source -r .` reads (also
+    `pnpm-lock.yaml`), each `package.json`, `pnpm-workspace.yaml`, any
+    `osv-scanner.toml`, `ingest/Dockerfile`, `webapp/Dockerfile`,
+    `ingest/entrypoint.sh`,
     `ingest/server_config.json`, or the ignore files in `docs/security/`.
   - For any other PR, a red `vuln` job starts a triage in a
     `chore/deps-<topic>` PR and does not block that PR. Before such a PR
@@ -269,8 +327,22 @@ Scope and gaps of `vuln`:
 
 ## 4. Performance budgets
 
-The budget template is in `docs/stack-web-profile.md`, §4. The ingest phase
-has no adopted budget table.
+The ingest service has no adopted budget table. The web budgets below are
+targets (ADR 0010). A row is a gate only where a check enforces it; the
+other rows name the slice that can measure them.
+
+| Budget | Target and conditions | Measured | Enforcement |
+| ------ | --------------------- | -------- | ----------- |
+| Initial bundle | JS ≤ 200 KB and CSS ≤ 30 KB, gzip, the files that `index.html` references | JS 131,619 B, CSS 1,009 B (S1 shell, macOS arm64, 27 November 2026) | `scripts/bundle-size.sh` in `build` |
+| Web image | ≤ 100 MB compressed (`docker save` with gzip) | Printed by `image-check-web.sh` in CI | `image-check-web.sh` fails above the budget |
+| Startup to `/health` | ≤ 1 s, release image on linux/amd64 | Printed in whole seconds (container start included) by `image-check-web.sh` in CI | Not a gate: the script waits at most 30 s |
+| Battery API, warm | p95 ≤ 1 s for 24h to 30d, ≤ 2 s for 90d and 1y | Not measured | Owned by S3 |
+| Battery API, cold Neon | ≤ 8 s total | Not measured | Owned by S3 (experiment E3) |
+| Login | p95 ≤ 1 s with the Argon2 parameters of S2 | Not measured | Owned by S2 |
+| Resident memory | steady ≤ 128 MiB, peak ≤ 256 MiB | Not measured | Railway metrics after the release |
+| Concurrency | database requests ≤ 2, Argon2 ≤ 1 | Not applicable in S1 | Owned by S2 and S3 |
+| Lab experience | LCP ≤ 2.5 s, CLS ≤ 0.1 (Chromium, mobile viewport, 4× CPU slowdown); no field data | Not measured | Owned by S4 |
+| Web use of Neon | ≤ 10 CU-hours each month | Not applicable in S1 (no database) | Owned by S3 |
 
 ---
 
@@ -298,8 +370,11 @@ needs boundary review.
 ### Pinned direct dependencies
 
 `Cargo.lock` pins the resolved versions. Default features are off; the
-listed features are the complete set. `src/main.rs` of `crates/ingest` is
-the only reader of the environment and the command line.
+listed features are the complete set of the workspace entry.
+`src/main.rs` of `crates/ingest` is the only reader of the environment and
+the command line of ingest; `config` and `cli` of `crates/server` are those
+of the web server. A feature that only the web server uses is in
+`crates/server/Cargo.toml`, so the ingest binary does not change.
 
 | Crate | Version | Features | Use | Licence |
 | ----- | ------- | -------- | --- | ------- |
@@ -324,6 +399,49 @@ the only reader of the environment and the command line.
 | zeromq | 0.7.0 | `tcp-transport`, `tokio-runtime` | ZMQ SUB socket (ADR 0001); pure Rust | MIT |
 | futures-util | 0.3.34 | none | `StreamExt::next` on the `zeromq` monitor stream | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | none | Run ID and retry jitter without a panic | MIT OR Apache-2.0 |
+| serde, web | 1.0.229 | `derive`, `std` | Wire types of the HTTP contract | MIT OR Apache-2.0 |
+| utoipa, web | 6.0.0 | `macros` | OpenAPI 3.1 export of the HTTP types (no `jiff_0_2`: `wire::Instant` has an explicit schema) | MIT OR Apache-2.0 |
+| utoipa-axum, web | 0.3.0 | none | Ties the documented routes to the registered routes | MIT OR Apache-2.0 |
+| tower-http, web | 0.7.1 | server crate: `catch-panic`, `fs` | Panic containment; static files with precompressed gzip | MIT |
+| tower, web dev | 0.5.3 | server tests: `util` | `oneshot` in the HTTP tests | MIT |
+| rustls, web test server | 0.23.46 | server crate, optional (feature `test-server`): `aws_lc_rs`, `std`, `tls12` | TLS 1.2 and 1.3 of `serve-test` with the explicit aws-lc-rs provider; PEM parser of `rustls-pki-types` | Apache-2.0 OR ISC OR MIT |
+| tokio-rustls, web test server | 0.26.6 | server crate, optional (feature `test-server`): none | Tokio TLS acceptor of `serve-test` | MIT OR Apache-2.0 |
+
+The web server adds the axum features `json` and `matched-path` and, in the
+tests, the tokio feature `test-util`, in `crates/server/Cargo.toml`.
+Only the feature `test-server` enables rustls and tokio-rustls, so the
+release image has no TLS code; the Railway proxy ends TLS.
+
+### Pinned npm packages
+
+`package.json` of each workspace package pins exact versions;
+`pnpm-lock.yaml` pins the tree. Each release was older than 1440 minutes
+at the pin.
+
+| Package | Version | Package of the workspace | Use | Licence |
+| ------- | ------- | ------------------------ | --- | ------- |
+| typescript | 7.0.2 | root | `tsc` for every type check (§1) | Apache-2.0 |
+| typescript | 6.0.3 | `telemetry-web-api-client` (dev) | Compiler API for the generator only (§13) | Apache-2.0 |
+| oxlint, oxlint-tsgolint | 1.95.0, 7.0.2009 | root | Type-aware lint | MIT |
+| prettier | 3.10.1 | root | Format | MIT |
+| vitest | 5.1.2 | root | Unit tests | MIT |
+| vite | 8.4.0 | root, `telemetry-web-spa` | SPA build; the peer of Vitest | MIT |
+| @vitejs/plugin-react | 6.3.0 | `telemetry-web-spa` (dev) | React transform | MIT |
+| react, react-dom | 19.3.1 | `telemetry-web-spa` | UI | MIT |
+| @tanstack/react-router | 1.170.46 | `telemetry-web-spa` | Code-based routes and URL state | MIT |
+| @tanstack/react-query | 5.108.4 | `telemetry-web-spa` | Server state and cache | MIT |
+| zod | 4.6.7 | `telemetry-web-api-client` | Executed validation of responses and problem bodies | MIT |
+| @hey-api/openapi-ts | 0.99.0 | `telemetry-web-api-client` (dev) | Generation of the SDK, types, and Zod schemas | MIT |
+| @playwright/test | 1.65.1 | root, `telemetry-web-e2e` | Browser journeys | Apache-2.0 |
+| @axe-core/playwright | 4.14.1 | `telemetry-web-e2e` | Accessibility checks in the journeys | MPL-2.0 (test only; the image holds no file of it) |
+| @types/react, @types/react-dom, @types/node | 19.3.3, 19.3.0, 24.19.4 | dev | Types; `@types/node` follows the Node 24 runtime | MIT |
+
+Override: `pnpm-workspace.yaml` sets `js-yaml` 4.3.2 for
+`@hey-api/json-schema-ref-parser@1.4.4`, which pins js-yaml 4.2.0 with
+three high advisories (GHSA-52cp-r559-cp3m, GHSA-5p4m-2wfm-xmqj,
+GHSA-2883-xcg3-v3hh). `contract-check` proves that the generated client
+does not change. Remove the override when a generator release depends on
+js-yaml 4.3.2 or later.
 
 Facts of the dependency tree:
 
@@ -458,13 +576,17 @@ approval.
 | Rule / scope | Consequence | Compensating evidence | ADR | Reassessment |
 | ------------ | ----------- | --------------------- | --- | ------------ |
 | §3: no scanner for the `apt-get` packages of the built image, the Rust toolchain, the mise tools, and the static C code of `/fleet-telemetry` | A known vulnerability there is found only by a manual comparison. | The manual comparisons of ADR 0005, decision 6. Before a change enables the `kafka` dispatcher, compare the OpenSSL and libcurl records one by one. | ADR 0005 | The built image can be downloaded; a scanner covers these surfaces; another dispatcher or another libzmq address; or by 2027-01-25. |
-| §3: reviewed ignore files of the image scan | An ignored advisory that later gets a Debian fix or a KEV listing stays hidden until its entry expires. | A recorded decision and an expiry for each entry; the deployment-fact checks; the build-log check of §15; manual KEV comparison. | ADR 0005 | Expiry: Go entries 2027-02-24, Debian 13 entries 2027-01-25. Earlier with a new upstream release, a base image change, a broken deployment fact, or a KEV listing. |
+| §3: reviewed ignore files of the image scan | An ignored advisory that later gets a Debian fix or a KEV listing stays hidden until its entry expires. | A recorded decision and an expiry for each entry; the deployment-fact checks; the build-log check of §15; manual KEV comparison. | ADR 0005 | Expiry: Go entries 2027-02-24, Debian 13 entries 2027-01-25. Earlier with a new upstream release, a base image change, a broken deployment fact, or a KEV listing. Before the service `telemetry-web` gets a public domain or a TCP proxy: the glibc and gcc-14 entries of `docs/security/osv-scanner-web-debian.toml`. |
 | §3: no scan of the builder image `rust:<version>-slim-trixie` | A compiler or linker vulnerability that changes the binary is not found by a scanner. | The tag is pinned (`<channel of rust-toolchain.toml>-slim-<Debian codename of the final stage>`; no check holds this form); `deps` prints the newest tag; `image-check` runs the binary; manual KEV comparison. | ADR 0005 | A scanner of the built image in CI; a build-stage advisory in CISA KEV; a change of the builder image. |
 | §3: no scan of the test-only CI image `postgres:18.7-trixie` | A vulnerability in that image is not found by a scanner. | It runs only on the CI runner, with test data, no secret, and on loopback. | ADR 0005 | The image is used outside CI. |
 | §3, §14: Gitleaks 8.30.1 contains the brotli decoder of CVE-2026-111497 (CISA KEV) | A scan into archives, or another Gitleaks version, can run the decoder on fork input: a denial of service of the scan. | The scan reads no archive content (depth 0); `scripts/gitleaks-guard.sh` in `checks` fails on the literal archive depth flag in any tracked file (also a binary one), on a `git grep` error, and on a version other than 8.30.1; ADR 0011 lists the known limits. | ADR 0011 | A Gitleaks release with brotli 1.2.7 or later; any Gitleaks version change; a need to scan archives; or by 2027-01-25. |
-| §8: no readable development formatter | Developers read the logs with `jq`. | The JSON formatter and its redaction tests (`crates/ingest/src/logging.rs`). | ADR 0009 | A developer workflow needs readable logs; the first web PR. |
+| §8: no readable development formatter (ingest and web server) | Developers read the logs with `jq`. | The JSON formatters and their redaction tests (`crates/ingest/src/logging.rs`, `crates/server/src/logging.rs`). | ADR 0009, ADR 0010 | A developer workflow needs readable logs. |
 | §1, §14: runtime tests on linux/amd64 before merge | A Linux-only fault in the container, as PID 1, behind the Railway proxy, or in a test that needs Neon shows only after deployment. | The Linux checks 1 to 6 of ADR 0001 ("To verify at first deployment"): CI, `image-check`, and the Railway checks of `docs/ingest-release.md`. Open: check 3 on Railway, check 4, and check 5. | ADR 0008 | Ends when the release records checks 1 to 5 and check 6 has CI evidence. Reassess on 2027-02-28 if open, and when CI can run the tests that need Neon. |
 | §14: build and test of the ingest image before merge | The Railway build, settings, proxy, and healthcheck are unverified before the merge. | A green `image-check` job of the PR head; the post-release checks and the recovery of `docs/ingest-release.md`. | ADR 0008 | Railway documents its Dockerfile build, or the Railway builder can run before the merge. |
+| Web profile §2.1: TypeScript 6.0.3 for the generator | Two TypeScript versions in the lockfile; the generator runs on the older compiler API. | Only `telemetry-web-api-client` resolves it (dev dependency, `pnpm why`); every type check runs TypeScript 7.0.2; `contract-check` compares the output. | ADR 0010 | A Hey API release that supports TypeScript 7. |
+| §1: `exactOptionalPropertyTypes` off for `packages/api-client/src/generated/` | The copied client runtime of Hey API is not checked with that one flag. | Nothing edits the directory; `contract-check`; every other strict flag stays on; the facade and the SPA keep the flag and read the generated code only as declarations. | ADR 0010 | A Hey API release whose runtime passes the flag. |
+| §3: no scan of the web builder images `node:<version>-trixie-slim` and `rust:<version>-slim-trixie` | A vulnerability in Node, npm, pnpm, or a builder Debian package that changes the SPA files or the server binary is not found by a scanner. | The tags equal the pins of `mise.toml` and `rust-toolchain.toml` (`crates/server/tests/deployment.rs`); `deps` prints the newest tags; `pnpm audit` and the source scan cover the npm packages of the build; `vuln` allows only the binary and `web/dist` out of the builder stages; `image-check` runs the built image; manual KEV comparison. | ADR 0010 | A scanner of the built image in CI; a builder-stage advisory in CISA KEV; a change of a builder image. |
+| §14: build and test of the web image before merge | The Railway build, settings, and healthcheck of `telemetry-web` are unverified before the merge. | A green `image-check` job of the PR head (`image-check-web.sh`); the post-release checks and the recovery of `docs/web-release.md`. | ADR 0008, ADR 0010 | Railway documents its Dockerfile build, or the Railway builder can run before the merge. |
 | Web profile §15: one image for server and SPA | The ingest service is a second image (Tesla's upstream server). | The application still ships as one image. | ADR 0009 | Permanent while the upstream server is used. |
 
 ---
@@ -527,6 +649,11 @@ environment; its pins are the rows that start with "CI".
 | Ingest server | `tesla/fleet-telemetry:v0.10.1` | Upstream binary, Go 1.27.4, dynamically linked against the glibc and libstdc++ of the base image. Triage: `docs/security/image-advisories.md`. |
 | Ingest base image | `debian:trixie-slim` | Debian 13. The build runs `apt-get upgrade`, so the packages depend on the build date. |
 | Ingest builder image | `rust:1.100.0-slim-trixie` | Rust 1.100.0 (`--profile minimal`) with gcc and libc6-dev. Only the `ingest` binary leaves the stage (§13). |
+| Railway web service | Hobby plan, project `calmdonut`, service `telemetry-web` | Builds `webapp/Dockerfile` from `main` (ADR 0010). No TCP proxy and no domain in this phase. Created by the lead before the first web release (ADR 0004, grant 2). |
+| Web base image | `debian:trixie-slim` | The same image as the ingest base; the build runs `apt-get upgrade`. The final stage installs no package. |
+| Web builder images | `node:24.22.3-trixie-slim` (SPA) and `rust:1.100.0-slim-trixie` (server) | Only `web/dist` and the server binary leave the stages (§13). |
+| Node.js | 24.22.3 (LTS), `mise.toml` and the web builder image | Build-time only; not a production runtime. |
+| pnpm | 12.23.0, `mise.toml`; `npm install -g` in the web builder image | `pnpm-workspace.yaml` sets `minimumReleaseAge: 1440`. |
 | Rust toolchain | 1.100.0, `rust-toolchain.toml` | Local, CI, and Railway builds. |
 | Railway TCP proxy | `zephyr.proxy.rlwy.net:57438` to container port 4443 | The vehicle's signed config names host `telemetry.calmdonut.com` and port 57438. |
 | Railway container | Kernel `6.12.12+bpo-cloud-amd64`; `tcp_retries2` 15; Yama `ptrace_scope` 0; open files 1048576 soft and hard | Listeners `0.0.0.0:4443`, `0.0.0.0:8080`, `127.0.0.1:4444`, `127.0.0.1:5284`, `127.0.0.1:9090`. `railway ssh` (UID 0) cannot read `/proc/<pid>/environ` of UID 10001. Read again after a platform change. |
@@ -570,10 +697,19 @@ environment; its pins are the rows that start with "CI".
   [`docs/ingest-release.md`](docs/ingest-release.md). The minimum check:
   the deployment status is `SUCCESS`, `openssl s_client` verifies the
   certificate against the Origin CA ECC root on port 57438, and the log
-  shows a vehicle connection when the vehicle is next awake. After each image
-  build, the Railway build log must show that the `apt-get` step ran (not
-  a cached layer) and the installed versions of the fixed packages; else
-  build again without the cache.
+  shows a vehicle connection when the vehicle is next awake.
+- Build cache: the service variable `NO_CACHE` is `1` (table below), so
+  Railway builds each image without its layer cache and the `apt-get`
+  step installs the Debian security fixes of the build date. The Railway
+  documentation, "Disable build layer caching": "By default, Railway will
+  cache build layers to provide faster build times." and "set the
+  following environment variable in your service: `NO_CACHE=1`"
+  (<https://docs.railway.com/builds/build-configuration>). Cost: a build
+  without the cache takes longer; the duration is not measured
+  (assumption from the quoted text). Evidence after each build: the
+  Railway build log shows that the `apt-get` step ran (not a cached
+  layer) and the installed versions of the fixed packages; else build
+  again and check that `NO_CACHE` is set.
 - If the TCP proxy port changes (Railway does not document it as
   permanent), sign and send a new vehicle telemetry config
   (`config/telemetry_config.json`). That needs the Tesla application private
@@ -585,7 +721,7 @@ environment; its pins are the rows that start with "CI".
   "Recovery").
 - Image advisories: triage an expired ignore entry or a new advisory in a
   `chore/deps-<topic>` PR, with `docs/security/image-advisories.md` and the
-  ignore file together. A Debian fix for a library that the server loads
+  affected ignore files (ingest and web) together. A Debian fix for a library that the server loads
   (glibc, gcc-14) needs a rebuild of the image.
 - The deployment test requires `zmq.addr` `tcp://127.0.0.1:5284` for the
   libzmq 4.3.4 listener of the `zmq` dispatcher.
@@ -602,7 +738,7 @@ table holds the same values. Source: the Railway documentation
 
 | Setting                 | Value | Where the lead sets it | Reason |
 | ----------------------- | ----- | ---------------------- | ------ |
-| Root directory          | `/` (unchanged) | Service settings | The build context holds `Cargo.toml`, `crates/ingest/`, the `Cargo.toml` of each other member, `db/`, and `migrations/`. |
+| Root directory          | `/` (unchanged) | Service settings | The build context holds `Cargo.toml`, `crates/ingest/`, the `Cargo.toml` of each other member, `db/`, and `migrations/`; the root `.dockerignore` also admits the inputs of the web image, which no `COPY` line of `ingest/Dockerfile` reads. |
 | Dockerfile path         | `/ingest/Dockerfile` | Service settings (`dockerfilePath`, relative form `ingest/Dockerfile`), not `RAILWAY_DOCKERFILE_PATH` | Without it, Railpack builds the workspace and no image of ADR 0001. |
 | Watch paths             | `/ingest/**`, `/crates/ingest/**`, `/crates/*/Cargo.toml`, `/db/**`, `/migrations/**`, `/.cargo/**`, `/Cargo.toml`, `/Cargo.lock`, `/rust-toolchain.toml`, `/.dockerignore` | Service settings, one pattern each line | Each input of the image; another change starts no deployment. |
 | Custom start command    | None | Service settings | The image `CMD` runs `/entrypoint.sh`; a start command would replace the `ENTRYPOINT`. |
@@ -614,6 +750,7 @@ table holds the same values. Source: the Railway documentation
 | Draining time           | 30 s | Variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | SIGTERM to SIGKILL; the shutdown budget is 26 s. |
 | Overlap time            | 0 s | Variable `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` | The vehicle reconnects by itself. |
 | Restart policy          | Always | Service settings | No limit of 10 restarts (assumption: Hobby counts as a paid plan). |
+| `NO_CACHE`              | `1` | Variable `NO_CACHE` | Each build runs the `apt-get` step without the layer cache, so the image gets the Debian security fixes of the build date. |
 | TCP proxy               | `zephyr.proxy.rlwy.net:57438` to port 4443 (unchanged) | Service settings | The vehicle config names port 57438. |
 
 The service variables `DATABASE_URL`, `MIGRATION_DATABASE_URL`, `TLS_CERT`,
@@ -621,6 +758,53 @@ and `TLS_KEY` hold secrets. The image `ENV` lines hold the other settings
 (README.md, "Configuration"). Do not set these names as service variables:
 a service variable replaces the image value. `ingest/Dockerfile` has no `ARG` line, so no secret reaches a
 build step.
+
+### Release rules of the web service
+
+- The service `telemetry-web` runs the image of `webapp/Dockerfile`: the
+  server binary `telemetry-web-server` and the built SPA, as user 10001
+  (ADR 0010). It holds no data and runs no migration. It reads no
+  database in this phase.
+- The image has a `USER 10001:10001` line, unlike the ingest image: the
+  server process holds its own service variables anyway, so
+  `/proc/1/environ` exposes nothing more (ADR 0010).
+- The web watch paths and the ingest watch paths overlap only in the
+  Cargo files, `/.cargo/**`, `/rust-toolchain.toml`, and `/.dockerignore`.
+  A change of one of these releases both services.
+- The service has no TCP proxy and no Railway domain. The custom domain
+  `tesla.calmdonut.com` comes with the login: a public URL without access
+  control is a sign of drift (`VISION.md`).
+- Release steps, post-release checks, and recovery:
+  [`docs/web-release.md`](docs/web-release.md). The build-log check of
+  "Build cache" applies to this image too.
+
+#### Railway settings of the service `telemetry-web`
+
+This table is the one documented place of the values. The deployment test
+of the server (`crates/server/tests/deployment.rs`, module `railway`) holds
+them as constants, checks them against `webapp/Dockerfile` and the code,
+and checks that this table holds the same values.
+
+| Setting                 | Value | Where the lead sets it | Reason |
+| ----------------------- | ----- | ---------------------- | ------ |
+| Root directory          | `/` | Service settings | The build context holds the inputs of `webapp/Dockerfile`. |
+| Dockerfile path         | `/webapp/Dockerfile` | Service settings (`dockerfilePath`, relative form `webapp/Dockerfile`), not `RAILWAY_DOCKERFILE_PATH` | Without it, Railpack builds the workspace. |
+| Watch paths             | `/webapp/**`, `/web/**`, `/packages/**`, `/crates/server/**`, `/crates/domain/**`, `/crates/*/Cargo.toml`, `/Cargo.toml`, `/Cargo.lock`, `/.cargo/**`, `/rust-toolchain.toml`, `/package.json`, `/pnpm-lock.yaml`, `/pnpm-workspace.yaml`, `/.npmrc`, `/tsconfig.base.json`, `/.dockerignore` | Service settings, one pattern each line | Each input of the image; another change starts no deployment. |
+| Custom start command    | None | Service settings | The image `CMD` runs `telemetry-web-server serve`. |
+| Pre-deploy command      | None | Service settings | The web service applies no migration. |
+| Healthcheck path        | `/health` | Service settings | 200 without a database, so a deployment does not wake Neon. |
+| Healthcheck timeout     | 300 s (the default) | Variable `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`, or unset | The server answers within 1 s of the start. |
+| `PORT`                  | `8080` | Variable `PORT` | The port of the server and of the healthcheck; the image `EXPOSE` line names it. |
+| Draining time           | 15 s | Variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | SIGTERM to SIGKILL; the shutdown deadline is 10 s. |
+| Overlap time            | 0 s | Variable `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` | One version of the server at a time. |
+| Restart policy          | Always | Service settings | No limit of restarts. |
+| `NO_CACHE`              | `1` | Variable `NO_CACHE` | Each build runs the `apt-get` step without the layer cache, so the image gets the Debian security fixes of the build date. |
+| TCP proxy               | None | Service settings | No TCP port for the internet. |
+| Custom domain           | None | Service settings | No public URL before the login exists (`VISION.md`, drift signs); `tesla.calmdonut.com` comes with the login. |
+
+The variable `RAILWAY_GIT_COMMIT_SHA`, which Railway sets, gives the
+version that `/health` reports. The image `ENV` line sets `WEB_STATIC_DIR`;
+do not set it as a service variable. `webapp/Dockerfile` has no `ARG` line.
 
 ### Lead authority (ADR 0004, ADR 0007)
 

@@ -5,8 +5,8 @@ it into a history of drives, charging sessions, and parked periods.
 
 The vehicle streams its data with Tesla
 [Fleet Telemetry](https://github.com/teslamotors/fleet-telemetry). This
-repository contains the ingest service that receives the stream. The
-application that stores and shows the data is planned.
+repository contains the ingest service that receives the stream and
+stores it, and the scaffold of the web application that will show it.
 
 ## Status
 
@@ -15,7 +15,7 @@ application that stores and shows the data is planned.
 | Ingest service      | Deployed: the image of ADR 0001. The vehicle connects. The config selects 20 fields ([usage estimate](docs/telemetry-usage-estimate.md)). No record reaches the Railway log. |
 | Rust ingest process | Live. `ingest/Dockerfile` builds the image of ADR 0001: `ingest` starts `fleet-telemetry`, receives the records over ZMQ, and writes them to PostgreSQL. On Railway an init is PID 1 and `ingest` is PID 2. A merge to `main` that changes a watch path releases it; [STACK.md](STACK.md) section 15 has the release steps and the post-release checks. |
 | Storage             | Live on the Neon branch `production` (PostgreSQL 18): schema `raw`, migrations, and writer in `crates/ingest` (ADR 0002). `ingest migrate` runs as the Railway pre-deploy command. |
-| Application and web | Planned. See [VISION.md](VISION.md) for the product direction.    |
+| Application and web | Scaffold: the web server (`crates/server`), the SPA shell (`web/`), the generated API client, and the image `webapp/Dockerfile` (ADR 0010). No login and no data view yet. The Railway service `telemetry-web` has no public domain. See [VISION.md](VISION.md) for the product direction. |
 
 ## How it works
 
@@ -90,15 +90,24 @@ vehicle ──TCP──▶ gate (ingest, port 4443) ──▶ fleet-telemetry (1
 | `ingest/Dockerfile`            | Image of the service: `ingest` and `fleet-telemetry` (ADR 0001) |
 | `ingest/entrypoint.sh`         | Start command: writes the TLS files, then starts `ingest run`  |
 | `ingest/server_config.json`    | Configuration of `fleet-telemetry`                             |
-| `.dockerignore`                | Allowlist of the build inputs of `ingest/Dockerfile`           |
+| `.dockerignore`                | Allowlist of the build inputs of `ingest/Dockerfile` and `webapp/Dockerfile` |
 | `config/telemetry_config.json` | Telemetry config for the vehicle: host, port, CA, and signals  |
 | `crates/ingest/`               | Rust ingest process                                            |
 | `crates/ingest/.sqlx/`         | Query metadata of the SQLx macros of `ingest`                  |
-| `crates/domain/`, `crates/server/` | Web application packages `telemetry-web-domain` and `telemetry-web-server`; skeletons without function now |
+| `crates/domain/`               | Package `telemetry-web-domain`: web domain rules; empty now   |
+| `crates/server/`               | Package `telemetry-web-server`: HTTP server, problem mapping, static files, contract export (ADR 0010) |
+| `contract/openapi.json`        | Committed OpenAPI 3.1 export of the server                     |
+| `packages/api-client/`         | Generated client and Zod schemas (`src/generated/`, never edited) and the facade |
+| `web/`                         | The SPA: Vite, React, TanStack Router and Query                |
+| `e2e/`                         | Playwright journeys against the test server                    |
+| `webapp/Dockerfile`            | Image of the web service: server and built SPA (ADR 0010)      |
+| `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml` | pnpm workspace and locked npm packages |
 | `migrations/`                  | SQLx migrations of the raw schema (ADR 0002)                   |
 | `db/roles.sql`                 | Database roles, schema, and privileges (ADR 0002)              |
 | `scripts/sqlx-metadata.sh`     | Checks or writes `crates/<crate>/.sqlx/` against a test database |
-| `scripts/image-check.sh`       | Builds the image and checks the container (CI job `image-check`) |
+| `scripts/image-check.sh`, `scripts/image-check-web.sh` | Build the images and check the containers (CI job `image-check`) |
+| `scripts/contract-check.sh`    | Compares the committed contract and client with a new export   |
+| `scripts/bundle-size.sh`       | Checks the gzip size of the initial JS and CSS of the SPA      |
 | `Cargo.toml`, `Cargo.lock`     | Rust workspace, lints, and locked dependencies                 |
 | `rust-toolchain.toml`          | Rust toolchain version                                         |
 | `mise.toml`                    | Tool pins and the project commands                             |
@@ -204,12 +213,39 @@ mise run verify
 ```
 
 `mise run verify` is the single local gate. [STACK.md](STACK.md) section 3
-lists the tasks and what each one checks.
+lists the tasks and what each one checks. `mise run setup` also installs
+Node.js and pnpm (pinned in `mise.toml`), the npm packages, and the
+Playwright browsers.
+
+After a change of an HTTP type or route, export the contract and generate
+the client again, and commit both:
+
+```sh
+mise run contract
+```
+
+The web server reads `PORT`, `WEB_STATIC_DIR` (the image sets it), and the
+optional `RAILWAY_GIT_COMMIT_SHA` (the version). The test server serves
+HTTPS and also reads `WEB_TEST_TLS_CERT` and `WEB_TEST_TLS_KEY`: the PEM
+files of its certificate and key. `e2e/tls-cert.sh` makes a self-signed
+certificate for `localhost` that is valid for 2 days, in the ignored
+directory `e2e/.tls/`. To run the test server with the built SPA locally:
+
+```sh
+cargo build --locked -p telemetry-web-server --features test-server
+pnpm run build:web
+sh e2e/tls-cert.sh e2e/.tls
+PORT=4173 WEB_STATIC_DIR=web/dist WEB_TEST_TLS_CERT=e2e/.tls/cert.pem \
+  WEB_TEST_TLS_KEY=e2e/.tls/key.pem target/debug/telemetry-web-server serve-test
+```
+
+Then open <https://localhost:4173> and accept the self-signed certificate.
 
 The GitHub Actions workflow `.github/workflows/ci.yml` also runs
 `mise run ci` and `mise run vuln` on linux/amd64 for each pull request and
-each push to `main`. Its job `image-check` builds the image and checks the
-running container (`scripts/image-check.sh`), because the development
+each push to `main`. Its job `image-check` builds both images and checks
+the running containers (`scripts/image-check.sh`,
+`scripts/image-check-web.sh`), because the development
 machine has no container runtime. CI does not replace the local gate.
 
 The database tests and the SQLx metadata check need `TEST_DATABASE_URL`:

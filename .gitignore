@@ -2,3 +2,9 @@
 secrets/
 .bin/
 /target/
+node_modules/
+/web/dist/
+/e2e/test-results/
+/e2e/playwright-report/
+# The TLS certificate and key of the test server (e2e/tls-cert.sh).
+/e2e/.tls/

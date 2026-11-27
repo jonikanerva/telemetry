@@ -1,0 +1,9 @@
+# The generator writes these files; they are never edited (profile §0).
+packages/api-client/src/generated/
+# Build and test output.
+web/dist/
+e2e/test-results/
+e2e/playwright-report/
+node_modules/
+# pnpm writes the lockfile.
+pnpm-lock.yaml

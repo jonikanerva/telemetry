@@ -1,0 +1,26 @@
+{
+  "name": "telemetry-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json tsconfig.json .oxlintrc.json .prettierrc.json vitest.config.ts packages web e2e",
+    "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json tsconfig.json .oxlintrc.json .prettierrc.json vitest.config.ts packages web e2e",
+    "lint": "oxlint --type-aware --deny-warnings --config .oxlintrc.json packages web e2e vitest.config.ts",
+    "typecheck": "tsc --version && tsc -p tsconfig.json && tsc -b packages/api-client/tsconfig.generated.json && tsc -p packages/api-client/tsconfig.json && tsc -p web/tsconfig.json && tsc -p web/tsconfig.node.json && tsc -p e2e/tsconfig.json",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "build:web": "pnpm --filter telemetry-web-spa run build",
+    "bundle-size": "sh scripts/bundle-size.sh web/dist"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "@types/node": "24.19.4",
+    "oxlint": "1.95.0",
+    "oxlint-tsgolint": "7.0.2009",
+    "prettier": "3.10.1",
+    "typescript": "7.0.2",
+    "vite": "8.4.0",
+    "vitest": "5.1.2"
+  }
+}

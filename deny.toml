@@ -5,6 +5,9 @@
 [graph]
 # The production image runs on Linux. macOS is the development platform.
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin"]
+# Every feature of the first-party crates, so that an optional dependency
+# (for example the TLS crates of the web test server) is checked too.
+all-features = true
 
 [advisories]
 # Vulnerabilities and unmaintained crates fail the check by default.

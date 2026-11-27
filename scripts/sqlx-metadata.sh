@@ -10,6 +10,7 @@
 #   scripts/sqlx-metadata.sh check     # used by `mise run verify`
 #   scripts/sqlx-metadata.sh prepare   # writes the metadata after a query change
 #
+# The script needs Cargo, the SQLx CLI, and jq (the pins of mise.toml).
 # TEST_DATABASE_URL must point to the test database (README.md,
 # "Verification"; in CI, `scripts/ci-postgres.sh` sets it). The script:
 #
@@ -50,11 +51,21 @@ if [ -e .sqlx ]; then
   echo "sqlx-metadata: .sqlx/ exists at the workspace root. Each crate keeps its metadata in crates/<crate>/.sqlx/. Remove the root directory." >&2
   exit 1
 fi
-# The crates with a SQLx dependency: a line that starts with `sqlx` in the
-# dependency tables of the crate manifest.
-crates=$(grep -l -E '^sqlx[[:space:]]*(=|\.)' crates/*/Cargo.toml | sed 's|/Cargo.toml$||')
+# The crates with a SQLx dependency of any kind (normal, dev, or build),
+# from the resolved manifests of `cargo metadata`, so that each form of a
+# dependency entry counts (an inherited, renamed, or inline-table entry).
+# The paths are relative to the workspace root. A failed `cargo metadata`
+# stops the script (set -e on the assignment).
+metadata=$(cargo metadata --format-version 1 --no-deps --locked)
+crates=$(printf '%s\n' "$metadata" | jq -r '
+  .workspace_root as $root
+  | .packages[]
+  | select(any(.dependencies[]; .name == "sqlx"))
+  | .manifest_path
+  | ltrimstr($root + "/")
+  | rtrimstr("/Cargo.toml")')
 if [ -z "$crates" ]; then
-  echo "sqlx-metadata: no crate depends on sqlx" >&2
+  echo "sqlx-metadata: no workspace crate depends on sqlx (cargo metadata)" >&2
   exit 1
 fi
 
