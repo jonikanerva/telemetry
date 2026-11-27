@@ -34,12 +34,16 @@
 //!    has ended (it aborts the task at the bound minus [`STEP_MARGIN`]),
 //!    and then until every slot of the gate is free, at most until the
 //!    bound ([`gate::Slots`]). A free slot means that the copy task of the
-//!    connection has ended, so no forwarded byte reaches `fleet-telemetry`
-//!    after step 1, and no acknowledgement reaches a vehicle. An abort ends
+//!    connection has ended. So when every slot is free, no copy task writes
+//!    a byte to `fleet-telemetry` or to a vehicle after step 1. Bytes that a
+//!    copy task wrote before can still wait in the loopback receive buffer
+//!    of `fleet-telemetry`, as in every close of a connection. An abort ends
 //!    a copy task only when the runtime cancels it, so without this wait a
 //!    copy task could still forward a record and its acknowledgement after
 //!    the drain of step 2. A slot that is still taken at the bound is
-//!    logged (`gate_connections_open`).
+//!    logged (`gate_connections_open`); its copy task can still do this.
+//!    The stop of the gate itself ends at the latest
+//!    [`GATE_STOP_MARGIN`] before the abort.
 //! 2. Drain the SUB socket: read until no message arrives for 1 s, at most
 //!    3 s. Bound: [`ShutdownBudget::zmq_drain`].
 //! 3. The final shortfall read. Bound: [`ShutdownBudget::shortfall_read`].
@@ -54,7 +58,9 @@
 //!
 //! Each step gives its work the bound minus [`STEP_MARGIN`], and aborts the
 //! work at the bound, so that a step that does not end in time cannot
-//! delay the next one. Railway sends SIGKILL `drainingSeconds` (30 s) after
+//! delay the next one. Step 1 is the exception: it aborts the gate task at
+//! the bound minus [`STEP_MARGIN`], and it uses the rest of the bound for
+//! the wait for the slots. Railway sends SIGKILL `drainingSeconds` (30 s) after
 //! SIGTERM. The sum of the bounds, [`BUDGET`], is 26 s, so the sequence ends
 //! before the SIGKILL with 4 s of margin.
 
@@ -125,6 +131,25 @@ pub const BUDGET: ShutdownBudget = ShutdownBudget {
 /// The part of a step bound that the work of the step does not get: the
 /// time to end and to join the task of the step before the abort.
 pub const STEP_MARGIN: Duration = Duration::from_millis(250);
+
+/// The least time between the end of the bounds of the gate stop
+/// ([`gate::GateLimits::close_deadline`] plus
+/// [`gate::GateLimits::abort_wait`]) and the abort of the gate task in
+/// step 1. It is for the abort of the connection tasks and for the
+/// scheduling of the gate task. When the margin is too small, a slow host
+/// can abort a gate stop that would have ended in time: the log then has
+/// `task_stop_timeout` instead of `gate_stopped`, which deployment check 2
+/// of ADR 0001 forbids. 300 ms is more than the whole normal stop takes in
+/// the tests (below 100 ms with open connections).
+pub const GATE_STOP_MARGIN: Duration = Duration::from_millis(300);
+
+// The bounds of the gate stop leave the margin before the abort of step 1.
+const _: () = assert!(
+    gate::LIMITS.close_deadline.as_millis()
+        + gate::LIMITS.abort_wait.as_millis()
+        + GATE_STOP_MARGIN.as_millis()
+        <= BUDGET.gate_close.as_millis() - STEP_MARGIN.as_millis()
+);
 
 /// Railway `drainingSeconds` (ADR 0001): the time from SIGTERM to SIGKILL.
 pub const DRAINING: Duration = Duration::from_secs(30);
@@ -295,7 +320,6 @@ pub async fn run(config: RunConfig) -> Result<(), RunError> {
         readiness.subscribe(),
         Arc::clone(&sink),
         watchdog.register(watchdog::GATE_ACCEPTOR),
-        gate::LIMITS,
         gate_slots.clone(),
     ));
     let (stop_child, child_stop) = oneshot::channel();
@@ -522,12 +546,16 @@ mod tests {
 
     #[test]
     fn the_inner_bounds_fit_their_steps() {
-        // The gate stop ends before step 1 aborts it, and step 1 keeps time
-        // to wait for the slots after an abort.
+        // The gate stop ends GATE_STOP_MARGIN or more before step 1 aborts
+        // it, and step 1 keeps time to wait for the slots after an abort.
         assert!(
-            gate::LIMITS.close_deadline + gate::LIMITS.abort_wait
-                < BUDGET.gate_close.saturating_sub(STEP_MARGIN)
+            gate::LIMITS.close_deadline + gate::LIMITS.abort_wait + GATE_STOP_MARGIN
+                <= BUDGET.gate_close.saturating_sub(STEP_MARGIN)
         );
+        assert_eq!(GATE_STOP_MARGIN, Duration::from_millis(300));
+        // The gate waits for the slots after its own abort of the
+        // connection tasks.
+        assert!(!gate::LIMITS.abort_wait.is_zero());
         assert!(child::LIMITS.kill_wait + child::LIMITS.output_drain < BUDGET.child_stop);
         // The drain quiet time fits the drain bound that the reader gets.
         assert!(Some(Limits::PRODUCTION.drain_quiet) < BUDGET.zmq_drain.checked_sub(STEP_MARGIN));
@@ -587,6 +615,57 @@ mod tests {
             })
             .collect();
         assert_eq!(messages, ["task_stop_timeout", "gate_connections_open"]);
+        holder.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_production_gate_stop_ends_its_margin_before_the_abort_of_step_1() {
+        // The real gate with the production limits, and a slot that stays
+        // taken, so that the gate stop waits its full abort wait. The gate
+        // task must end by itself, GATE_STOP_MARGIN or more before step 1
+        // would abort it: `gate_stopped`, and no `task_stop_timeout`.
+        let sink = crate::events::recording::RecordingSink::default();
+        let readiness = Arc::new(Readiness::new(Arc::new(sink.clone())));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let slots = gate::Slots::new(&gate::LIMITS);
+        let holder = hold_slot(&slots, Duration::from_secs(60));
+        let (capture, guard) = crate::logging::capture::install(crate::logging::ALLOWED_FIELDS);
+        let (ended, gate_end) = oneshot::channel();
+        let gate = gate::run(
+            listener,
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 9)),
+            readiness.subscribe(),
+            Arc::new(sink),
+            Watchdog::new().register(watchdog::GATE_ACCEPTOR),
+            slots.clone(),
+        );
+        let gate_task = tokio::spawn(async move {
+            gate.await;
+            ended.send(Instant::now()).ok();
+        });
+        let started = Instant::now();
+        readiness.shut();
+        stop_gate(Some(gate_task), &slots, BUDGET.gate_close).await;
+        drop(guard);
+        let gate_ended = gate_end.await.expect("the gate task was aborted") - started;
+        assert_eq!(gate_ended, gate::LIMITS.abort_wait);
+        assert!(gate_ended + GATE_STOP_MARGIN <= BUDGET.gate_close.saturating_sub(STEP_MARGIN));
+        let messages: Vec<String> = capture
+            .text()
+            .lines()
+            .map(|line| {
+                let line: serde_json::Value = serde_json::from_str(line).unwrap();
+                line["message"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "gate_connections_open",
+                "gate_stopped",
+                "gate_connections_open"
+            ]
+        );
         holder.abort();
     }
 
