@@ -1,12 +1,13 @@
 # ADR 0010: Web architecture
 
-- Status: Proposed. Decided by: the lead, 27 November 2026, within the
+- Status: Accepted, 28 November 2026. Decided by: the lead, within the
   delegated technical authority of `DOCTRINE.md` and ADR 0004. The
-  exceptions in decision 9 need the approval of an independent reviewer
-  in the PR of this ADR.
+  exceptions in decision 9 are approved by the independent reviewer
+  (qa-enforcer) in PR #46: <https://github.com/jonikanerva/telemetry/pull/46#pullrequestreview-6092253490>.
 - Scope: the layout, the boundaries, the HTTP contract, the serving, and
   the image of the web application. Not in scope: the login and the
-  sessions (ADR 0011), the derivation of the battery view (ADR 0012), and
+  sessions (the session ADR of the login slice), the derivation of the
+  battery view (the derivation ADR of the battery slice), and
   the chart library (the battery view records it).
 
 ## Context
@@ -137,7 +138,7 @@
 8. **Logging.** Decision 3 of ADR 0009 (only the JSON formatter) also
    applies to the web server. Its allowlist logs the method, the route
    template (never the raw path or query), the status, and the latency.
-9. **Exceptions (proposed; STACK.md §13):**
+9. **Exceptions (STACK.md §13):**
    - TypeScript 6.0.3 as a development dependency of
      `packages/api-client`, only for the generator, which needs the
      compiler API that TypeScript 7.0 does not have.

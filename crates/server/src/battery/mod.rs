@@ -1,4 +1,5 @@
-//! The battery view under `/api/v1` (ADR 0012).
+//! The battery view under `/api/v1` (the derivation ADR of the battery
+//! slice).
 //!
 //! Slice S3 (`feat/battery-api`) fills this module: `GET
 //! /api/v1/battery?range=...`, its DTOs, and the read from the database.
