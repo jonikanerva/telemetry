@@ -6,6 +6,89 @@
     "version": "1"
   },
   "paths": {
+    "/api/v1/battery": {
+      "get": {
+        "tags": [
+          "battery"
+        ],
+        "summary": "Returns the battery view of one range.",
+        "description": "Each request reads the database once, in one read-only snapshot. A\ndatabase that cannot be reached gives 503 `database_unavailable`,\nnever an empty result.",
+        "operationId": "getBattery",
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "description": "The time range that ends now. Required.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RangeKey"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The battery view of the range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatteryView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query is not valid (`invalid_request`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no valid session (`unauthenticated`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the limit.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Stored data breaks an assumption (`data_contract_violation`), or an unexpected failure (`internal_error`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database is not available (`database_unavailable`), the server is busy (`service_busy`), or the request took too long (`timeout`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/session": {
       "get": {
         "tags": [
@@ -320,6 +403,500 @@
   },
   "components": {
     "schemas": {
+      "BatteryCharts": {
+        "type": "object",
+        "description": "The series of the range.",
+        "required": [
+          "soc",
+          "nominal_full_pack_energy"
+        ],
+        "properties": {
+          "nominal_full_pack_energy": {
+            "$ref": "#/components/schemas/Series",
+            "description": "Field `NominalFullPackEnergyKwh`."
+          },
+          "soc": {
+            "$ref": "#/components/schemas/Series",
+            "description": "Field `Soc`."
+          }
+        }
+      },
+      "BatteryRange": {
+        "type": "object",
+        "description": "The range of a response.",
+        "required": [
+          "key",
+          "from",
+          "to",
+          "bucket_seconds"
+        ],
+        "properties": {
+          "bucket_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The width of one bucket of a series. Buckets start at whole\nmultiples of the width since 2000-01-01T00:00:00Z (UTC).",
+            "maximum": 4294967295,
+            "minimum": 1
+          },
+          "from": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "The start, inclusive (server clock)."
+          },
+          "key": {
+            "$ref": "#/components/schemas/RangeKey",
+            "description": "The requested range."
+          },
+          "to": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "The end, exclusive (server clock). Equal to `generated_at`."
+          }
+        }
+      },
+      "BatteryStatus": {
+        "type": "object",
+        "description": "Connection, newest data, and freshness.",
+        "required": [
+          "connection",
+          "latest_data_at",
+          "latest_received_at",
+          "freshness"
+        ],
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/Connection",
+            "description": "The connection state of the vehicle as the stored events show it."
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/Freshness",
+            "description": "Whether new data is expected and has arrived."
+          },
+          "latest_data_at": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "Vehicle clock: the newest `created_at` of a row of the four battery\nfields before `generated_at`, usable or not."
+          },
+          "latest_received_at": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "Ingest clock: the newest `received_at` among the newest stored row\nof each battery field and the newest stored connectivity event.\nThe ingest process stores data at most about 15 minutes after it\nreceives it."
+          }
+        }
+      },
+      "BatteryTiles": {
+        "type": "object",
+        "description": "The newest value of each field before `range.to`.",
+        "required": [
+          "soc",
+          "energy_remaining",
+          "outside_temp",
+          "nominal_full_pack_energy"
+        ],
+        "properties": {
+          "energy_remaining": {
+            "$ref": "#/components/schemas/Reading",
+            "description": "Field `EnergyRemaining`."
+          },
+          "nominal_full_pack_energy": {
+            "$ref": "#/components/schemas/CapacityTile",
+            "description": "Field `NominalFullPackEnergyKwh`, with its change over the range."
+          },
+          "outside_temp": {
+            "$ref": "#/components/schemas/Reading",
+            "description": "Field `OutsideTemp`."
+          },
+          "soc": {
+            "$ref": "#/components/schemas/Reading",
+            "description": "Field `Soc`: usable state of charge."
+          }
+        }
+      },
+      "BatteryView": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "No row of the four battery fields (`Soc`, `EnergyRemaining`,\n`NominalFullPackEnergyKwh`, `OutsideTemp`) exists before\n`generated_at`. Also when no vehicle exists yet.",
+            "required": [
+              "generated_at",
+              "range",
+              "state"
+            ],
+            "properties": {
+              "generated_at": {
+                "$ref": "#/components/schemas/Instant",
+                "description": "The time of the response (server clock). Equal to `range.to`."
+              },
+              "range": {
+                "$ref": "#/components/schemas/BatteryRange",
+                "description": "The requested range."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "no_data_yet"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "At least one row of a battery field exists. The series of the range\ncan still be empty: then no sample lies in the range.",
+            "required": [
+              "generated_at",
+              "range",
+              "status",
+              "tiles",
+              "charts",
+              "gaps",
+              "state"
+            ],
+            "properties": {
+              "charts": {
+                "$ref": "#/components/schemas/BatteryCharts",
+                "description": "The series of the range."
+              },
+              "gaps": {
+                "$ref": "#/components/schemas/Gaps",
+                "description": "The data-collection losses that touch the range."
+              },
+              "generated_at": {
+                "$ref": "#/components/schemas/Instant",
+                "description": "The time of the response (server clock). Equal to `range.to`."
+              },
+              "range": {
+                "$ref": "#/components/schemas/BatteryRange",
+                "description": "The requested range."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "available"
+                ]
+              },
+              "status": {
+                "$ref": "#/components/schemas/BatteryStatus",
+                "description": "Connection, newest data, and freshness."
+              },
+              "tiles": {
+                "$ref": "#/components/schemas/BatteryTiles",
+                "description": "The newest value of each field before `range.to`, whatever the\nrange start."
+              }
+            }
+          }
+        ],
+        "description": "The body of a successful `GET /api/v1/battery`."
+      },
+      "CapacityChange": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Both values exist and are different rows.",
+            "required": [
+              "delta",
+              "from_value",
+              "from_at",
+              "to_value",
+              "to_at",
+              "state"
+            ],
+            "properties": {
+              "delta": {
+                "type": "number",
+                "format": "double",
+                "description": "`to_value - from_value`, in the unit of the reading."
+              },
+              "from_at": {
+                "$ref": "#/components/schemas/Instant",
+                "description": "Vehicle clock: the `created_at` of the baseline."
+              },
+              "from_value": {
+                "type": "number",
+                "format": "double",
+                "description": "The baseline value."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "value"
+                ]
+              },
+              "to_at": {
+                "$ref": "#/components/schemas/Instant",
+                "description": "Vehicle clock: the `created_at` of the newest value."
+              },
+              "to_value": {
+                "type": "number",
+                "format": "double",
+                "description": "The newest value."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The change cannot be computed.",
+            "required": [
+              "reason",
+              "state"
+            ],
+            "properties": {
+              "reason": {
+                "$ref": "#/components/schemas/ChangeUnknownReason",
+                "description": "Why the change is unknown."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unknown"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The change of the capacity over the range.\n\nThe baseline is the newest usable value at or before `range.from`, or\nelse the oldest usable value in the range."
+      },
+      "CapacityTile": {
+        "type": "object",
+        "description": "The capacity tile: the newest value and its change over the range.",
+        "required": [
+          "reading",
+          "change"
+        ],
+        "properties": {
+          "change": {
+            "$ref": "#/components/schemas/CapacityChange",
+            "description": "The change from the baseline to the newest value."
+          },
+          "reading": {
+            "$ref": "#/components/schemas/Reading",
+            "description": "The newest usable value."
+          }
+        }
+      },
+      "ChangeUnknownReason": {
+        "type": "string",
+        "description": "Why a change is unknown.",
+        "enum": [
+          "no_latest",
+          "no_baseline"
+        ]
+      },
+      "Connection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A connection of the current ingest run has a CONNECTED event and no\nDISCONNECTED event.",
+            "required": [
+              "since",
+              "state"
+            ],
+            "properties": {
+              "since": {
+                "$ref": "#/components/schemas/Instant",
+                "description": "Server clock: the CONNECTED event of the oldest open connection."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "connected"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "No connection of the current ingest run is open.",
+            "required": [
+              "since",
+              "state"
+            ],
+            "properties": {
+              "since": {
+                "$ref": "#/components/schemas/Instant",
+                "description": "The newest DISCONNECTED event (server clock), or the start of\nthe current ingest run (ingest clock), whichever is later."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "disconnected"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "No connectivity event is stored.",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unknown"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The connection state of the vehicle.\n\nThe stored data cannot tell a sleeping car from a car without network:\nboth are `disconnected`."
+      },
+      "CountUnit": {
+        "type": "string",
+        "description": "What a gap count counts.",
+        "enum": [
+          "records",
+          "messages",
+          "connections"
+        ]
+      },
+      "ExcludedRows": {
+        "type": "object",
+        "description": "Counts of rows that are not usable, by reason.",
+        "required": [
+          "invalid_marker",
+          "not_numeric"
+        ],
+        "properties": {
+          "invalid_marker": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rows with the invalid marker of the vehicle.",
+            "maximum": 4294967295,
+            "minimum": 0
+          },
+          "not_numeric": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rows that hold no usable number: a text that is not a plain\ndecimal number, a value that is not finite, an integer beyond\n2^53, a boolean, or another value type.",
+            "maximum": 4294967295,
+            "minimum": 0
+          }
+        }
+      },
+      "Freshness": {
+        "type": "string",
+        "description": "Whether new data is expected and has arrived.",
+        "enum": [
+          "current",
+          "overdue",
+          "not_expected"
+        ]
+      },
+      "Gap": {
+        "type": "object",
+        "description": "One data-collection loss. A sleeping car is never a gap.",
+        "required": [
+          "kind",
+          "certainty",
+          "from",
+          "to",
+          "bounds",
+          "count"
+        ],
+        "properties": {
+          "bounds": {
+            "$ref": "#/components/schemas/GapBounds",
+            "description": "Whether `from` and `to` are recorded times or an estimate."
+          },
+          "certainty": {
+            "$ref": "#/components/schemas/GapCertainty",
+            "description": "Whether data was surely lost."
+          },
+          "count": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GapCount",
+                "description": "The recorded number of lost items, or null when no count exists."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "Ingest clock: the start of the loss. `from <= to`."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/GapKind",
+            "description": "The cause of the loss."
+          },
+          "to": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "Ingest clock: the end of the loss."
+          }
+        }
+      },
+      "GapBounds": {
+        "type": "string",
+        "description": "Whether the bounds of a gap are recorded times or an estimate.",
+        "enum": [
+          "exact",
+          "estimated"
+        ]
+      },
+      "GapCertainty": {
+        "type": "string",
+        "description": "Whether data was surely lost.",
+        "enum": [
+          "loss",
+          "possible_loss"
+        ]
+      },
+      "GapCount": {
+        "type": "object",
+        "description": "A recorded number of lost items.",
+        "required": [
+          "value",
+          "of"
+        ],
+        "properties": {
+          "of": {
+            "$ref": "#/components/schemas/CountUnit",
+            "description": "What the number counts."
+          },
+          "value": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number, at least 1.",
+            "maximum": 4294967295,
+            "minimum": 1
+          }
+        }
+      },
+      "GapKind": {
+        "type": "string",
+        "description": "The cause of a loss.",
+        "enum": [
+          "unclean_restart",
+          "queue_full",
+          "database_refused",
+          "zmq_shortfall",
+          "gate_full",
+          "child_exited"
+        ]
+      },
+      "Gaps": {
+        "type": "object",
+        "description": "The data-collection losses that touch the range.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Gap"
+            },
+            "description": "At most 500 gaps, in order of `from`, then `to`. The list is\ntruncated when `total` is larger than its length."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of gaps that touch the range.",
+            "maximum": 4294967295,
+            "minimum": 0
+          }
+        }
+      },
       "Health": {
         "type": "object",
         "description": "The body of `GET /health`.",
@@ -366,6 +943,45 @@
             "description": "The password: 1 to 1024 bytes of UTF-8.",
             "maxLength": 1024,
             "minLength": 1
+          }
+        }
+      },
+      "Point": {
+        "type": "object",
+        "description": "One bucket of usable samples.",
+        "required": [
+          "at",
+          "last",
+          "min",
+          "max",
+          "count"
+        ],
+        "properties": {
+          "at": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "Vehicle clock: the `created_at` of the newest sample in the bucket."
+          },
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of usable samples in the bucket, at least 1.",
+            "maximum": 4294967295,
+            "minimum": 1
+          },
+          "last": {
+            "type": "number",
+            "format": "double",
+            "description": "The value of the newest sample in the bucket."
+          },
+          "max": {
+            "type": "number",
+            "format": "double",
+            "description": "The largest value in the bucket."
+          },
+          "min": {
+            "type": "number",
+            "format": "double",
+            "description": "The smallest value in the bucket."
           }
         }
       },
@@ -437,6 +1053,138 @@
           "internal_error"
         ]
       },
+      "RangeKey": {
+        "type": "string",
+        "description": "A time range that ends at the time of the response. Each range has a\nfixed length in hours, not calendar days, and a fixed bucket width.",
+        "enum": [
+          "24h",
+          "7d",
+          "30d",
+          "90d",
+          "1y"
+        ]
+      },
+      "Reading": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A usable value exists.",
+            "required": [
+              "value",
+              "unit",
+              "measured_at",
+              "newer_unusable_at",
+              "state"
+            ],
+            "properties": {
+              "measured_at": {
+                "$ref": "#/components/schemas/Instant",
+                "description": "Vehicle clock: the `created_at` of the value."
+              },
+              "newer_unusable_at": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Instant",
+                    "description": "Vehicle clock: the `created_at` of the newest row that is newer\nthan the value and not usable (the invalid marker or not a\nnumber), or null when the value is the newest row."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "value"
+                ]
+              },
+              "unit": {
+                "$ref": "#/components/schemas/Unit",
+                "description": "The unit of the value."
+              },
+              "value": {
+                "type": "number",
+                "format": "double",
+                "description": "The value as the vehicle sent it."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "No usable value exists before `range.to`.",
+            "required": [
+              "unit",
+              "latest_unusable_at",
+              "state"
+            ],
+            "properties": {
+              "latest_unusable_at": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Instant",
+                    "description": "Vehicle clock: the `created_at` of the newest row that is not\nusable, or null when the field has no row."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "missing"
+                ]
+              },
+              "unit": {
+                "$ref": "#/components/schemas/Unit",
+                "description": "The unit of the field."
+              }
+            }
+          }
+        ],
+        "description": "The newest usable value of a field.\n\nA row is usable when it holds a finite number: a double or float, an\ninteger of at most 2^53 in magnitude, or a text of the form\n`-?[0-9]+(.[0-9]+)?` with at most 32 characters. The invalid marker of\nthe vehicle and every other value are not usable. A value is never\nrounded and never replaced with zero."
+      },
+      "Series": {
+        "type": "object",
+        "description": "One series: the usable samples of a field in the range, in buckets.",
+        "required": [
+          "unit",
+          "carry_in",
+          "segments",
+          "excluded"
+        ],
+        "properties": {
+          "carry_in": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Point",
+                "description": "The newest usable sample before `range.from`, as one point with\n`count` 1, or null. It lets a client tell \"no sample in the range\"\nfrom \"no sample at all\". It joins the first segment unless a gap\nlies between them."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "excluded": {
+            "$ref": "#/components/schemas/ExcludedRows",
+            "description": "The rows of the field in the range that are not usable. They are\nin no point."
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Point"
+              }
+            },
+            "description": "The points of the range in order of `at`. A new segment starts only\nwhere a gap lies between two points; a time without samples (the\ncar asleep) does not split a segment. Empty when no usable sample\nlies in the range."
+          },
+          "unit": {
+            "$ref": "#/components/schemas/Unit",
+            "description": "The unit of the values."
+          }
+        }
+      },
       "Session": {
         "type": "object",
         "description": "The response body of a valid session.",
@@ -454,6 +1202,41 @@
             "description": "The end of the session without another request: 7 days after the\nlast request, never later than `expires_at`."
           }
         }
+      },
+      "Unit": {
+        "type": "object",
+        "description": "The unit of a field. The vehicle sends no unit; the server knows it\nfrom the documentation of the field.",
+        "required": [
+          "symbol",
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/UnitSource",
+            "description": "Where the unit comes from."
+          },
+          "symbol": {
+            "$ref": "#/components/schemas/UnitSymbol",
+            "description": "The unit."
+          }
+        }
+      },
+      "UnitSource": {
+        "type": "string",
+        "description": "Where a unit comes from.",
+        "enum": [
+          "documented",
+          "assumed"
+        ]
+      },
+      "UnitSymbol": {
+        "type": "string",
+        "description": "A unit symbol.",
+        "enum": [
+          "percent",
+          "kilowatt_hour",
+          "degree_celsius"
+        ]
       }
     }
   },

@@ -25,8 +25,12 @@
 //! - `unit_test_state` gives the state that the router tests of S1 use;
 //!   keep it valid when [`State`] gets fields.
 
+pub mod dto;
+pub mod handler;
+
 use axum::extract::FromRef;
 use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::app::AppState;
 use crate::config::{ConfigError, Vars};
@@ -87,8 +91,8 @@ pub(crate) fn unit_test_state() -> State {
     State {}
 }
 
-/// The routes of the battery API. Empty until slice S3.
+/// The routes of the battery API: `GET /battery` under `/api/v1`.
 #[must_use]
 pub fn router() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new()
+    OpenApiRouter::new().routes(routes!(handler::get_battery))
 }

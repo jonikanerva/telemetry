@@ -3,6 +3,67 @@
 import * as z from 'zod';
 
 /**
+ * Why a change is unknown.
+ */
+export const zChangeUnknownReason = z.enum(['no_latest', 'no_baseline']);
+
+/**
+ * What a gap count counts.
+ */
+export const zCountUnit = z.enum([
+    'records',
+    'messages',
+    'connections'
+]);
+
+/**
+ * Counts of rows that are not usable, by reason.
+ */
+export const zExcludedRows = z.object({
+    invalid_marker: z.int().gte(0).lte(4294967295),
+    not_numeric: z.int().gte(0).lte(4294967295)
+});
+
+/**
+ * Whether new data is expected and has arrived.
+ */
+export const zFreshness = z.enum([
+    'current',
+    'overdue',
+    'not_expected'
+]);
+
+/**
+ * Whether the bounds of a gap are recorded times or an estimate.
+ */
+export const zGapBounds = z.enum(['exact', 'estimated']);
+
+/**
+ * Whether data was surely lost.
+ */
+export const zGapCertainty = z.enum(['loss', 'possible_loss']);
+
+/**
+ * A recorded number of lost items.
+ */
+export const zGapCount = z.object({
+    of: zCountUnit,
+    value: z.int().gte(1).lte(4294967295)
+});
+
+/**
+ * The cause of a loss.
+ */
+export const zGapKind = z.enum([
+    'unclean_restart',
+    'queue_full',
+    'database_refused',
+    'zmq_shortfall',
+    'gate_full',
+    'child_exited'
+]);
+
+/**
  * The state of the server. The only value is `ok`.
  */
 export const zHealthStatus = z.enum(['ok']);
@@ -24,10 +85,92 @@ export const zHealth = z.object({
 export const zInstant = z.iso.datetime().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/);
 
 /**
+ * The change of the capacity over the range.
+ *
+ * The baseline is the newest usable value at or before `range.from`, or
+ * else the oldest usable value in the range.
+ */
+export const zCapacityChange = z.union([
+    z.object({
+        delta: z.number(),
+        from_at: zInstant,
+        from_value: z.number(),
+        state: z.enum(['value']),
+        to_at: zInstant,
+        to_value: z.number()
+    }),
+    z.object({
+        reason: zChangeUnknownReason,
+        state: z.enum(['unknown'])
+    })
+]);
+
+/**
+ * The connection state of the vehicle.
+ *
+ * The stored data cannot tell a sleeping car from a car without network:
+ * both are `disconnected`.
+ */
+export const zConnection = z.union([
+    z.object({
+        since: zInstant,
+        state: z.enum(['connected'])
+    }),
+    z.object({
+        since: zInstant,
+        state: z.enum(['disconnected'])
+    }),
+    z.object({
+        state: z.enum(['unknown'])
+    })
+]);
+
+/**
+ * Connection, newest data, and freshness.
+ */
+export const zBatteryStatus = z.object({
+    connection: zConnection,
+    freshness: zFreshness,
+    latest_data_at: zInstant,
+    latest_received_at: zInstant
+});
+
+/**
+ * One data-collection loss. A sleeping car is never a gap.
+ */
+export const zGap = z.object({
+    bounds: zGapBounds,
+    certainty: zGapCertainty,
+    count: zGapCount.nullable(),
+    from: zInstant,
+    kind: zGapKind,
+    to: zInstant
+});
+
+/**
+ * The data-collection losses that touch the range.
+ */
+export const zGaps = z.object({
+    items: z.array(zGap),
+    total: z.int().gte(0).lte(4294967295)
+});
+
+/**
  * The body of `POST /api/v1/session`.
  */
 export const zLoginRequest = z.object({
     password: z.string().min(1).max(1024)
+});
+
+/**
+ * One bucket of usable samples.
+ */
+export const zPoint = z.object({
+    at: zInstant,
+    count: z.int().gte(1).lte(4294967295),
+    last: z.number(),
+    max: z.number(),
+    min: z.number()
 });
 
 /**
@@ -64,12 +207,146 @@ export const zProblem = z.object({
 });
 
 /**
+ * A time range that ends at the time of the response. Each range has a
+ * fixed length in hours, not calendar days, and a fixed bucket width.
+ */
+export const zRangeKey = z.enum([
+    '24h',
+    '7d',
+    '30d',
+    '90d',
+    '1y'
+]);
+
+/**
+ * The range of a response.
+ */
+export const zBatteryRange = z.object({
+    bucket_seconds: z.int().gte(1).lte(4294967295),
+    from: zInstant,
+    key: zRangeKey,
+    to: zInstant
+});
+
+/**
  * The response body of a valid session.
  */
 export const zSession = z.object({
     expires_at: zInstant,
     idle_expires_at: zInstant
 });
+
+/**
+ * Where a unit comes from.
+ */
+export const zUnitSource = z.enum(['documented', 'assumed']);
+
+/**
+ * A unit symbol.
+ */
+export const zUnitSymbol = z.enum([
+    'percent',
+    'kilowatt_hour',
+    'degree_celsius'
+]);
+
+/**
+ * The unit of a field. The vehicle sends no unit; the server knows it
+ * from the documentation of the field.
+ */
+export const zUnit = z.object({
+    source: zUnitSource,
+    symbol: zUnitSymbol
+});
+
+/**
+ * The newest usable value of a field.
+ *
+ * A row is usable when it holds a finite number: a double or float, an
+ * integer of at most 2^53 in magnitude, or a text of the form
+ * `-?[0-9]+(.[0-9]+)?` with at most 32 characters. The invalid marker of
+ * the vehicle and every other value are not usable. A value is never
+ * rounded and never replaced with zero.
+ */
+export const zReading = z.union([
+    z.object({
+        measured_at: zInstant,
+        newer_unusable_at: zInstant.nullable(),
+        state: z.enum(['value']),
+        unit: zUnit,
+        value: z.number()
+    }),
+    z.object({
+        latest_unusable_at: zInstant.nullable(),
+        state: z.enum(['missing']),
+        unit: zUnit
+    })
+]);
+
+/**
+ * The capacity tile: the newest value and its change over the range.
+ */
+export const zCapacityTile = z.object({
+    change: zCapacityChange,
+    reading: zReading
+});
+
+/**
+ * The newest value of each field before `range.to`.
+ */
+export const zBatteryTiles = z.object({
+    energy_remaining: zReading,
+    nominal_full_pack_energy: zCapacityTile,
+    outside_temp: zReading,
+    soc: zReading
+});
+
+/**
+ * One series: the usable samples of a field in the range, in buckets.
+ */
+export const zSeries = z.object({
+    carry_in: zPoint.nullable(),
+    excluded: zExcludedRows,
+    segments: z.array(z.array(zPoint)),
+    unit: zUnit
+});
+
+/**
+ * The series of the range.
+ */
+export const zBatteryCharts = z.object({
+    nominal_full_pack_energy: zSeries,
+    soc: zSeries
+});
+
+/**
+ * The body of a successful `GET /api/v1/battery`.
+ */
+export const zBatteryView = z.union([
+    z.object({
+        generated_at: zInstant,
+        range: zBatteryRange,
+        state: z.enum(['no_data_yet'])
+    }),
+    z.object({
+        charts: zBatteryCharts,
+        gaps: zGaps,
+        generated_at: zInstant,
+        range: zBatteryRange,
+        state: z.enum(['available']),
+        status: zBatteryStatus,
+        tiles: zBatteryTiles
+    })
+]);
+
+export const zGetBatteryQuery = z.object({
+    range: zRangeKey
+});
+
+/**
+ * The battery view of the range.
+ */
+export const zGetBatteryResponse = zBatteryView;
 
 /**
  * The session ended. The response removes the session cookie.
