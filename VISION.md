@@ -103,15 +103,19 @@ a public URL without access control, or a monthly cost.
 | Tesla application private key    | Signs the vehicle telemetry config    | Owner's computer only                 | Kept while the product is in use              |
 | Ingest TLS certificate and key   | Server identity for the vehicle       | Railway service variables             | Certificate expires in 2041; CA root in 2029  |
 | Tesla OAuth access token         | Sends the telemetry config to Tesla   | Owner's computer only, `.env`         | About 8 hours                                 |
+| Database credentials of `telemetry_ingest` and `telemetry_migrator` | Let the ingest service write records and apply migrations | Railway service variables | Kept while the product is in use; rotate after a suspected leak |
+| Operational records (`raw.ingest_event`): starts, stops, gate changes, child exits, drops, shortfalls | Make gaps and restarts visible | Neon Postgres | Open question; proposal: no expiry |
 
 - Forbidden data flows: location, VIN, or signal data to any party other
   than Neon and Railway without owner approval. No secret in the repository,
   in an image, or in the browser bundle.
 - Telemetry and diagnostics: none to external services. Application logs
   must not contain the VIN, location, or signal values.
-- Known gap: the ingest service currently writes every record to the Railway
-  log, including the VIN and location. This ends when the log dispatcher is
-  replaced by the application's ingestion path.
+- The ingest service no longer writes records to the Railway log.
+  `fleet-telemetry` still writes a VIN on some error paths; `ingest`
+  replaces each VIN-shaped token with `[vin]` before the log line. The
+  Railway log of earlier deployments still holds records with the VIN and
+  the location until Railway removes them.
 - Approved deletion policies: none yet. The raw signal retention rule
   becomes one when the owner approves it.
 
