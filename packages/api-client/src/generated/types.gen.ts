@@ -176,7 +176,7 @@ export type LoginData = {
 
 export type LoginErrors = {
     /**
-     * The body is not a valid login request.
+     * The body is not a valid login request, or the request carries more than one session cookie.
      */
     400: Problem;
     /**

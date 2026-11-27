@@ -28,11 +28,6 @@ pub const COOKIE_NAME: &str = "__Host-telemetry_session";
 /// The attributes after the value. `Max-Age` comes before them.
 const ATTRIBUTES: &str = "Path=/; Secure; HttpOnly; SameSite=Strict";
 
-/// The largest number of session cookies that a request can carry and
-/// that the server reads. A browser sends one; more come only from a
-/// client that is not a browser.
-pub const MAX_PRESENTED: usize = 4;
-
 /// The `Set-Cookie` value of a new session.
 #[must_use]
 pub fn set_cookie(token: &SessionToken, max_age_seconds: u64) -> HeaderValue {
@@ -52,45 +47,64 @@ pub fn clear_cookie() -> HeaderValue {
     )
 }
 
-/// What the request carries.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Presented {
-    /// The session tokens in the valid form, at most [`MAX_PRESENTED`].
-    pub tokens: Vec<SessionToken>,
-    /// The request carries a session cookie, valid in form or not.
-    pub any: bool,
+/// The session cookies that a request carries.
+///
+/// A browser sends at most one `__Host-telemetry_session` pair: the
+/// `__Host-` prefix allows only one cookie of the name, with `Path=/` and
+/// no `Domain`. So every endpoint refuses a request with more than one
+/// pair (`crate::auth`, the guard, answers 400 `invalid_request`), and no
+/// endpoint must choose between two tokens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Presented {
+    /// No session cookie.
+    None,
+    /// One session cookie. The token is `None` when the value is not 64
+    /// lowercase hex digits; such a cookie is no session.
+    One(Option<SessionToken>),
+    /// More than one session cookie.
+    Many,
+}
+
+impl Presented {
+    /// The token of exactly one well-formed session cookie.
+    #[must_use]
+    pub const fn token(&self) -> Option<&SessionToken> {
+        match self {
+            Self::One(Some(token)) => Some(token),
+            Self::None | Self::One(None) | Self::Many => None,
+        }
+    }
 }
 
 /// Reads the session cookies of all `Cookie` headers.
 ///
 /// A pair is `name=value` between `;` separators, with optional spaces
-/// around it (RFC 6265, section 5.4). Only the exact name
-/// [`COOKIE_NAME`] counts. A value that is not 64 lowercase hex digits
-/// marks the cookie as present but gives no token. A header that is not
-/// visible ASCII is ignored.
+/// around it (RFC 6265, section 5.4). Only the exact name [`COOKIE_NAME`]
+/// counts. The parser works on bytes, so a header with other bytes than
+/// visible ASCII cannot hide a pair.
 #[must_use]
 pub fn presented(headers: &HeaderMap) -> Presented {
-    let mut result = Presented::default();
+    let mut found = Presented::None;
     for header in headers.get_all(COOKIE) {
-        let Ok(text) = header.to_str() else {
-            continue;
-        };
-        for pair in text.split(';') {
-            let Some((name, value)) = pair.trim().split_once('=') else {
+        for pair in header.as_bytes().split(|byte| *byte == b';') {
+            let pair = pair.trim_ascii();
+            let Some(split) = pair.iter().position(|byte| *byte == b'=') else {
                 continue;
             };
-            if name != COOKIE_NAME {
+            let (name, value) = (&pair[..split], &pair[split + 1..]);
+            if name != COOKIE_NAME.as_bytes() {
                 continue;
             }
-            result.any = true;
-            if let Some(token) = SessionToken::from_hex(value)
-                && result.tokens.len() < MAX_PRESENTED
-            {
-                result.tokens.push(token);
+            if found != Presented::None {
+                return Presented::Many;
             }
+            let token = std::str::from_utf8(value)
+                .ok()
+                .and_then(SessionToken::from_hex);
+            found = Presented::One(token);
         }
     }
-    result
+    found
 }
 
 #[cfg(test)]
@@ -140,21 +154,31 @@ mod tests {
     fn reads_the_session_cookie_among_others() {
         let hex = "ab".repeat(32);
         let found = presented(&headers(&[&format!("a=1; {COOKIE_NAME}={hex}; b=2")]));
-        assert_eq!(found.tokens, vec![token(0xab)]);
-        assert!(found.any);
+        assert_eq!(found, Presented::One(Some(token(0xab))));
+        assert_eq!(found.token(), Some(&token(0xab)));
     }
 
     #[test]
-    fn reads_cookies_of_several_headers() {
-        let found = presented(&headers(&[
-            &format!("{COOKIE_NAME}={}", "01".repeat(32)),
-            &format!("{COOKIE_NAME}={}", "02".repeat(32)),
-        ]));
-        assert_eq!(found.tokens, vec![token(1), token(2)]);
+    fn two_session_cookies_are_many_in_any_form_and_header() {
+        let one = format!("{COOKIE_NAME}={}", "01".repeat(32));
+        let two = format!("{COOKIE_NAME}={}", "02".repeat(32));
+        let bad = format!("{COOKIE_NAME}=x");
+        for case in [
+            vec![format!("{one}; {two}")],
+            vec![one.clone(), two.clone()],
+            vec![format!("{one}; {bad}")],
+            vec![bad.clone(), one.clone()],
+            vec![format!("{one}; {one}")],
+        ] {
+            let refs: Vec<&str> = case.iter().map(String::as_str).collect();
+            let found = presented(&headers(&refs));
+            assert_eq!(found, Presented::Many, "{case:?}");
+            assert_eq!(found.token(), None);
+        }
     }
 
     #[test]
-    fn a_malformed_value_is_present_but_gives_no_token() {
+    fn a_malformed_value_is_one_cookie_without_a_token() {
         for value in [
             String::new(),
             "AB".repeat(32),
@@ -163,9 +187,20 @@ mod tests {
             format!("{}=", "ab".repeat(32)),
         ] {
             let found = presented(&headers(&[&format!("{COOKIE_NAME}={value}")]));
-            assert!(found.tokens.is_empty(), "{value:?}");
-            assert!(found.any, "{value:?}");
+            assert_eq!(found, Presented::One(None), "{value:?}");
         }
+    }
+
+    #[test]
+    fn a_header_with_other_bytes_cannot_hide_a_second_pair() {
+        let mut map = HeaderMap::new();
+        map.append(
+            COOKIE,
+            HeaderValue::from_str(&format!("{COOKIE_NAME}={}", "01".repeat(32))).unwrap(),
+        );
+        let hidden = format!("x=\u{e9}; {COOKIE_NAME}={}", "02".repeat(32)).into_bytes();
+        map.append(COOKIE, HeaderValue::from_bytes(&hidden).unwrap());
+        assert_eq!(presented(&map), Presented::Many);
     }
 
     #[test]
@@ -178,38 +213,62 @@ mod tests {
             "x__Host-telemetry_session",
         ] {
             let found = presented(&headers(&[&format!("{name}={hex}")]));
-            assert_eq!(found, Presented::default(), "{name}");
+            assert_eq!(found, Presented::None, "{name}");
         }
     }
 
     #[test]
-    fn keeps_at_most_four_tokens() {
-        let pairs: Vec<String> = (1..=6_u8)
-            .map(|byte| format!("{COOKIE_NAME}={}", format!("{byte:02x}").repeat(32)))
-            .collect();
-        let found = presented(&headers(&[&pairs.join("; ")]));
-        assert_eq!(found.tokens.len(), MAX_PRESENTED);
+    fn a_request_without_cookies_presents_nothing() {
+        assert_eq!(presented(&HeaderMap::new()), Presented::None);
     }
 
-    #[test]
-    fn a_request_without_cookies_presents_nothing() {
-        assert_eq!(presented(&HeaderMap::new()), Presented::default());
+    /// The number of pairs with the exact session name, counted in a
+    /// second, independent way: the rule is "0 is none, 1 is one, more is
+    /// many".
+    fn count_pairs(text: &str) -> usize {
+        text.split(';')
+            .filter(|pair| {
+                pair.trim()
+                    .split_once('=')
+                    .is_some_and(|(name, _)| name == COOKIE_NAME)
+            })
+            .count()
     }
 
     proptest! {
         #[test]
-        fn parsing_never_panics_and_every_token_is_canonical(text in "[ -~]{0,300}") {
+        fn the_result_follows_the_number_of_session_pairs(
+            parts in proptest::collection::vec(
+                prop_oneof![
+                    "[a-z]{1,8}=[a-z0-9]{0,8}".prop_map(|pair| pair),
+                    proptest::array::uniform32(any::<u8>())
+                        .prop_map(|bytes| format!("{COOKIE_NAME}={}", SessionToken::from_bytes(bytes).to_hex())),
+                    "[ -:<-~]{0,12}".prop_map(|value| format!("{COOKIE_NAME}={value}")),
+                ],
+                0..6,
+            ),
+        ) {
+            let text = parts.join("; ");
             if let Ok(value) = HeaderValue::from_str(&text) {
                 let mut map = HeaderMap::new();
                 map.insert(COOKIE, value);
                 let found = presented(&map);
-                prop_assert!(found.tokens.len() <= MAX_PRESENTED);
-                for token in &found.tokens {
+                match count_pairs(&text) {
+                    0 => prop_assert_eq!(found, Presented::None),
+                    1 => prop_assert!(matches!(found, Presented::One(_))),
+                    _ => prop_assert_eq!(found, Presented::Many),
+                }
+            }
+        }
+
+        #[test]
+        fn parsing_never_panics_and_a_token_is_canonical(text in "[ -~]{0,300}") {
+            if let Ok(value) = HeaderValue::from_str(&text) {
+                let mut map = HeaderMap::new();
+                map.insert(COOKIE, value);
+                if let Some(token) = presented(&map).token() {
                     let pair = format!("{COOKIE_NAME}={}", token.to_hex());
                     prop_assert!(text.contains(&pair));
-                }
-                if !found.tokens.is_empty() {
-                    prop_assert!(found.any);
                 }
             }
         }
@@ -223,7 +282,7 @@ mod tests {
             let token = SessionToken::from_bytes(bytes);
             let text = format!("{before}{COOKIE_NAME}={}{after}", token.to_hex());
             let found = presented(&headers(&[&text]));
-            prop_assert_eq!(found.tokens, vec![token]);
+            prop_assert_eq!(found, Presented::One(Some(token)));
         }
     }
 }

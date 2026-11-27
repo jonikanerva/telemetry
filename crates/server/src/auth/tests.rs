@@ -23,7 +23,7 @@ use tokio::sync::Notify;
 use tower::ServiceExt;
 
 use super::*;
-use crate::app::{AppState, build};
+use crate::app::{AppState, build_with_api};
 use crate::config::{StaticFiles, Version};
 use crate::logging::capture;
 use crate::problem::PROBLEM_CONTENT_TYPE;
@@ -197,12 +197,26 @@ impl App {
         dir.write("assets/app.js", b"x");
         let static_files = StaticFiles::load(dir.path()).unwrap();
         let app_state = AppState::new(Version::unknown(), state, crate::battery::unit_test_state());
-        let router = build(app_state, &static_files, Router::new());
+        // The production assembly (`app::build_with_api` with the routes of
+        // the contract), with a counting route at the mount point of the
+        // battery API, where slice S3 mounts `battery::router()`.
+        let battery_calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&battery_calls);
+        let slice = utoipa_axum::router::OpenApiRouter::new().route(
+            "/battery",
+            get(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async { "data" }
+            })
+            .post(|| async { "changed" }),
+        );
+        let api = crate::openapi::documented_router_with(slice);
+        let router = build_with_api(app_state, &static_files, Router::new(), api);
         Self {
             _dir: dir,
             router,
             verifier,
-            battery_calls: Arc::new(AtomicUsize::new(0)),
+            battery_calls,
         }
     }
 
@@ -406,7 +420,8 @@ async fn logout_ends_the_session_and_removes_the_cookie() {
     // A stolen copy of the cookie stops working.
     let after = app.session(Some(&cookie)).await;
     after.problem(ProblemCode::Unauthenticated);
-    assert!(after.set_cookie().unwrap().contains("Max-Age=0"));
+    // A 401 changes no cookie (see `a_late_401_never_removes_a_new_cookie`).
+    assert_eq!(after.set_cookie(), None);
 }
 
 #[tokio::test(start_paused = true)]
@@ -435,7 +450,62 @@ async fn an_unused_session_ends_after_seven_days() {
     tokio::time::advance(7 * DAY).await;
     let reply = app.session(Some(&cookie)).await;
     reply.problem(ProblemCode::Unauthenticated);
-    assert!(reply.set_cookie().unwrap().contains("Max-Age=0"));
+    assert_eq!(reply.set_cookie(), None);
+}
+
+/// Two tabs share one cookie store. Tab A sends a request with the old
+/// cookie; before its answer arrives, tab B logs in and the browser stores
+/// the new cookie. The late 401 of tab A must not remove the new cookie,
+/// so a 401 sets no cookie at all; only a login and a logout do.
+#[tokio::test(start_paused = true)]
+async fn a_late_401_never_removes_a_new_cookie() {
+    let app = App::new();
+    let old = app.login().await;
+    app.logout(Some(&old)).await;
+    // Tab B logs in (it presents the old cookie, which is dead).
+    let new = app.login_with(PASSWORD, Some(&old)).await.session_pair();
+    // The late answers to tab A, for the session read and for a protected
+    // route, carry no Set-Cookie.
+    let late_session = app.session(Some(&old)).await;
+    late_session.problem(ProblemCode::Unauthenticated);
+    assert_eq!(late_session.set_cookie(), None);
+    let late_route = app
+        .call(with_cookie(get_request("/api/v1/battery"), Some(&old)))
+        .await;
+    late_route.problem(ProblemCode::Unauthenticated);
+    assert_eq!(late_route.set_cookie(), None);
+    assert_eq!(app.session(Some(&new)).await.status, StatusCode::OK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_session_endpoint_refuses_two_session_cookies() {
+    let app = App::new();
+    let live = app.login().await;
+    let other = format!("__Host-telemetry_session={}", "ef".repeat(32));
+    let malformed = "__Host-telemetry_session=x".to_owned();
+    for second in [&other, &malformed, &live] {
+        let two = format!("{live}; {second}");
+        app.session(Some(&two))
+            .await
+            .problem(ProblemCode::InvalidRequest);
+        let reply = app.logout(Some(&two)).await;
+        reply.problem(ProblemCode::InvalidRequest);
+        assert_eq!(reply.set_cookie(), None);
+        let mut login = login_request(&json!({ "password": PASSWORD }).to_string());
+        login.headers_mut().insert(COOKIE, two.parse().unwrap());
+        app.call(login).await.problem(ProblemCode::InvalidRequest);
+    }
+    // No request above reached the verifier or ended the live session.
+    assert_eq!(app.verifier.calls(), 1);
+    assert_eq!(app.session(Some(&live)).await.status, StatusCode::OK);
+    // In two Cookie headers too.
+    let request = HttpRequest::builder()
+        .uri("/api/v1/session")
+        .header(COOKIE, &live)
+        .header(COOKIE, &other)
+        .body(Body::empty())
+        .unwrap();
+    app.call(request).await.problem(ProblemCode::InvalidRequest);
 }
 
 #[tokio::test(start_paused = true)]
@@ -634,6 +704,81 @@ async fn a_malformed_login_gets_its_problem_and_costs_no_throttle_token() {
         .problem(ProblemCode::LoginThrottled);
 }
 
+/// A request body without a declared length: `chunks` frames of
+/// `chunk` bytes. It counts the frames that the server reads.
+struct Chunked {
+    chunks: usize,
+    chunk: usize,
+    read: Arc<AtomicUsize>,
+}
+
+impl axum::body::HttpBody for Chunked {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        let this = self.get_mut();
+        if this.chunks == 0 {
+            return std::task::Poll::Ready(None);
+        }
+        this.chunks -= 1;
+        this.read.fetch_add(1, Ordering::SeqCst);
+        std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(vec![
+            b' ';
+            this.chunk
+        ])))))
+    }
+}
+
+fn chunked_login(content_type: &str, chunks: usize, read: &Arc<AtomicUsize>) -> HttpRequest<Body> {
+    HttpRequest::builder()
+        .method("POST")
+        .uri("/api/v1/session")
+        .header("origin", ORIGIN)
+        .header(CONTENT_TYPE, content_type)
+        .body(Body::new(Chunked {
+            chunks,
+            chunk: 1024,
+            read: Arc::clone(read),
+        }))
+        .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_chunked_login_body_above_4_kib_stops_at_the_limit() {
+    let app = App::new();
+    // 8 KiB without Content-Length: above the login limit, below the
+    // global 16 KiB limit.
+    let read = Arc::new(AtomicUsize::new(0));
+    app.call(chunked_login("application/json", 8, &read))
+        .await
+        .problem(ProblemCode::PayloadTooLarge);
+    // The server read the frames up to the limit, not the whole body.
+    assert_eq!(read.load(Ordering::SeqCst), 5);
+    assert_eq!(app.verifier.calls(), 0);
+    // A declared length above the limit is refused before any read.
+    let mut declared = login_request(&json!({ "password": PASSWORD }).to_string());
+    declared
+        .headers_mut()
+        .insert(axum::http::header::CONTENT_LENGTH, "5000".parse().unwrap());
+    app.call(declared)
+        .await
+        .problem(ProblemCode::PayloadTooLarge);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_login_with_another_media_type_is_refused_before_the_body_is_read() {
+    let app = App::new();
+    let read = Arc::new(AtomicUsize::new(0));
+    app.call(chunked_login("text/plain", 8, &read))
+        .await
+        .problem(ProblemCode::UnsupportedMediaType);
+    assert_eq!(read.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test(start_paused = true)]
 async fn json_with_a_charset_parameter_is_accepted() {
     let app = App::new();
@@ -756,57 +901,30 @@ async fn a_dropped_login_keeps_the_slot_until_its_verification_ends() {
 
 // ---- The guard in front of other API routes ------------------------------
 
-/// A router with a counting handler where the battery route mounts
-/// (`/api/v1` nest, as in `crate::openapi`), behind the guard.
-fn guarded_battery(app: &App, state: State) -> Router {
-    let calls = Arc::clone(&app.battery_calls);
-    let api: Router<AppState> = Router::new().nest(
-        "/api/v1",
-        Router::new().route(
-            "/battery",
-            get(move || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                async { "data" }
-            })
-            .post(|| async { "changed" }),
-        ),
-    );
-    let app_state = AppState::new(
-        Version::unknown(),
-        state.clone(),
-        crate::battery::unit_test_state(),
-    );
-    protect(api, state).with_state(app_state)
-}
-
 #[tokio::test(start_paused = true)]
 async fn the_guard_runs_before_a_handler_at_the_battery_mount_point() {
-    let verifier = Arc::new(FakeVerifier::default());
-    let state = state_with(Arc::clone(&verifier));
-    let app = App::from_state(state.clone(), verifier);
-    let battery = guarded_battery(&app, state);
-    let call = |request: HttpRequest<Body>| {
-        let battery = battery.clone();
-        async move { battery.oneshot(request).await.unwrap() }
-    };
+    // `App` is the production router assembly with a counting route where
+    // the battery API mounts; this test does not install the guard itself.
+    let app = App::new();
+    let calls = || app.battery_calls.load(Ordering::SeqCst);
 
-    let response = call(get_request("/api/v1/battery")).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    app.call(get_request("/api/v1/battery"))
+        .await
+        .problem(ProblemCode::Unauthenticated);
     let unknown = format!("__Host-telemetry_session={}", "cd".repeat(32));
-    let response = call(with_cookie(get_request("/api/v1/battery"), Some(&unknown))).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(
-        response.headers()[SET_COOKIE]
-            .to_str()
-            .unwrap()
-            .contains("Max-Age=0")
-    );
-    assert_eq!(app.battery_calls.load(Ordering::SeqCst), 0);
+    let reply = app
+        .call(with_cookie(get_request("/api/v1/battery"), Some(&unknown)))
+        .await;
+    reply.problem(ProblemCode::Unauthenticated);
+    assert_eq!(reply.set_cookie(), None);
+    assert_eq!(calls(), 0);
 
     let cookie = app.login().await;
-    let response = call(with_cookie(get_request("/api/v1/battery"), Some(&cookie))).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(app.battery_calls.load(Ordering::SeqCst), 1);
+    let reply = app
+        .call(with_cookie(get_request("/api/v1/battery"), Some(&cookie)))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(calls(), 1);
 
     // A state-changing request needs the origin also with a session.
     let post = HttpRequest::builder()
@@ -815,13 +933,22 @@ async fn the_guard_runs_before_a_handler_at_the_battery_mount_point() {
         .header(COOKIE, &cookie)
         .body(Body::empty())
         .unwrap();
-    assert_eq!(call(post).await.status(), StatusCode::FORBIDDEN);
+    app.call(post).await.problem(ProblemCode::ForbiddenOrigin);
+
+    // Two session cookies are refused before any lookup, also when one of
+    // them is valid.
+    let two = format!("{cookie}; {unknown}");
+    app.call(with_cookie(get_request("/api/v1/battery"), Some(&two)))
+        .await
+        .problem(ProblemCode::InvalidRequest);
+    assert_eq!(calls(), 1);
 
     // After logout the same cookie is refused again.
     app.logout(Some(&cookie)).await;
-    let response = call(with_cookie(get_request("/api/v1/battery"), Some(&cookie))).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(app.battery_calls.load(Ordering::SeqCst), 1);
+    app.call(with_cookie(get_request("/api/v1/battery"), Some(&cookie)))
+        .await
+        .problem(ProblemCode::Unauthenticated);
+    assert_eq!(calls(), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -829,6 +956,7 @@ async fn every_documented_api_route_outside_the_public_list_needs_a_session() {
     let app = App::new();
     let document = crate::openapi::documented_router().into_openapi();
     let mut public = Vec::new();
+    let mut protected = 0_usize;
     for (path, item) in &document.paths.paths {
         let methods = [
             ("GET", item.get.is_some()),
@@ -841,6 +969,7 @@ async fn every_documented_api_route_outside_the_public_list_needs_a_session() {
             public.push(path.clone());
             continue;
         }
+        protected += 1;
         for (method, present) in methods {
             if !present {
                 continue;
@@ -858,6 +987,16 @@ async fn every_documented_api_route_outside_the_public_list_needs_a_session() {
     }
     public.sort();
     assert_eq!(public, ["/api/v1/session", "/health"]);
+    // Today the contract has no private route, so the loop above checks
+    // only the public list; `the_guard_runs_before_a_handler_at_the_battery_mount_point`
+    // proves the guard on the production assembly. Each route of the
+    // battery API (slice S3) is private, so from S3 on this walk must
+    // check at least as many protected routes as the battery router has.
+    let battery_routes = crate::battery::router().into_openapi().paths.paths.len();
+    assert!(
+        protected >= battery_routes,
+        "{protected} protected routes, {battery_routes} battery routes"
+    );
 }
 
 #[tokio::test(start_paused = true)]

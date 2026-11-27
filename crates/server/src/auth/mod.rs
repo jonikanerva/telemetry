@@ -49,13 +49,13 @@ pub mod throttle;
 pub mod token;
 
 use std::fmt;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::Json;
-use axum::body::Bytes;
-use axum::extract::rejection::BytesRejection;
+use axum::body::{Body, HttpBody as _};
 use axum::extract::{FromRef, MatchedPath, Request, State as Extract};
-use axum::http::header::{CONTENT_TYPE, SET_COOKIE};
+use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, SET_COOKIE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
@@ -73,7 +73,7 @@ use self::store::{Deadlines, Removal, SessionLimits, SessionStore};
 use self::throttle::{LoginThrottle, ThrottleLimits};
 use crate::app::AppState;
 use crate::config::{ConfigError, Vars};
-use crate::problem::{Problem, ProblemCode, code_for_status};
+use crate::problem::{Problem, ProblemCode};
 use crate::wire::Instant;
 
 /// The routes that need no session: the health check and the session
@@ -191,17 +191,16 @@ impl State {
         self.0.store.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Uses the first valid session that the request presents. Returns its
-    /// deadlines and the time of the check.
-    fn session_of(&self, headers: &HeaderMap) -> (Option<Deadlines>, Now, bool) {
+    /// Uses the session of the one well-formed session cookie of the
+    /// request. Returns its deadlines and the time of the check. The guard
+    /// has already refused a request with more than one session cookie.
+    fn session_of(&self, headers: &HeaderMap) -> (Option<Deadlines>, Now) {
         let presented = cookie::presented(headers);
         let now = self.now();
-        let mut store = self.store();
         let deadlines = presented
-            .tokens
-            .iter()
-            .find_map(|token| store.touch(token, now));
-        (deadlines, now, presented.any)
+            .token()
+            .and_then(|token| self.store().touch(token, now));
+        (deadlines, now)
     }
 }
 
@@ -299,7 +298,7 @@ async fn guard(Extract(auth): Extract<State>, request: Request, next: Next) -> R
         .get::<MatchedPath>()
         .map(|path| path.as_str().to_owned());
     let Some(route) = route else {
-        return unauthenticated(false);
+        return unauthenticated();
     };
     if !route.starts_with("/api/") {
         return next.run(request).await;
@@ -312,26 +311,33 @@ async fn guard(Extract(auth): Extract<State>, request: Request, next: Next) -> R
         auth.0.test_stats.count_refused_origin();
         return Problem::new(ProblemCode::ForbiddenOrigin).into_response();
     }
+    // A browser sends at most one cookie of a `__Host-` name. A request
+    // with more is refused on every API route before any session lookup,
+    // so no endpoint chooses between two tokens.
+    if cookie::presented(request.headers()) == cookie::Presented::Many {
+        info!(reason = "cookies", "request_refused");
+        return Problem::new(ProblemCode::InvalidRequest).into_response();
+    }
     if PUBLIC_ROUTES.contains(&route.as_str()) {
         return next.run(request).await;
     }
-    let (session, _now, presented) = auth.session_of(request.headers());
+    let (session, _now) = auth.session_of(request.headers());
     if session.is_none() {
-        return unauthenticated(presented);
+        return unauthenticated();
     }
     next.run(request).await
 }
 
-/// The 401 problem `unauthenticated`. When the request carried a session
-/// cookie, the response also removes it from the browser.
-fn unauthenticated(presented: bool) -> Response {
-    let mut response = Problem::new(ProblemCode::Unauthenticated).into_response();
-    if presented {
-        response
-            .headers_mut()
-            .insert(SET_COOKIE, cookie::clear_cookie());
-    }
-    response
+/// The 401 problem `unauthenticated`.
+///
+/// It sets no cookie. Only a successful login and a logout change the
+/// session cookie: a late 401 for an old cookie can arrive after another
+/// tab has logged in and set a new cookie, and a clearing cookie would
+/// then remove the new, valid one. A dead cookie does no harm: the server
+/// refuses it, the next login replaces it, and its `Max-Age` ends at the
+/// absolute deadline of its session.
+fn unauthenticated() -> Response {
+    Problem::new(ProblemCode::Unauthenticated).into_response()
 }
 
 /// Returns the session of the request.
@@ -350,8 +356,8 @@ fn unauthenticated(presented: bool) -> Response {
 )]
 async fn get_session(Extract(auth): Extract<State>, headers: HeaderMap) -> Response {
     match auth.session_of(&headers) {
-        (Some(deadlines), now, _) => Json(Session::from_deadlines(deadlines, now)).into_response(),
-        (None, _, presented) => unauthenticated(presented),
+        (Some(deadlines), now) => Json(Session::from_deadlines(deadlines, now)).into_response(),
+        (None, _) => unauthenticated(),
     }
 }
 
@@ -368,7 +374,7 @@ async fn get_session(Extract(auth): Extract<State>, headers: HeaderMap) -> Respo
     responses(
         (status = 200, description = "The password is correct. The response sets the session cookie.", body = Session,
             headers(("Set-Cookie" = String, description = "The session cookie."))),
-        (status = 400, description = "The body is not a valid login request.", body = Problem, content_type = "application/problem+json"),
+        (status = 400, description = "The body is not a valid login request, or the request carries more than one session cookie.", body = Problem, content_type = "application/problem+json"),
         (status = 401, description = "The password is not correct.", body = Problem, content_type = "application/problem+json"),
         (status = 403, description = "The request did not come from the application origin.", body = Problem, content_type = "application/problem+json"),
         (status = 413, description = "The request body is larger than the limit.", body = Problem, content_type = "application/problem+json"),
@@ -378,12 +384,10 @@ async fn get_session(Extract(auth): Extract<State>, headers: HeaderMap) -> Respo
         (status = 503, description = "The request took too long.", body = Problem, content_type = "application/problem+json"),
     ),
 )]
-async fn login(
-    Extract(auth): Extract<State>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Response {
-    let password = match read_login(&headers, body) {
+async fn login(Extract(auth): Extract<State>, request: Request) -> Response {
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    let password = match read_login(&headers, body).await {
         Ok(password) => password,
         Err(code) => {
             info!(reason = code.as_str(), "login_rejected");
@@ -430,9 +434,9 @@ fn start_session(auth: &State, headers: &HeaderMap) -> Response {
     let now = auth.now();
     let created = {
         let mut store = auth.store();
-        // Fixation: the sessions that the request presents end; the new
+        // Fixation: the session that the request presents ends; the new
         // session gets a new token.
-        for token in &presented.tokens {
+        if let Some(token) = presented.token() {
             store.remove(token);
         }
         store.create(now)
@@ -455,21 +459,25 @@ fn start_session(auth: &State, headers: &HeaderMap) -> Response {
     response
 }
 
-/// Checks the login request in this order: content type, size, JSON form,
-/// password length. A failure costs no throttle token.
-fn read_login(
-    headers: &HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<Password, ProblemCode> {
+/// Checks the login request in this order: content type (before any read
+/// of the body), declared length, the read of at most
+/// [`LOGIN_BODY_LIMIT`] bytes (also for a body without `Content-Length`),
+/// JSON form, password length. A failure costs no throttle token.
+async fn read_login(headers: &HeaderMap, body: Body) -> Result<Password, ProblemCode> {
     if !is_json(headers) {
         return Err(ProblemCode::UnsupportedMediaType);
     }
-    let body = body.map_err(|rejection| {
-        code_for_status(rejection.status()).unwrap_or(ProblemCode::InvalidRequest)
-    })?;
-    if body.len() > LOGIN_BODY_LIMIT {
+    let declared_too_large = headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| {
+            usize::try_from(length).map_or(true, |length| length > LOGIN_BODY_LIMIT)
+        });
+    if declared_too_large {
         return Err(ProblemCode::PayloadTooLarge);
     }
+    let body = read_limited(body, LOGIN_BODY_LIMIT).await?;
     // Decode through `Value`: a derived `Deserialize` would also accept a
     // JSON array in field order (web profile §2.3).
     let value: Value = serde_json::from_slice(&body).map_err(|_| ProblemCode::InvalidRequest)?;
@@ -484,6 +492,28 @@ fn read_login(
             Ok(Password(password.clone()))
         }
         _ => Err(ProblemCode::InvalidRequest),
+    }
+}
+
+/// Reads the body frame by frame and stops at the first byte above
+/// `limit`, so the server never holds more than `limit` bytes of it. A
+/// body above the limit is 413; a failed read is 400.
+async fn read_limited(mut body: Body, limit: usize) -> Result<Vec<u8>, ProblemCode> {
+    let mut bytes = Vec::new();
+    loop {
+        let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+        match frame {
+            None => return Ok(bytes),
+            Some(Err(_)) => return Err(ProblemCode::InvalidRequest),
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data() {
+                    if data.len() > limit.saturating_sub(bytes.len()) {
+                        return Err(ProblemCode::PayloadTooLarge);
+                    }
+                    bytes.extend_from_slice(&data);
+                }
+            }
+        }
     }
 }
 
@@ -520,14 +550,11 @@ fn is_json(headers: &HeaderMap) -> bool {
 )]
 async fn logout(Extract(auth): Extract<State>, headers: HeaderMap) -> Response {
     let presented = cookie::presented(&headers);
-    let mut ended = false;
-    {
-        let mut store = auth.store();
-        // Every presented session ends; no short circuit.
-        for token in &presented.tokens {
-            ended |= store.remove(token);
-        }
-    }
+    // The guard has refused a request with more than one session cookie,
+    // so the request presents at most one token, and it ends here.
+    let ended = presented
+        .token()
+        .is_some_and(|token| auth.store().remove(token));
     info!(
         reason = if ended { "session" } else { "no_session" },
         "logout"

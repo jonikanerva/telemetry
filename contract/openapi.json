@@ -103,7 +103,7 @@
             }
           },
           "400": {
-            "description": "The body is not a valid login request.",
+            "description": "The body is not a valid login request, or the request carries more than one session cookie.",
             "content": {
               "application/problem+json": {
                 "schema": {
