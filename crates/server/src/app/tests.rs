@@ -65,6 +65,12 @@ fn spa_files() -> TempDir {
     dir
 }
 
+/// The text of the test panics. A log line or a response that holds it
+/// leaks the panic payload. It has letters that no timestamp, number, or
+/// hexadecimal request identifier can hold, so a search for it finds only a
+/// leak.
+const PANIC_MARKER: &str = "panic-marker-qzxjwv";
+
 /// Test-only routes of these tests: a slow route, a panic, and a JSON
 /// body extractor with the problem mapping.
 fn extra_routes() -> Router<AppState> {
@@ -79,7 +85,7 @@ fn extra_routes() -> Router<AppState> {
         .route(
             "/api/v1/test/panic",
             get(|| async {
-                panic!("secret value 4242");
+                panic!("secret value {PANIC_MARKER}");
                 #[expect(unreachable_code, reason = "the handler needs a return type")]
                 ""
             }),
@@ -373,7 +379,7 @@ async fn a_panic_is_a_500_internal_error_problem() {
     let app = TestApp::new();
     let response = app.get("/api/v1/test/panic").await;
     let body = response.assert_problem(ProblemCode::InternalError);
-    assert!(!response.text().contains("4242"), "{body}");
+    assert!(!response.text().contains(PANIC_MARKER), "{body}");
     assert!(!response.headers.contains_key(RETRY_AFTER));
     assert_security_headers(&response, "panic");
 }
@@ -617,7 +623,7 @@ async fn a_panicked_request_is_logged_without_a_request_id() {
     app.get("/api/v1/test/panic").await;
     drop(guard);
     let text = capture.text();
-    assert!(!text.contains("4242"), "{text}");
+    assert!(!text.contains(PANIC_MARKER), "{text}");
     let objects = capture.objects();
     let event = objects.iter().find(|e| e["message"] == "request").unwrap();
     assert_eq!(event["status"], 500);
@@ -629,12 +635,12 @@ async fn a_panicked_request_is_logged_without_a_request_id() {
 fn the_panic_hook_logs_the_position_only() {
     let (capture, guard) = capture::install();
     crate::logging::install_panic_hook();
-    let result = std::panic::catch_unwind(|| panic!("secret panic value 777"));
+    let result = std::panic::catch_unwind(|| panic!("secret panic value {PANIC_MARKER}"));
     drop(std::panic::take_hook());
     drop(guard);
     assert!(result.is_err());
     let text = capture.text();
-    assert!(!text.contains("777"), "{text}");
+    assert!(!text.contains(PANIC_MARKER), "{text}");
     let objects = capture.objects();
     assert_eq!(objects.len(), 1, "{text}");
     assert_eq!(objects[0]["message"], "panic");
