@@ -373,8 +373,10 @@ description = "Vulnerability check (STACK.md §3): Rust and JS dependencies and 
 # from $DOCKER_CONFIG/config.json when that file exists. The task points
 # DOCKER_CONFIG at a temporary directory with an empty config.json, so the
 # pulls are anonymous and the local credential files are not read.
-# Each image scan reads the reviewed ignore file
-# docs/security/osv-scanner-<repository with / as ->.toml. Some entries rely
+# Each image scan reads the reviewed ignore file of its Dockerfile:
+# docs/security/osv-scanner-<repository with / as ->.toml for
+# ingest/Dockerfile and docs/security/osv-scanner-web-<repository>.toml for
+# webapp/Dockerfile. A missing file fails the task. Some entries rely
 # on deployment facts (docs/security/image-advisories.md, "Deployment
 # facts"). crates/ingest/tests/deployment.rs checks most of them. The task
 # checks the three facts that no other check holds, and fails when one
@@ -384,9 +386,10 @@ description = "Vulnerability check (STACK.md §3): Rust and JS dependencies and 
 # The builder images are not scanned: ingest/Dockerfile stage build and
 # webapp/Dockerfile stages web and build. No file of them reaches a final
 # image except the binary and the SPA files (STACK.md §13).
-# Each Dockerfile has its own number of runtime FROM images. Both final
-# stages use the same debian image; the task scans each image once, and
-# counts each scanned image for each Dockerfile that names it.
+# Each Dockerfile has its own number of runtime FROM images and its own
+# ignore files. Both final stages use the same debian image, and the task
+# scans it once for each Dockerfile, so that the web decisions can differ
+# from the ingest decisions.
 # The script is a TOML literal string: backslashes reach the shell as written.
 run = '''
 status=0
@@ -447,48 +450,50 @@ printf '{}' > "$work/config.json"
 export DOCKER_CONFIG="$work"
 # The runtime FROM images of each Dockerfile: every stage except its
 # builder stages. Each line: the Dockerfile, its builder stages (with
-# commas), and its number of runtime images. ingest/Dockerfile has two
-# (tesla/fleet-telemetry and debian), webapp/Dockerfile has one (debian).
-cat > "$work/specs" <<'EOF'
-ingest/Dockerfile build 2
-webapp/Dockerfile web,build 1
-EOF
-# One line for each runtime FROM line: the Dockerfile and the image.
-: > "$work/runtime"
-while read -r file builders expected; do
-  awk -v f="$file" -v b=",$builders," 'toupper($1) == "FROM" && !(toupper($3) == "AS" && index(b, "," $4 ",")) { print f, $2 }' "$file" >> "$work/runtime"
-done < "$work/specs"
-# Each image once, also when both Dockerfiles name it.
-: > "$work/scanned"
-for image in $(cut -d ' ' -f 2 "$work/runtime" | sort -u); do
-  echo "image: $image ($(awk -v i="$image" '$2 == i { printf "%s ", $1 }' "$work/runtime"))"
-  if crane pull --platform linux/amd64 "$image" "$work/image.tar"; then
-    crane digest --platform linux/amd64 "$image"
-    ignore_file="docs/security/osv-scanner-$(printf '%s' "${image%%[:@]*}" | tr '/' '-').toml"
-    if [ -f "$ignore_file" ]; then
-      osv-scanner scan image --config "$ignore_file" --archive "$work/image.tar" || status=1
+# commas), its number of runtime images, and the prefix of its ignore
+# files. ingest/Dockerfile has two runtime images (tesla/fleet-telemetry
+# and debian), webapp/Dockerfile has one (debian). Each Dockerfile has its
+# own reviewed ignore files, so the task scans debian once for each
+# Dockerfile: docs/security/osv-scanner-debian.toml for the ingest image,
+# docs/security/osv-scanner-web-debian.toml for the web image.
+cat > "$work/specs" <<'SPECS'
+ingest/Dockerfile build 2 osv-scanner-
+webapp/Dockerfile web,build 1 osv-scanner-web-
+SPECS
+# File descriptor 3 holds the list, so that crane and osv-scanner cannot
+# read it from standard input.
+while read -r file builders expected prefix <&3; do
+  images="$(awk -v b=",$builders," 'toupper($1) == "FROM" && !(toupper($3) == "AS" && index(b, "," $4 ",")) { print $2 }' "$file")"
+  listed=0
+  scanned=0
+  for image in $images; do
+    listed=$((listed + 1))
+    echo "image: $image ($file)"
+    if crane pull --platform linux/amd64 "$image" "$work/image.tar"; then
+      crane digest --platform linux/amd64 "$image"
+      ignore_file="docs/security/$prefix$(printf '%s' "${image%%[:@]*}" | tr '/' '-').toml"
+      echo "ignore file: $ignore_file"
+      if [ -f "$ignore_file" ]; then
+        osv-scanner scan image --config "$ignore_file" --archive "$work/image.tar" || status=1
+      else
+        echo "vuln: no reviewed ignore file $ignore_file for $image of $file"
+        osv-scanner scan image --archive "$work/image.tar" || true
+        status=1
+      fi
+      scanned=$((scanned + 1))
     else
-      echo "vuln: no reviewed ignore file $ignore_file for $image"
-      osv-scanner scan image --archive "$work/image.tar" || true
+      echo "vuln: cannot download $image"
       status=1
     fi
-    echo "$image" >> "$work/scanned"
-  else
-    echo "vuln: cannot download $image"
-    status=1
-  fi
-  rm -f "$work/image.tar"
-done
-# Each Dockerfile: the number of its runtime FROM lines and the number of
-# those that the loop scanned must both equal the expected number.
-while read -r file builders expected; do
-  listed="$(awk -v f="$file" '$1 == f { n++ } END { print n + 0 }' "$work/runtime")"
-  scanned="$(awk -v f="$file" 'NR == FNR { ok[$1] = 1; next } $1 == f && ($2 in ok) { n++ } END { print n + 0 }' "$work/scanned" "$work/runtime")"
+    rm -f "$work/image.tar"
+  done
+  # The number of runtime FROM lines and the number of scanned images must
+  # both equal the expected number.
   echo "runtime images of $file: $listed listed, $scanned scanned, $expected expected"
   if [ "$listed" -ne "$expected" ] || [ "$scanned" -ne "$expected" ]; then
     echo "vuln: scanned $scanned of $listed runtime images of $file, expected $expected"
     status=1
   fi
-done < "$work/specs"
+done 3< "$work/specs"
 exit "$status"
 '''

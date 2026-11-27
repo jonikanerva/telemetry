@@ -4,10 +4,11 @@ Status: the triage covers the advisory data of 26 November 2026 and, for
 the programs of the entrypoint, of 27 November 2026 (the triage snapshot). The reviewed ignore files
 `docs/security/osv-scanner-tesla-fleet-telemetry.toml` and
 `docs/security/osv-scanner-debian.toml` record the decisions of this
-document for `mise run vuln`. Each ignore entry expires on its date
-("Ignore files and deployment facts"). The web image (`webapp/Dockerfile`)
-has the same base image; the section "Web image" states which Debian 13
-decisions apply to it and why.
+document for the ingest image in `mise run vuln`. Each ignore entry expires
+on its date ("Ignore files and deployment facts"). The web image
+(`webapp/Dockerfile`) has the same base image and its own ignore file,
+`docs/security/osv-scanner-web-debian.toml`; the section "Web image"
+states which Debian 13 decisions apply to it and why.
 
 ## Owner summary
 
@@ -714,13 +715,15 @@ Reassessment rule:
 
 The web image (`webapp/Dockerfile`) has one runtime image:
 `debian:trixie-slim`, the base image of the ingest image. The `vuln` task
-scans it once for both Dockerfiles, with
-`docs/security/osv-scanner-debian.toml`. The builder images
+scans it once for each Dockerfile. The scan for `webapp/Dockerfile` reads
+`docs/security/osv-scanner-web-debian.toml`, so the web decisions can
+differ from the ingest decisions. The builder images
 `node:<version>-trixie-slim` and `rust:<version>-slim-trixie` are not
 scanned (STACK.md §13).
 
-The ignore entries rely on the deployment facts of the ingest image. The
-web image has other facts:
+The entries of `osv-scanner-debian.toml` rely on the deployment facts of
+the ingest image. The web image has other facts, and the entries of
+`osv-scanner-web-debian.toml` rely on them:
 
 - **W1. Image composition (checked).** The final stage takes only
   `/usr/local/bin/telemetry-web-server` from the stage `build` and the
@@ -751,10 +754,14 @@ Decisions for the web image, by group of the "Debian 13 base" section:
 | On disk only (46) | Applies, not affected | The server does not execute these programs or load these libraries (W2, W3). |
 | glibc and gcc-14, loaded by the server (14) | Applies while W4 holds | The ingest decision relies on the mTLS port as the only network input. The web server loads the same libraries, but has no public network input (W4). |
 
+`osv-scanner-web-debian.toml` holds one entry for each of these 69
+groups, with the reason of its web decision group and the expiry of the
+ingest entry (2027-01-25). The web image does not extend an expiry.
+
 Reassessment: before the service `telemetry-web` gets a public domain or
-a TCP proxy, repeat the decision for the 14 glibc and gcc-14 groups with
-the public HTTP input. The entries expire on the dates of the
-`debian` ignore file; the web image does not extend them.
+a TCP proxy (the login slices), repeat the decision for the 14 glibc and
+gcc-14 groups with the public HTTP input, and change their entries in
+`osv-scanner-web-debian.toml`.
 
 ## Ignore files and deployment facts
 
@@ -762,14 +769,22 @@ the public HTTP input. The entries expire on the dates of the
   (one for each Go group; osv-scanner also ignores the aliases) and the
   Debian 12 package override. Expiry 2027-02-24.
 - `docs/security/osv-scanner-debian.toml`: 69 entries, one for each
-  gating Debian 13 group. Expiry 2027-01-25.
-- The `vuln` task selects the file from the image repository name:
-  `osv-scanner-<repository, / replaced by ->.toml`. An image without a
-  file fails the task. The runtime images of a Dockerfile are its `FROM`
-  stages except its builder stages (`build` in `ingest/Dockerfile`; `web`
-  and `build` in `webapp/Dockerfile`). The task scans each image once and
-  fails when it did not scan exactly two runtime images of
-  `ingest/Dockerfile` and exactly one of `webapp/Dockerfile`.
+  gating Debian 13 group, for the ingest image. Expiry 2027-01-25.
+- `docs/security/osv-scanner-web-debian.toml`: the same 69 groups for the
+  web image, with the reasons of the "Web image" decisions. Expiry
+  2027-01-25. The 14 glibc and gcc-14 entries apply only while the web
+  service has no public domain and no TCP proxy (W4); reassess them in
+  this file before the service gets a public domain.
+- The `vuln` task selects the file from the Dockerfile and the image
+  repository name: `osv-scanner-<repository, / replaced by ->.toml` for
+  `ingest/Dockerfile`, `osv-scanner-web-<repository>.toml` for
+  `webapp/Dockerfile`. An image without a file fails the task. The runtime
+  images of a Dockerfile are its `FROM` stages except its builder stages
+  (`build` in `ingest/Dockerfile`; `web` and `build` in
+  `webapp/Dockerfile`). The task scans the runtime images of each
+  Dockerfile, so `debian:trixie-slim` twice, and fails when it did not
+  scan exactly two runtime images of `ingest/Dockerfile` and exactly one
+  of `webapp/Dockerfile`.
 - After an expiry date, an entry stops to apply, and `vuln` fails on the
   finding again. An unused entry gives a warning only. Remove unused
   entries in the next triage.
@@ -830,7 +845,8 @@ days (ADR 0005).
   Go triage in the dependency PR.
 - A deployment fact breaks (`vuln` or the deployment test fails).
 - The service `telemetry-web` gets a public domain or a TCP proxy: repeat
-  the glibc and gcc-14 decision for the web image ("Web image", W4).
+  the glibc and gcc-14 decision for the web image ("Web image", W4) and
+  change its entries in `docs/security/osv-scanner-web-debian.toml`.
 - An ignored CVE appears in the CISA KEV catalog: the fix becomes due
   (DOCTRINE.md P7). Compare the CVE IDs with the catalog at each
   vulnerability check; `vuln` does not read the catalog.
@@ -842,7 +858,8 @@ days (ADR 0005).
 
 1. `mise run vuln` (needs the network). Expected for the triage snapshot:
    exit 0; "Filtered 44 vulnerabilities" for the upstream image and
-   "Filtered 159 vulnerabilities" for the Debian image.
+   "Filtered 159 vulnerabilities" for each of the two Debian scans
+   (ingest and web).
 2. Raw counts: run `osv-scanner scan image --archive <tar>` without
    `--config` on the archive that `crane pull --platform linux/amd64`
    writes. Expected: 103 and 79 in the summary lines.
