@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { config as zodConfig } from 'zod';
 
-import { createApiClient, isRetryable } from './index.js';
+import { createApiClient, isRetryable, isUnauthenticated } from './index.js';
 import type { ApiError } from './index.js';
 
 const BASE_URL = 'http://api.test';
@@ -179,6 +179,157 @@ describe('getHealth', () => {
       return new Promise<Response>(() => undefined);
     });
     await expect(client.getHealth({ signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+const SESSION = { expires_at: '2026-12-27T08:00:00Z', idle_expires_at: '2026-12-04T08:00:00.123456Z' };
+
+describe('getSession', () => {
+  it('returns a valid session body', async () => {
+    const { client, requests } = clientWith(() => Promise.resolve(json(200, SESSION)));
+    expect(await client.getSession()).toEqual({ ok: true, data: SESSION });
+    expect(requests[0]?.url).toBe(`${BASE_URL}/api/v1/session`);
+    expect(requests[0]?.method).toBe('GET');
+    expect(requests[0]?.credentials).toBe('same-origin');
+  });
+
+  it('returns the problem unauthenticated for a 401', async () => {
+    const { client } = clientWith(() => Promise.resolve(problem(401, 'unauthenticated')));
+    const result = await client.getSession();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatchObject({ kind: 'problem', problem: { code: 'unauthenticated', status: 401 } });
+      expect(isUnauthenticated(result.error)).toBe(true);
+    }
+  });
+
+  // The generated client returns `{}` without validation for these
+  // responses. An empty body must never open a session.
+  it.each([
+    ['a 204 without a body', () => new Response(null, { status: 204 })],
+    ['a 200 with Content-Length 0', () => new Response('', { status: 200, headers: { 'Content-Length': '0' } })],
+    ['a 200 with an empty body', () => new Response('', { status: 200 })],
+    ['a 200 with an empty object', () => json(200, {})],
+  ])('rejects %s', async (_name, response) => {
+    const { client } = clientWith(() => Promise.resolve(response()));
+    const result = await client.getSession();
+    expect(result).toMatchObject({ ok: false, error: { kind: 'invalid_response' } });
+  });
+
+  it.each([
+    ['an instant without Z', { ...SESSION, expires_at: '2026-12-27T08:00:00+00:00' }],
+    ['an instant with nanoseconds', { ...SESSION, expires_at: '2026-12-27T08:00:00.123456789Z' }],
+    ['a missing field', { expires_at: SESSION.expires_at }],
+  ])('rejects a session body with %s', async (_name, body) => {
+    const { client } = clientWith(() => Promise.resolve(json(200, body)));
+    expect(await client.getSession()).toEqual({ ok: false, error: { kind: 'invalid_response', status: 200 } });
+  });
+
+  it('throws the abort reason when the caller cancels', async () => {
+    const controller = new AbortController();
+    const { client } = clientWith(() => {
+      controller.abort();
+      return new Promise<Response>(() => undefined);
+    });
+    await expect(client.getSession({ signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('getHealth with an empty success body', () => {
+  it('rejects a 200 with Content-Length 0', async () => {
+    const { client } = clientWith(() =>
+      Promise.resolve(new Response('', { status: 200, headers: { 'Content-Length': '0' } })),
+    );
+    expect(await client.getHealth()).toEqual({ ok: false, error: { kind: 'invalid_response', status: 200 } });
+  });
+});
+
+describe('login', () => {
+  it('posts the password as JSON and returns the session', async () => {
+    const { client, requests } = clientWith(() => Promise.resolve(json(200, SESSION)));
+    expect(await client.login('correct horse')).toEqual({ ok: true, data: SESSION });
+    const request = requests[0];
+    expect(request?.url).toBe(`${BASE_URL}/api/v1/session`);
+    expect(request?.method).toBe('POST');
+    expect(request?.headers.get('Content-Type')).toBe('application/json');
+    expect(await request?.json()).toEqual({ password: 'correct horse' });
+  });
+
+  it('returns invalid_credentials, which is not a session loss', async () => {
+    const { client } = clientWith(() => Promise.resolve(problem(401, 'invalid_credentials')));
+    const result = await client.login('wrong');
+    expect(result).toMatchObject({ ok: false, error: { kind: 'problem', problem: { code: 'invalid_credentials' } } });
+    if (!result.ok) {
+      expect(isUnauthenticated(result.error)).toBe(false);
+    }
+  });
+
+  it('returns login_throttled with retry_after_seconds', async () => {
+    const { client } = clientWith(() => Promise.resolve(problem(429, 'login_throttled', { retry_after_seconds: 42 })));
+    expect(await client.login('x')).toMatchObject({
+      ok: false,
+      error: { kind: 'problem', problem: { code: 'login_throttled', status: 429, retry_after_seconds: 42 } },
+    });
+  });
+
+  it('rejects a 200 without a body', async () => {
+    const { client } = clientWith(() =>
+      Promise.resolve(new Response('', { status: 200, headers: { 'Content-Length': '0' } })),
+    );
+    expect(await client.login('x')).toEqual({ ok: false, error: { kind: 'invalid_response', status: 200 } });
+  });
+
+  it('returns network when no response arrives', async () => {
+    const { client } = clientWith(() => Promise.reject(new TypeError('fetch failed')));
+    expect(await client.login('x')).toEqual({ ok: false, error: { kind: 'network' } });
+  });
+});
+
+describe('logout', () => {
+  it('succeeds with 204 and an empty body', async () => {
+    const { client, requests } = clientWith(() => Promise.resolve(new Response(null, { status: 204 })));
+    expect(await client.logout()).toEqual({ ok: true, data: undefined });
+    expect(requests[0]?.url).toBe(`${BASE_URL}/api/v1/session`);
+    expect(requests[0]?.method).toBe('DELETE');
+  });
+
+  it.each([
+    ['a 200 with an empty body', () => new Response('', { status: 200 })],
+    ['a 200 with Content-Length 0', () => new Response('', { status: 200, headers: { 'Content-Length': '0' } })],
+    ['a 200 with an empty object', () => json(200, {})],
+    ['a 205', () => new Response(null, { status: 205 })],
+  ])('rejects %s', async (_name, response) => {
+    const { client } = clientWith(() => Promise.resolve(response()));
+    expect(await client.logout()).toMatchObject({ ok: false, error: { kind: 'invalid_response' } });
+  });
+
+  it('returns the problem forbidden_origin for a 403', async () => {
+    const { client } = clientWith(() => Promise.resolve(problem(403, 'forbidden_origin')));
+    expect(await client.logout()).toMatchObject({
+      ok: false,
+      error: { kind: 'problem', problem: { code: 'forbidden_origin' } },
+    });
+  });
+});
+
+describe('isUnauthenticated', () => {
+  it.each([
+    ['unauthenticated', true],
+    ['invalid_credentials', false],
+    ['login_throttled', false],
+    ['forbidden_origin', false],
+  ] as const)('classifies the problem code %s', (code, expected) => {
+    const error: ApiError = {
+      kind: 'problem',
+      problem: { type: 'about:blank', title: 'x', status: 401, code, detail: 'x' },
+    };
+    expect(isUnauthenticated(error)).toBe(expected);
+  });
+
+  it('is false for failures without a problem', () => {
+    expect(isUnauthenticated({ kind: 'network' })).toBe(false);
+    expect(isUnauthenticated({ kind: 'timeout' })).toBe(false);
+    expect(isUnauthenticated({ kind: 'invalid_response', status: 401 })).toBe(false);
   });
 });
 
