@@ -1,0 +1,141 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  line-height: 1.5;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+a {
+  color: var(--color-link);
+}
+
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--space-2);
+  top: -10rem;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg);
+  z-index: 1;
+}
+
+.skip-link:focus {
+  top: var(--space-2);
+}
+
+.app-header,
+.app-footer {
+  padding: var(--space-3);
+  background: var(--color-surface);
+}
+
+.app-name {
+  font-weight: 700;
+}
+
+.app-main {
+  flex: 1;
+  padding: var(--space-3);
+  max-width: 60rem;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.app-main:focus {
+  outline: none;
+}
+
+.app-footer {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.app-footer p {
+  margin: 0;
+}
+
+button {
+  min-height: var(--target-min);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-button-bg);
+  color: var(--color-button-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: progress;
+}
+
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-notice-bg);
+  color: var(--color-notice-text);
+}
+
+.banner p {
+  margin: 0;
+}
+
+.notice {
+  padding: var(--space-3);
+  border-radius: var(--radius);
+}
+
+.notice-error {
+  background: var(--color-error-bg);
+  color: var(--color-error-text);
+}
+
+.notice-title {
+  margin-top: 0;
+  font-weight: 700;
+}
+
+.health {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+}
+
+.health dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+.health dt {
+  color: var(--color-text-muted);
+}
+
+.health dd {
+  margin: 0;
+}
+
+code {
+  font-family: var(--font-mono);
+}

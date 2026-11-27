@@ -1,0 +1,38 @@
+# The pnpm workspace of the SPA, the API client, and the browser tests.
+# pnpm 12 reads only the auth, registry, TLS, and proxy settings from
+# .npmrc; every other setting is in this file (https://pnpm.io/settings).
+packages:
+  - packages/api-client
+  - web
+  - e2e
+
+# A release must be at least 1440 minutes old before an install can use
+# it (STACK.md §15, ADR 0006). An explicit value turns on strict mode
+# (https://pnpm.io/settings/dependency-resolution#minimumreleaseage).
+# An exclusion is allowed only for a security fix.
+minimumReleaseAge: 1440
+
+# `pnpm add` writes exact versions; manifests hold no ranges.
+saveExact: true
+
+# A dependency build script runs only when this list allows it, and an
+# unreviewed build script fails the install
+# (https://pnpm.io/settings/build#strictdepbuilds). No dependency needs a
+# build script now.
+strictDepBuilds: true
+
+# Package permissions of pnpm 12. @tanstack/react-router asks to install
+# agent skills into the checkout; the project uses none.
+permissions:
+  '@tanstack/react-router':
+    skills: false
+
+# @hey-api/json-schema-ref-parser 1.4.4, a dependency of the generator
+# @hey-api/openapi-ts 0.99.0, pins js-yaml 4.2.0. That version has the high
+# advisories GHSA-52cp-r559-cp3m, GHSA-5p4m-2wfm-xmqj, and
+# GHSA-2883-xcg3-v3hh; js-yaml 4.3.2 fixes all three in the same major
+# version (profile §2.1). The generated client is the same with the
+# override (scripts/contract-check.sh). Remove the override when a
+# generator release depends on js-yaml 4.3.2 or later.
+overrides:
+  '@hey-api/json-schema-ref-parser@1.4.4>js-yaml': 4.3.2
