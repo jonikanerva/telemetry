@@ -174,12 +174,16 @@ one breaks.
    removal of empty lines and `#` lines, the lines must equal the expected
    lines; printable ASCII only), so it writes the TLS files, unsets the
    TLS variables and `MIGRATION_DATABASE_URL`, and starts
-   `exec /usr/local/bin/ingest run` and nothing else; `ingest` starts the
+   `exec setpriv --reuid 10001 --regid 10001 --clear-groups
+   --inh-caps=-all --bounding-set=-all --no-new-privs
+   /usr/local/bin/ingest run` and nothing else (issue #29: the image has
+   no `USER` line and starts as root; `setpriv` starts `ingest` as user
+   10001 without capabilities); `ingest` starts the
    server with `-config` and `INGEST_CHILD_CONFIG`
    (`crates/ingest/src/child.rs`). Limit: a Railway service variable
    `INGEST_CHILD_CONFIG` would replace the image value; the release steps
    forbid any `INGEST_` service variable (`docs/ingest-release.md`).
-   `scripts/vuln-premise-test.sh` proves with 40 changed inputs that the
+   `scripts/vuln-premise-test.sh` proves with 55 changed inputs that the
    premise checks fail. The upstream
    layer of the binary contains only `fleet-telemetry`. The Debian 12
    files of the upstream image (`gcr.io/distroless/cc-debian12` base,
@@ -552,8 +556,11 @@ Who can be a peer: only a process inside the container, through the
 loopback interface. Railway exposes only the TCP proxy to port 4443, and
 the `vuln` premise requires `zmq.addr` on the literal address
 `127.0.0.1`. The container runs two processes, `ingest` and
-`fleet-telemetry`, both as user 10001, and no shell or other program
-stays running. A process of that user that ran in the container (for
+`fleet-telemetry`, both as user 10001 without capabilities, and no shell
+or other program stays running. Since issue #29 the container starts as
+root: on Railway the init of Railway (PID 1) runs as root (assumption
+until the post-release check), and the entrypoint runs as root until it
+replaces itself with `ingest` through `setpriv`. A process of that user that ran in the container (for
 example after a code-execution fault in `fleet-telemetry`; a
 `railway ssh` session has at least the same access) could connect to
 port 5284 and subscribe: it
@@ -666,7 +673,7 @@ the build".
 
 65 groups have no fix in Debian 13 on 26 November 2026. Decision:
 **accepted.** The only network input to the service is the mTLS port, and
-the running service does not execute the package tools.
+the running service does not execute the affected package tools.
 
 Loaded by the running server process and by `ingest` (14 groups). Since
 issue #14, `ingest` (Rust; PID 1 under Docker, PID 2 under the init of Railway) runs in the same image. Premise
@@ -682,12 +689,33 @@ image lists another library.
 | glibc (`libc6`) | DEBIAN-CVE-2026-84243 (7.0), -100290 (3.7), -115819 (4.8), -121757 (5.9), -121758 (5.9), -124024 (5.9), -126765 (3.7) |
 | gcc-14 (`libstdc++6`, `libgcc-s1`) | DEBIAN-CVE-2026-95619 (7.7), -102010 (7.0), -114690 (6.2), -114691 (5.9), -115455 (6.5), -115456 (3.7), -125709 (4.2) |
 
+Run by the entrypoint, not affected (5 groups, issue #29). Since issue
+#29, `ingest/entrypoint.sh` runs as root at each start, before the drop
+to user 10001. Besides the builtins of `/bin/sh` (dash), it runs three
+programs once, with fixed arguments and no input from the network: `rm`
+and `chown` (coreutils 9.7-3) and `setpriv` (util-linux
+2.41.5-0+deb13u1). Checked in `debian:trixie-slim` for linux/amd64 on
+27 November 2026 (`crane export` and `objdump -p`): `rm` and `chown` load
+only `libc.so.6`; `setpriv` loads `libcap-ng.so.0` (libcap-ng
+0.8.5-4+b1) and `libc.so.6`. The scan has no gating advisory for
+coreutils, libcap-ng, or dash. The five util-linux groups are in other
+programs of the package (OSV details, read on 27 November 2026):
+DEBIAN-CVE-2026-3184 is in `login -h`; -76642, -78409, and -78410 are
+in `mount` and its `X-mount.*` options (libmount); -78408 is in
+`nsenter --join-cgroup`. `setpriv` does not load libmount and does not
+run these programs. Decision: **accepted**, with the reason "not
+affected". The entrypoint allowlist of `vuln` fixes the three programs:
+a change of the entrypoint fails `vuln` and repeats this split.
+
+| Source package | Groups (max score) |
+| -------------- | ------------------ |
+| util-linux | DEBIAN-CVE-2026-3184 (5.3), -76642 (8.5), -78408 (7.9), -78409 (7.0), -78410 (7.8) |
+
 On disk only; the running service does not execute or load these
-packages (51 groups). The entrypoint (`ingest/entrypoint.sh` since issue
-#14) runs `/bin/sh` (dash) with shell builtins only (`printf`, `umask`,
-`ulimit`, `unset`, `exec`); dash loads only `libc.so.6`. The `chmod` and
-`install` steps run at build time. The scan has no gating advisory for
-dash.
+packages (46 groups). Before issue #29, the entrypoint (since issue #14)
+ran shell builtins only. Since issue #29 it also runs `rm`, `chown`, and
+`setpriv` (above); dash and these programs load only the libraries
+named above. The `chmod` and `install` steps run at build time.
 
 | Source package | Groups (max score) |
 | -------------- | ------------------ |
@@ -703,7 +731,6 @@ dash.
 | sqlite3 | DEBIAN-CVE-2026-50812 (5.5), -50813 (6.1), -119371 (6.8), -119372 (6.8), -119373 (8.5), -119374 (8.5), -119375 (6.8), -119376 (6.8), -119377 (3.3), -119378 (6.8), -119379 (8.5), -119586 (8.5), -119591 (6.8) |
 | systemd | DEBIAN-CVE-2026-15059 (5.5), -16742 (6.7) |
 | tar | DEBIAN-CVE-2026-5704 (5.5), -18477 (4.4), -18508 (4.4) |
-| util-linux | DEBIAN-CVE-2026-3184 (5.3), -76642 (8.5), -78408 (7.9), -78409 (7.0), -78410 (7.8) |
 
 The Go server does not use the Debian OpenSSL: it uses Go `crypto/tls`,
 and `libssl` is not in its `NEEDED` list. The binary carries its own
@@ -751,14 +778,16 @@ Reassessment rule:
   are not set; `monitoring.prometheus_metrics_host` is unset or
   `127.0.0.1`.
 - `scripts/vuln-premise-test.sh` (in the `checks` task) runs the premise
-  part of the task on 40 changed inputs and fails when a change passes.
-  Examples: `USER root`, an extra `COPY . .`, a builder tag of another
+  part of the task on 55 changed inputs and fails when a change passes.
+  Examples: a `USER root` or `USER 10001:10001` line, an extra `COPY . .`, a builder tag of another
   Rust version or Debian release, a parser directive, `ENTRYPOINT` in
   place of `CMD`, an entrypoint that starts the server itself (also
   through `PATH`, a name built from parts, or a sourced file, the bypasses
   of the earlier denylist found in review round 1 of PR #23), an `exec`
-  in a block that never runs, `set -eux`, a kept migrator URL, and
-  `zmq.addr` values `tcp://0.0.0.0:5284`, `tcp://*:5284`,
+  in a block that never runs, `set -eux`, a kept migrator URL, each
+  changed or missing argument of the `setpriv` line, a missing or changed
+  `chown` of the TLS files, an `unset` after the first program, a missing
+  `rm -f` or noclobber, and `zmq.addr` values `tcp://0.0.0.0:5284`, `tcp://*:5284`,
   `tcp://localhost:5284`, `tcp://[::]:5284`, a key `Addr`, and a
   repeated `zmq` object.
 - After an expiry date, an entry stops to apply, and `vuln` fails on the
@@ -830,4 +859,4 @@ the gating advisory rate falls below one each month over 60 days.
    of the `vuln` task (the lines before `cargo deny`) in a scratch
    directory for each variant of `ingest/Dockerfile`,
    `ingest/entrypoint.sh`, `ingest/server_config.json`, and
-   `rust-toolchain.toml`. Expected: "40 of 40 cases as expected".
+   `rust-toolchain.toml`. Expected: "56 of 56 cases as expected".

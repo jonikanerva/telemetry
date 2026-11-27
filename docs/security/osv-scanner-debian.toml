@@ -366,25 +366,25 @@ reason = "Accepted: no fix in Debian 13 on 2026-11-26. The running service does 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-3184"
 effectiveUntil = 2027-01-25
-reason = "Accepted: no fix in Debian 13 on 2026-11-26. The running service does not execute or load this package. See docs/security/image-advisories.md#debian-13-base"
+reason = "Accepted: no fix in Debian 13 on 2026-11-26. Not affected: the advisory is in login, mount (libmount), or nsenter. The entrypoint runs only setpriv of this package, which loads libcap-ng and libc. See docs/security/image-advisories.md#debian-13-base"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-76642"
 effectiveUntil = 2027-01-25
-reason = "Accepted: no fix in Debian 13 on 2026-11-26. The running service does not execute or load this package. See docs/security/image-advisories.md#debian-13-base"
+reason = "Accepted: no fix in Debian 13 on 2026-11-26. Not affected: the advisory is in login, mount (libmount), or nsenter. The entrypoint runs only setpriv of this package, which loads libcap-ng and libc. See docs/security/image-advisories.md#debian-13-base"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-78408"
 effectiveUntil = 2027-01-25
-reason = "Accepted: no fix in Debian 13 on 2026-11-26. The running service does not execute or load this package. See docs/security/image-advisories.md#debian-13-base"
+reason = "Accepted: no fix in Debian 13 on 2026-11-26. Not affected: the advisory is in login, mount (libmount), or nsenter. The entrypoint runs only setpriv of this package, which loads libcap-ng and libc. See docs/security/image-advisories.md#debian-13-base"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-78409"
 effectiveUntil = 2027-01-25
-reason = "Accepted: no fix in Debian 13 on 2026-11-26. The running service does not execute or load this package. See docs/security/image-advisories.md#debian-13-base"
+reason = "Accepted: no fix in Debian 13 on 2026-11-26. Not affected: the advisory is in login, mount (libmount), or nsenter. The entrypoint runs only setpriv of this package, which loads libcap-ng and libc. See docs/security/image-advisories.md#debian-13-base"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-78410"
 effectiveUntil = 2027-01-25
-reason = "Accepted: no fix in Debian 13 on 2026-11-26. The running service does not execute or load this package. See docs/security/image-advisories.md#debian-13-base"
+reason = "Accepted: no fix in Debian 13 on 2026-11-26. Not affected: the advisory is in login, mount (libmount), or nsenter. The entrypoint runs only setpriv of this package, which loads libcap-ng and libc. See docs/security/image-advisories.md#debian-13-base"
 
