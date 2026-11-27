@@ -11,7 +11,7 @@
 # database can show the result:
 #
 #  1. ingest is PID 1. The container starts as root, and the entrypoint
-#     drops to user 10001 with setpriv (issue #29): ingest runs as user and
+#     drops to user 10001 with setpriv: ingest runs as user and
 #     group 10001, with no supplementary groups, no capabilities (CapInh,
 #     CapPrm, CapEff, CapBnd, and CapAmb are 0), and NoNewPrivs 1. Its
 #     environment holds DATABASE_URL but no TLS variable and no
@@ -222,10 +222,10 @@ check_sigterm() {
   [ -n "$(log_lines '.message == "child_killed" and .exit_signal == 9')" ] ||
     fail "child_killed does not show signal 9"
   # A task_stop_timeout of the gate would mean that the gate stop missed
-  # its bound (since PR #25 it ends 300 ms before the abort of shutdown
+  # its bound (it ends 300 ms before the abort of shutdown
   # step 1, ADR 0001 "Shutdown"); report it, do not loosen this check.
   [ -z "$(log_lines '.message == "task_stop_timeout"')" ] || fail "a task_stop_timeout line exists"
-  # Shutdown step 1 waits until every slot of the gate is free (PR #24). A
+  # Shutdown step 1 waits until every slot of the gate is free. A
   # normal stop leaves no slot taken.
   [ -z "$(log_lines '.message == "gate_connections_open"')" ] || fail "a gate_connections_open line exists"
   echo "shutdown after SIGTERM: exit code $code in $elapsed s"
@@ -458,7 +458,7 @@ echo "user 10001 cannot read /proc/1/environ (both positive controls passed)"
 check_sigterm
 # A start of the same container again keeps its file system: the TLS
 # files of the first start exist and belong to user 10001. The entrypoint
-# removes them and writes new files with noclobber (issue #29). Without
+# removes them and writes new files with noclobber. Without
 # the removal, noclobber would stop the start.
 docker start "$name" >/dev/null
 i=0

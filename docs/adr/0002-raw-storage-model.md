@@ -401,9 +401,9 @@ cannot create objects in `raw` or `public`.
   decision option 1): the container starts as root, so the init and its
   environment belong to root, and the entrypoint starts `ingest` as UID
   10001 without capabilities. Then neither the child nor `ingest` can
-  read `/proc/1/environ`. The post-release check of the release of PR #30
-  (27 November 2026) confirmed it on Railway: PID 1 has `Uid: 0 0 0 0`,
-  and a process of UID 10001 cannot read `/proc/1/environ`. The child can
+  read `/proc/1/environ`. On Railway (27 November 2026, PR #30), PID 1
+  has `Uid: 0 0 0 0`, and a process of UID 10001 cannot read
+  `/proc/1/environ`. The child can
   still read `DATABASE_URL` in the environment of `ingest`. Owner
   decision of 27 November 2026: the owner accepts this risk; the child
   gets no separate user (`STACK.md` §15, note N1).

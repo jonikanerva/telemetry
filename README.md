@@ -12,7 +12,7 @@ application that stores and shows the data is planned.
 
 | Part                | State                                                             |
 | ------------------- | ----------------------------------------------------------------- |
-| Ingest service      | Deployed: the image of ADR 0001 since 27 November 2026. The vehicle connects. The config selects 20 fields ([usage estimate](docs/telemetry-usage-estimate.md)). No record reaches the Railway log. |
+| Ingest service      | Deployed: the image of ADR 0001. The vehicle connects. The config selects 20 fields ([usage estimate](docs/telemetry-usage-estimate.md)). No record reaches the Railway log. |
 | Rust ingest process | Live. `ingest/Dockerfile` builds the image of ADR 0001: `ingest` starts `fleet-telemetry`, receives the records over ZMQ, and writes them to PostgreSQL. On Railway an init is PID 1 and `ingest` is PID 2. A merge to `main` that changes a watch path releases it; [STACK.md](STACK.md) section 15 has the release steps and the post-release checks. |
 | Storage             | Live on the Neon branch `production` (PostgreSQL 18): schema `raw`, migrations, and writer in `crates/ingest` (ADR 0002). `ingest migrate` runs as the Railway pre-deploy command. |
 | Application and web | Planned. See [VISION.md](VISION.md) for the product direction.    |
@@ -44,7 +44,7 @@ ingest → PostgreSQL      (Neon; planned: application and web)
 
 ### The Rust ingest process
 
-ADR 0001 replaces the log with the Rust process `ingest`. It starts
+The image of ADR 0001 runs the Rust process `ingest`. It starts
 `fleet-telemetry` as its child and owns the public port. On Railway an init
 that Railway adds is PID 1, and `ingest` is PID 2; under Docker (the CI job
 `image-check`) `ingest` is PID 1 (ADR 0001, "Process tree on Railway"):
