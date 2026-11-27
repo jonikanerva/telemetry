@@ -6,5 +6,33 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Test-only routes and the `serve-test` command for the browser tests. The
+# release image never enables this feature.
+test-server = []
+
+# Features that only this crate uses: axum `json` and `matched-path`,
+# tower-http `catch-panic` and `fs`, and in the tests tower `util` and
+# tokio `test-util`. The ingest build never resolves them.
+[dependencies]
+axum = { workspace = true, features = ["json", "matched-path"] }
+getrandom.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http = { workspace = true, features = ["catch-panic", "fs"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tower = { workspace = true, features = ["util"] }
+
 [lints]
 workspace = true
