@@ -71,8 +71,9 @@ The vehicle has client 1.3.0 and firmware 2026.39.100.
 
 Reasons for some choices:
 
-- `VehicleSpeed` uses 2 seconds. `VISION.md` asks for new values within a
-  few seconds on the live dashboard. Speed is the largest cost line.
+- `VehicleSpeed` uses 2 seconds. Speed is the largest cost line. The live
+  dashboard is optional (`VISION.md`), so no view needs this interval; a
+  longer interval is a candidate for the next config change.
 - `Location` uses 5 seconds and 20 m. At 100 km/h, the route has a point
   every 139 m. The 20 m delta stops GPS noise from sending points while the
   car is parked.

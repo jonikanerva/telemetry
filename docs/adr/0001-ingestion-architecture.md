@@ -11,8 +11,10 @@ behind a Railway TCP proxy (`telemetry.calmdonut.com:57438` to port 4443).
 Its `logger` dispatcher wrote every record, with the VIN and the location,
 to the Railway log. The goal is a Rust process that stores every record in
 PostgreSQL on Neon (Free plan). The owner accepts a loss of up to 15
-minutes of queued data at a crash, a deploy, or a Neon outage; each such
-loss stays visible as a gap (`VISION.md`, 27 November 2026).
+minutes of queued data at a crash, a deploy, or a Neon outage, and the loss
+of the whole in-memory queue at a restart during a longer database outage
+("Key alternatives"); each such loss stays visible as a gap (`VISION.md`,
+27 November 2026).
 
 Facts. Upstream paths refer to tag `v0.10.1`, commit `6689adb` (Sources).
 
@@ -259,7 +261,8 @@ and truncates lines at 8 KiB.
     deadline (0.75 s), and `G` the grace (2 s). The decision comes one grace
     after the second successful read after the stall starts. With the gate
     open, at most four failed reads and three openings fall into one stall.
-    The time with the gate open is less than `4P + 2D + G` (63.5 s); with
+    The time with the gate open is less than `4P + 2D + G` (63.5 s) plus
+    timer and scheduling delay; with
     the gate open the whole time and `f` failed reads, less than
     `(2 + f) × P + D + G` (32.75 s, 47.75 s, 62.75 s). With pauses in the
     dispatch, at most two read intervals plus `D` and `G` lose records. The

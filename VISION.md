@@ -32,8 +32,10 @@ A live dashboard while the car is awake is optional.
 - **History first.** A lost hour of data cannot be collected again. Data
   collection must continue when the web application fails or deploys.
   Accepted loss budget: a crash, a
-  deploy, or a Neon outage can lose up to 15 minutes of queued data. Each
-  such loss stays visible as a gap.
+  deploy, or a Neon outage can lose up to 15 minutes of queued data. A
+  restart during a database outage longer than 15 minutes can lose the
+  whole in-memory queue; this loss is also accepted. Each such loss stays
+  visible as a gap.
 - **Keep the source meaning.** No data is not zero. A gap stays a gap. Store
   the value and unit that the vehicle sent. Convert units for display.
 - **Private by default.** The data shows where the owner is and when the
@@ -105,8 +107,8 @@ a public URL without access control, or a monthly cost.
 ## Success Definition
 
 - The history of drives, charges, and parked periods has no gaps except when
-  the car was asleep or offline, or a loss within the accepted budget of 15
-  minutes. Each gap is visible as a gap.
+  the car was asleep or offline, or a loss within the accepted loss budget (Core
+  Principles). Each gap is visible as a gap.
 - The owner can see battery, consumption, and charging trends over months.
 - The views can be up to 15 minutes behind the vehicle.
 - The monthly Tesla, Neon, and Railway usage stays inside the free allowances.

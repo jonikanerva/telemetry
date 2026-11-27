@@ -1,13 +1,14 @@
 #!/bin/sh
 # Checks or writes the SQLx query metadata in `.sqlx/` against a migrated,
-# isolated database on the Neon test branch (STACK.md §3 and §5), with
+# isolated database (STACK.md §3 and §5): on the Neon branch `test` locally,
+# on the PostgreSQL server of the runner in CI, with
 # `cargo sqlx prepare --workspace [--check]`.
 #
 #   scripts/sqlx-metadata.sh check     # used by `mise run verify`
 #   scripts/sqlx-metadata.sh prepare   # writes `.sqlx/` after a query change
 #
-# TEST_DATABASE_URL must point to the Neon branch `test` (README.md,
-# "Verification"). The script:
+# TEST_DATABASE_URL must point to the test database (README.md,
+# "Verification"; in CI, `scripts/ci-postgres.sh` sets it). The script:
 #
 # 1. refuses the production endpoint;
 # 2. creates a database with a unique name on the same server, migrates
@@ -28,7 +29,7 @@ case $mode in
 esac
 
 if [ -z "${TEST_DATABASE_URL:-}" ]; then
-  echo "sqlx-metadata: TEST_DATABASE_URL is not set. Export the URL of the Neon branch 'test' (README.md, Verification)." >&2
+  echo "sqlx-metadata: TEST_DATABASE_URL is not set. Export the URL of the test database (README.md, Verification)." >&2
   exit 1
 fi
 # Host names are case-insensitive, so compare in lower case.
