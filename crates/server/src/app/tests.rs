@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::body::{Body, Bytes, to_bytes};
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::{Query, State};
 use axum::http::header::{
     ACCEPT_ENCODING, ALLOW, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, COOKIE,
     RETRY_AFTER, VARY,
@@ -94,6 +95,48 @@ fn extra_routes() -> Router<AppState> {
                 },
             ),
         )
+        .route(
+            "/api/v1/test/query",
+            get(
+                |query: Result<Query<RangeQuery>, QueryRejection>| async move {
+                    match query {
+                        Ok(Query(query)) => Json(query.range.as_str()).into_response(),
+                        Err(rejection) => Problem::from(rejection).into_response(),
+                    }
+                },
+            ),
+        )
+        .route(
+            "/api/v1/test/slice-state",
+            get(
+                |State(_auth): State<auth::State>, State(_battery): State<battery::State>| async {
+                    StatusCode::NO_CONTENT
+                },
+            ),
+        )
+}
+
+/// A typed query of the query rejection test.
+#[derive(Debug, serde::Deserialize)]
+struct RangeQuery {
+    range: Range,
+}
+
+#[derive(Debug, serde::Deserialize)]
+enum Range {
+    #[serde(rename = "24h")]
+    Day,
+    #[serde(rename = "7d")]
+    Week,
+}
+
+impl Range {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Day => "24h",
+            Self::Week => "7d",
+        }
+    }
 }
 
 struct TestApp {
@@ -105,7 +148,7 @@ impl TestApp {
     fn new() -> Self {
         let dir = spa_files();
         let static_files = StaticFiles::load(dir.path()).unwrap();
-        let state = AppState::new(Version::from_commit_sha(VERSION).unwrap());
+        let state = AppState::for_unit_tests(Version::from_commit_sha(VERSION).unwrap());
         let router = build(state, &static_files, extra_routes());
         Self { _dir: dir, router }
     }
@@ -165,7 +208,7 @@ async fn health_returns_the_status_and_the_version() {
 async fn health_gives_unknown_without_a_commit_sha() {
     let dir = spa_files();
     let static_files = StaticFiles::load(dir.path()).unwrap();
-    let router = router(AppState::new(Version::unknown()), &static_files);
+    let router = router(AppState::for_unit_tests(Version::unknown()), &static_files);
     let response = router.oneshot(request("GET", "/health")).await.unwrap();
     let body = to_bytes(response.into_body(), 1024).await.unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
@@ -285,6 +328,32 @@ async fn json_rejections_are_problems() {
         let problem = response.assert_problem(code);
         assert!(!problem.to_string().contains("line"), "{problem}");
     }
+}
+
+#[tokio::test]
+async fn query_rejections_are_invalid_request_problems() {
+    let app = TestApp::new();
+    let ok = app.get("/api/v1/test/query?range=7d").await;
+    assert_eq!(ok.status, StatusCode::OK);
+    assert_eq!(ok.json(), Value::from("7d"));
+    for uri in [
+        "/api/v1/test/query",
+        "/api/v1/test/query?range=",
+        "/api/v1/test/query?range=secret-range",
+        "/api/v1/test/query?range=%ff",
+    ] {
+        let response = app.get(uri).await;
+        let body = response.assert_problem(ProblemCode::InvalidRequest);
+        assert!(!response.text().contains("secret"), "{body}");
+        assert!(!response.text().contains("range"), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn a_handler_reads_the_state_of_its_slice() {
+    let app = TestApp::new();
+    let response = app.get("/api/v1/test/slice-state").await;
+    assert_eq!(response.status, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test(start_paused = true)]
@@ -803,7 +872,7 @@ mod test_server {
         let dir = spa_files();
         let static_files = StaticFiles::load(dir.path()).unwrap();
         let router = test_server_router(
-            AppState::new(Version::from_commit_sha(VERSION).unwrap()),
+            AppState::for_unit_tests(Version::from_commit_sha(VERSION).unwrap()),
             &static_files,
         );
         (dir, router)
@@ -872,7 +941,7 @@ mod test_server {
         let dir = spa_files();
         let static_files = StaticFiles::load(dir.path()).unwrap();
         let production = router(
-            AppState::new(Version::from_commit_sha(VERSION).unwrap()),
+            AppState::for_unit_tests(Version::from_commit_sha(VERSION).unwrap()),
             &static_files,
         );
         let response = production

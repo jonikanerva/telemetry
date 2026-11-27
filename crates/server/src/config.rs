@@ -20,6 +20,11 @@
 //! replaces it with the version at startup, so the SPA can compare its own
 //! version with the version of `/health`.
 //!
+//! Each API slice reads its own variables: [`Config::from_vars`] calls
+//! `crate::auth::Config::from_vars` and `crate::battery::Config::from_vars`
+//! with a [`Vars`]. A slice adds its variables in its own module and keeps
+//! the rules below; this file needs no change for them.
+//!
 //! A [`ConfigError`] names the variable and a static reason. It never
 //! holds the value, so a log line of the error cannot leak a value that
 //! was set by mistake.
@@ -47,6 +52,42 @@ pub struct Config {
     pub static_files: StaticFiles,
     /// The version of the deployment, from `RAILWAY_GIT_COMMIT_SHA`.
     pub version: Version,
+    /// The variables of the session API (`crate::auth`).
+    pub auth: crate::auth::Config,
+    /// The variables of the battery API (`crate::battery`).
+    pub battery: crate::battery::Config,
+}
+
+/// Read access to the variables of the process, for the configuration of
+/// a slice. [`Config::from_env`] gives a lookup into the process
+/// environment; tests give their own values. Only this module makes a
+/// [`Vars`], so this module stays the only reader of the environment.
+pub struct Vars<'a> {
+    lookup: &'a dyn Fn(&str) -> Option<OsString>,
+}
+
+impl Vars<'_> {
+    /// The value of the variable `name`, or `None` when it is not set.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<OsString> {
+        (self.lookup)(name)
+    }
+
+    /// The value of the required variable `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Missing`] when the variable is not set.
+    pub fn required(&self, name: &'static str) -> Result<OsString, ConfigError> {
+        self.get(name).ok_or(ConfigError::Missing { name })
+    }
+}
+
+impl fmt::Debug for Vars<'_> {
+    // A value can be a secret. Print no value.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Vars").finish_non_exhaustive()
+    }
 }
 
 impl Config {
@@ -78,10 +119,15 @@ impl Config {
             return Err(invalid("WEB_STATIC_DIR", "expected a directory path"));
         }
         let static_files = StaticFiles::load(&PathBuf::from(dir))?;
+        let vars = Vars { lookup: &var };
+        let auth = crate::auth::Config::from_vars(&vars)?;
+        let battery = crate::battery::Config::from_vars(&vars)?;
         Ok(Self {
             port,
             static_files,
             version,
+            auth,
+            battery,
         })
     }
 }

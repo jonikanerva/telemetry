@@ -109,16 +109,15 @@ async fn run(
     mode: Mode,
     #[cfg(feature = "test-server")] tls: Option<TestTls>,
 ) -> ExitCode {
-    let state = AppState::new(config.version.clone());
     let (address, router): (IpAddr, _) = match mode {
         Mode::Production => (
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            app::router(state, &config.static_files),
+            app::router(AppState::from_config(&config), &config.static_files),
         ),
         #[cfg(feature = "test-server")]
         Mode::Test => (
             IpAddr::V4(Ipv4Addr::LOCALHOST),
-            app::test_server_router(state, &config.static_files),
+            app::test_server_router(AppState::for_test_server(&config), &config.static_files),
         ),
     };
     let listener = match TcpListener::bind((address, config.port)).await {

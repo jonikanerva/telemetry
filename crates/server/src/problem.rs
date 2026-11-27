@@ -19,11 +19,11 @@
 //!   The `Retry-After` header holds the same value.
 //!
 //! [`ProblemCode::status`] is the one exhaustive mapping from a code to a
-//! status. [`Problem::from`] maps the axum JSON rejections, and
+//! status. [`Problem::from`] maps the axum JSON and query rejections, and
 //! [`code_for_status`] maps a library response without a problem body
 //! (`crate::app` uses it as a safety net).
 
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -324,6 +324,15 @@ impl From<JsonRejection> for Problem {
             _ => ProblemCode::InvalidRequest,
         };
         Self::new(code)
+    }
+}
+
+impl From<QueryRejection> for Problem {
+    /// Maps a rejection of the axum `Query` extractor: a missing, unknown,
+    /// or invalid query parameter. The text of the rejection names the
+    /// parameter and the value; the problem never holds it.
+    fn from(_rejection: QueryRejection) -> Self {
+        Self::new(ProblemCode::InvalidRequest)
     }
 }
 

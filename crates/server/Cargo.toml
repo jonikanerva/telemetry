@@ -12,13 +12,13 @@ publish.workspace = true
 # feature, so the release binary has no TLS code.
 test-server = ["dep:rustls", "dep:tokio-rustls"]
 
-# Features that only this crate uses: axum `json` and `matched-path`,
+# Features that only this crate uses: axum `json`, `matched-path`, and `query`,
 # tower-http `catch-panic` and `fs`, and in the tests tower `util` and
 # tokio `test-util`. The ingest build never resolves them. rustls has the
 # one crypto provider of the workspace, aws-lc-rs (STACK.md §7), and no
 # `logging` feature, so it writes no log record.
 [dependencies]
-axum = { workspace = true, features = ["json", "matched-path"] }
+axum = { workspace = true, features = ["json", "matched-path", "query"] }
 getrandom.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true

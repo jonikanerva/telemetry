@@ -32,9 +32,23 @@
 //!    `payload_too_large` for a declared length above the limit; the axum
 //!    body extractors apply the same limit to a body without a length.
 //!
-//! [`AppState`] is the state of the API handlers. Later slices add their
-//! fields: S2 the password hash and the session store, S3 the battery
-//! data source. Each field is cheap to clone (an `Arc` or a small value).
+//! [`AppState`] is the state of the API handlers. It holds the version and
+//! one field for each API slice: `auth` ([`crate::auth::State`]) and
+//! `battery` ([`crate::battery::State`]). Each slice defines its state type
+//! and its `FromRef<AppState>` implementation in its own module, so a
+//! handler takes `State<auth::State>` or `State<battery::State>`. A slice
+//! changes no file of this module when its state gets fields. Each field
+//! must be cheap to clone (an `Arc` or a small value).
+//!
+//! Files of each slice (no change in a file of S1 is needed):
+//!
+//! - S2 (session API): `crates/server/src/auth/**`.
+//! - S3 (battery API): `crates/server/src/battery/**`.
+//!
+//! The mount points are `crate::auth::router` and
+//! `crate::battery::router` (nested at `/api/v1` by `crate::openapi`), the
+//! `Config::from_vars`, `State::new`, `test_state`, and `unit_test_state`
+//! of each slice, and the `State` types above.
 
 use std::any::Any;
 use std::sync::Arc;
@@ -51,9 +65,10 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::services::ServeDir;
 use tracing::{Instrument, info, info_span, warn};
 
-use crate::config::{StaticFiles, Version};
+use crate::config::{Config, StaticFiles, Version};
 use crate::openapi;
 use crate::problem::{PROBLEM_CONTENT_TYPE, Problem, ProblemCode, code_for_status};
+use crate::{auth, battery};
 
 /// The longest time that a request can take before the 503 problem
 /// `timeout`.
@@ -97,13 +112,50 @@ pub const ASSETS_ROUTE: &str = "/assets/*";
 #[derive(Debug, Clone)]
 pub struct AppState {
     version: Version,
+    /// The state of the session API.
+    pub auth: auth::State,
+    /// The state of the battery API.
+    pub battery: battery::State,
 }
 
 impl AppState {
-    /// The state of a server with this version.
+    /// The state of a server with this version and these slice states.
     #[must_use]
-    pub const fn new(version: Version) -> Self {
-        Self { version }
+    pub const fn new(version: Version, auth: auth::State, battery: battery::State) -> Self {
+        Self {
+            version,
+            auth,
+            battery,
+        }
+    }
+
+    /// The state of `serve`: each slice builds its state from its
+    /// configuration.
+    #[must_use]
+    pub fn from_config(config: &Config) -> Self {
+        Self::new(
+            config.version.clone(),
+            auth::State::new(&config.auth),
+            battery::State::new(&config.battery),
+        )
+    }
+
+    /// The state of `serve-test`: each slice builds its test state, for
+    /// example a fake data source.
+    #[cfg(feature = "test-server")]
+    #[must_use]
+    pub fn for_test_server(config: &Config) -> Self {
+        Self::new(
+            config.version.clone(),
+            auth::test_state(&config.auth),
+            battery::test_state(&config.battery),
+        )
+    }
+
+    /// The state of the unit tests of the router.
+    #[cfg(test)]
+    pub(crate) fn for_unit_tests(version: Version) -> Self {
+        Self::new(version, auth::unit_test_state(), battery::unit_test_state())
     }
 
     /// The version of the server.
