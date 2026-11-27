@@ -762,9 +762,10 @@ required check and does not join `verify`. Evidence:
   dependency, but the 56 locked crates get new advisories much less
   often.
 
-`vuln` stays mandatory at the points of DOCTRINE.md P7. Reassess when a scheduled CI run
-can execute `vuln` and report new findings outside the merge path, or when
-the gating advisory rate falls below one each month over 60 days.
+`vuln` stays mandatory at the points of DOCTRINE.md P7. The daily `vuln`
+schedule of the CI workflow reports new findings outside the merge path.
+Reassess when the gating advisory rate falls below one each month over 60
+days (ADR 0005).
 
 ## Reassessment triggers
 
