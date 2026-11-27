@@ -877,9 +877,14 @@ sections above leave open. Each point has a test.
   0.75 s for the connect, the request, and the body. The response also
   holds `vin_signal_count` with the VIN as a label; the parser reads only
   `dispatch_total`.
-- **Shutdown.** Step 1 waits until the gate task has ended, also after an
-  abort. Each step gives its work its bound minus 250 ms and aborts it at
-  the bound. The `stopped` event is recorded before step 5, so the final
+- **Shutdown.** Each step gives its work its bound minus 250 ms and aborts
+  it at the bound. Step 1 aborts the gate task at its bound minus 250 ms,
+  and then waits until every slot of the gate is free, at most until its
+  bound. Each copy task holds the slot of its connection until it has
+  dropped both sockets, also when an abort ends it, because the runtime
+  cancels an aborted task later. So after step 1 no byte reaches
+  `fleet-telemetry` and no acknowledgement reaches a vehicle. A slot that
+  is still taken at the bound is logged as `gate_connections_open`. The `stopped` event is recorded before step 5, so the final
   flush stores it. A final flush that leaves records or events unstored
   logs `flush_incomplete` with the counts, and the process exits with code
   1.
