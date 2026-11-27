@@ -83,6 +83,16 @@ impl Vars<'_> {
     }
 }
 
+/// Runs `read` with a [`Vars`] over `lookup`, for the tests of a slice
+/// configuration.
+#[cfg(test)]
+pub(crate) fn with_vars<T>(
+    lookup: &dyn Fn(&str) -> Option<OsString>,
+    read: impl FnOnce(&Vars<'_>) -> T,
+) -> T {
+    read(&Vars { lookup })
+}
+
 impl fmt::Debug for Vars<'_> {
     // A value can be a secret. Print no value.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -393,11 +403,30 @@ mod tests {
         dir
     }
 
+    /// The variables of the API slices that these tests do not check
+    /// (`crate::auth` tests its own). A pair of the test replaces a
+    /// default. The hash is made in the test from a test-only password.
+    fn slice_defaults() -> HashMap<String, OsString> {
+        static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let hash = HASH.get_or_init(|| {
+            crate::auth::password::testing::hash("config test-only password", 19_456, 2, 1)
+        });
+        HashMap::from([
+            ("WEB_PASSWORD_HASH".to_owned(), OsString::from(hash)),
+            (
+                "WEB_PUBLIC_ORIGIN".to_owned(),
+                OsString::from("https://telemetry.test"),
+            ),
+        ])
+    }
+
     fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + use<> {
-        let map: HashMap<String, OsString> = pairs
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), OsString::from(value)))
-            .collect();
+        let mut map = slice_defaults();
+        map.extend(
+            pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), OsString::from(value))),
+        );
         move |name| map.get(name).cloned()
     }
 

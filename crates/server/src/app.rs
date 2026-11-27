@@ -184,6 +184,8 @@ pub(crate) fn build(
     extra: Router<AppState>,
 ) -> Router {
     let (api, _document) = openapi::documented_router().split_for_parts();
+    // The session guard runs before every documented API handler.
+    let api = auth::protect(api, state.auth.clone());
     let index: Arc<str> = Arc::from(static_files.render_index(state.version()));
     let assets = ServeDir::new(static_files.assets_dir())
         .precompressed_gzip()

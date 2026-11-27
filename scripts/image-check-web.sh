@@ -5,9 +5,11 @@
 # curl, jq, and gzip. It pushes no image and uses no secret.
 #
 # The container gets the variables of a Railway start: PORT, a commit SHA
-# in RAILWAY_GIT_COMMIT_SHA, and a DATABASE_URL and a WEB_PASSWORD_HASH
-# with dummy values that the log must not show. No database answers. The
-# checks:
+# in RAILWAY_GIT_COMMIT_SHA, WEB_PUBLIC_ORIGIN, a DATABASE_URL with a dummy
+# password, and a WEB_PASSWORD_HASH that the `hash-password` command of
+# the image makes from a test-only password (the server checks the hash
+# at its start, ADR 0012). The log must show neither the dummy password
+# nor the hash. No database answers. The checks:
 #
 #  1. The server is PID 1 and runs as user and group 10001 (real,
 #     effective, saved, and file system), with no permitted and no
@@ -55,7 +57,9 @@ base="http://127.0.0.1:$host_port"
 # A fixed commit SHA of 40 lowercase hex digits; only the format matters.
 sha=0123456789abcdef0123456789abcdef01234567
 database_password=image-check-web-password
-password_hash=image-check-web-hash
+# A test-only password, never a real one. The hash comes after the build.
+test_password='image-check-web test-only password'
+password_hash=
 budget_bytes=100000000
 work="$(mktemp -d)"
 
@@ -97,6 +101,7 @@ start_container() {
     -e RAILWAY_GIT_COMMIT_SHA="$sha" \
     -e DATABASE_URL="postgresql://telemetry_web:$database_password@127.0.0.1:1/neondb" \
     -e WEB_PASSWORD_HASH="$password_hash" \
+    -e WEB_PUBLIC_ORIGIN=https://tesla.calmdonut.com \
     "$tag" >/dev/null
 }
 
@@ -154,7 +159,7 @@ check_sigterm() {
 
 check_log() {
   docker logs "$name" > "$work/log" 2>&1
-  if grep -q -e "$database_password" -e "$password_hash" "$work/log"; then
+  if grep -q -F -e "$database_password" -e "$password_hash" "$work/log"; then
     fail "the log holds a dummy secret"
   fi
   lines="$(grep -c . "$work/log" || true)"
@@ -166,6 +171,14 @@ check_log() {
 
 echo "image-check-web: build"
 docker build --pull -f webapp/Dockerfile -t "$tag" .
+# The hash of the test-only password, made by the server binary of the
+# image (README, "Web password").
+password_hash="$(printf '%s' "$test_password" |
+  docker run --rm -i --entrypoint /usr/local/bin/telemetry-web-server "$tag" hash-password)"
+case "$password_hash" in
+  '$argon2id$v=19$m=65536,t=3,p=1$'*) ;;
+  *) fail "hash-password of the image gave no Argon2id hash" ;;
+esac
 
 echo "image-check-web: start"
 started_at="$(date +%s)"
@@ -229,6 +242,12 @@ expect_header Cache-Control no-store /api/v1/nope
 check_security_headers /api/v1/nope
 jq -e '.code == "not_found" and .status == 404' "$work/body" > /dev/null ||
   fail "/api/v1/nope body: $(head -c 200 "$work/body")"
+
+echo "image-check-web: 4. the session API without a cookie"
+[ "$(request /api/v1/session)" = 401 ] || fail "/api/v1/session does not answer 401"
+expect_header Content-Type application/problem+json /api/v1/session
+jq -e '.code == "unauthenticated" and .status == 401' "$work/body" > /dev/null ||
+  fail "/api/v1/session body: $(head -c 200 "$work/body")"
 
 echo "image-check-web: 5. missing asset"
 [ "$(request /assets/nope.js)" = 404 ] || fail "/assets/nope.js does not answer 404"

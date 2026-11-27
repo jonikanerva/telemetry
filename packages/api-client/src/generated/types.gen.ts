@@ -24,6 +24,24 @@ export type Health = {
 export type HealthStatus = 'ok';
 
 /**
+ * An instant on the wire: RFC 3339 UTC with `Z`, microsecond precision.
+ *
+ * The value holds no sub-microsecond part, so the text form always has
+ * 0 to 6 fractional digits.
+ */
+export type Instant = string;
+
+/**
+ * The body of `POST /api/v1/session`.
+ */
+export type LoginRequest = {
+    /**
+     * The password: 1 to 1024 bytes of UTF-8.
+     */
+    password: string;
+};
+
+/**
  * A problem details body (RFC 9457) and its status.
  */
 export type Problem = {
@@ -59,6 +77,148 @@ export type Problem = {
  * contract change.
  */
 export type ProblemCode = 'unauthenticated' | 'invalid_credentials' | 'login_throttled' | 'forbidden_origin' | 'invalid_request' | 'unsupported_media_type' | 'payload_too_large' | 'not_found' | 'method_not_allowed' | 'database_unavailable' | 'service_busy' | 'timeout' | 'data_contract_violation' | 'internal_error';
+
+/**
+ * The response body of a valid session.
+ */
+export type Session = {
+    /**
+     * The absolute end of the session: 30 days after the login.
+     */
+    expires_at: Instant;
+    /**
+     * The end of the session without another request: 7 days after the
+     * last request, never later than `expires_at`.
+     */
+    idle_expires_at: Instant;
+};
+
+export type LogoutData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/session';
+};
+
+export type LogoutErrors = {
+    /**
+     * The request did not come from the application origin.
+     */
+    403: Problem;
+    /**
+     * The request body is larger than the limit.
+     */
+    413: Problem;
+    /**
+     * An unexpected error occurred.
+     */
+    500: Problem;
+    /**
+     * The request took too long.
+     */
+    503: Problem;
+};
+
+export type LogoutError = LogoutErrors[keyof LogoutErrors];
+
+export type LogoutResponses = {
+    /**
+     * The session ended. The response removes the session cookie.
+     */
+    204: void;
+};
+
+export type LogoutResponse = LogoutResponses[keyof LogoutResponses];
+
+export type GetSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/session';
+};
+
+export type GetSessionErrors = {
+    /**
+     * The request has no valid session.
+     */
+    401: Problem;
+    /**
+     * The request body is larger than the limit.
+     */
+    413: Problem;
+    /**
+     * An unexpected error occurred.
+     */
+    500: Problem;
+    /**
+     * The request took too long.
+     */
+    503: Problem;
+};
+
+export type GetSessionError = GetSessionErrors[keyof GetSessionErrors];
+
+export type GetSessionResponses = {
+    /**
+     * The request has a valid session.
+     */
+    200: Session;
+};
+
+export type GetSessionResponse = GetSessionResponses[keyof GetSessionResponses];
+
+export type LoginData = {
+    body: LoginRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/session';
+};
+
+export type LoginErrors = {
+    /**
+     * The body is not a valid login request.
+     */
+    400: Problem;
+    /**
+     * The password is not correct.
+     */
+    401: Problem;
+    /**
+     * The request did not come from the application origin.
+     */
+    403: Problem;
+    /**
+     * The request body is larger than the limit.
+     */
+    413: Problem;
+    /**
+     * The body is not JSON.
+     */
+    415: Problem;
+    /**
+     * Too many login attempts. Retry-After tells when to try again.
+     */
+    429: Problem;
+    /**
+     * An unexpected error occurred.
+     */
+    500: Problem;
+    /**
+     * The request took too long.
+     */
+    503: Problem;
+};
+
+export type LoginError = LoginErrors[keyof LoginErrors];
+
+export type LoginResponses = {
+    /**
+     * The password is correct. The response sets the session cookie.
+     */
+    200: Session;
+};
+
+export type LoginResponse = LoginResponses[keyof LoginResponses];
 
 export type GetHealthData = {
     body?: never;

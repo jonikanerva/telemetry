@@ -42,6 +42,7 @@ fn main() -> ExitCode {
         Ok(Command::Serve) => serve(Mode::Production),
         #[cfg(feature = "test-server")]
         Ok(Command::ServeTest) => serve(Mode::Test),
+        Ok(Command::HashPassword) => hash_password(),
         Ok(Command::ExportOpenapi(path)) => match openapi::export(&path) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
@@ -52,6 +53,28 @@ fn main() -> ExitCode {
         Err(err) => {
             error!(error = %err, "invalid_command");
             ExitCode::from(EXIT_USAGE)
+        }
+    }
+}
+
+/// Writes only the PHC line to standard output on success, so the output
+/// can go straight into a variable. A failure writes one static line to
+/// standard error, not a log event: the JSON logger writes to standard
+/// output, and the owner pipes standard output into the Railway variable
+/// (README, "Web password").
+fn hash_password() -> ExitCode {
+    use std::io::Write as _;
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    match telemetry_web_server::auth::password::hash_password(&mut stdin.lock(), &mut stdout.lock())
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            // The text is static (`HashPasswordError`); it holds no input.
+            let line = format!("hash-password: {err}\n");
+            std::io::stderr().write_all(line.as_bytes()).ok();
+            ExitCode::FAILURE
         }
     }
 }

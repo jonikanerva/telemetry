@@ -18,6 +18,7 @@ test-server = ["dep:rustls", "dep:tokio-rustls"]
 # one crypto provider of the workspace, aws-lc-rs (STACK.md §7), and no
 # `logging` feature, so it writes no log record.
 [dependencies]
+argon2 = { workspace = true, features = ["alloc", "password-hash"] }
 axum = { workspace = true, features = ["json", "matched-path", "query"] }
 getrandom.workspace = true
 hyper.workspace = true
@@ -26,6 +27,7 @@ jiff.workspace = true
 rustls = { workspace = true, optional = true, features = ["aws_lc_rs", "std", "tls12"] }
 serde.workspace = true
 serde_json.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls = { workspace = true, optional = true }
@@ -36,6 +38,7 @@ utoipa.workspace = true
 utoipa-axum.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }
 

@@ -230,7 +230,7 @@ async fn an_unknown_api_path_is_a_404_problem_for_every_method() {
         ("GET", "/api/v1"),
         ("GET", "/api/v1/unknown"),
         ("GET", "/api/v2/battery?range=7d"),
-        ("POST", "/api/v1/session"),
+        ("POST", "/api/v1/sessions"),
         ("DELETE", "/api/anything/deeper"),
         ("HEAD", "/api/v1/unknown"),
     ] {
@@ -721,8 +721,9 @@ fn every_documented_error_response_is_a_problem() {
     for (path, item) in contract["paths"].as_object().unwrap() {
         for (method, operation) in item.as_object().unwrap() {
             for (status, response) in operation["responses"].as_object().unwrap() {
-                let content = response["content"].as_object().unwrap();
+                // A success without a body (204) has no `content`.
                 if status.starts_with('4') || status.starts_with('5') {
+                    let content = response["content"].as_object().unwrap();
                     let keys: Vec<&String> = content.keys().collect();
                     assert_eq!(
                         keys,
