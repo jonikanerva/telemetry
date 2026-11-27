@@ -14,6 +14,7 @@ application that stores and shows the data is planned.
 | ------------------- | ----------------------------------------------------------------- |
 | Ingest service      | Deployed. The vehicle connects. The config selects 20 fields ([usage estimate](docs/telemetry-usage-estimate.md)). |
 | Storage             | Schema, migrations, and writer exist in `crates/ingest` (ADR 0002). Not deployed: the ingest service writes the records to its log only. |
+| Rust ingest process | `ingest run` receives the records over ZMQ, queues them, and writes them to PostgreSQL (ADR 0001). Not deployed: the deployment change (issue #14) puts it into the image. |
 | Application and web | Planned. See [VISION.md](VISION.md) for the product direction.    |
 
 ## How it works
@@ -37,6 +38,45 @@ log                      (planned: Rust application → PostgreSQL → web)
   config. The service uses a Cloudflare Origin CA certificate.
 - A telemetry config tells the vehicle where to connect and which signals to
   send. The config is signed with the Tesla application private key.
+
+### The Rust ingest process (not deployed yet)
+
+ADR 0001 replaces the log with the Rust process `ingest`. It runs as PID 1,
+starts `fleet-telemetry` as its child, and owns the public port:
+
+```text
+vehicle ──TCP──▶ gate (ingest, port 4443) ──▶ fleet-telemetry (127.0.0.1:4444)
+                                                  │ ZMQ PUB 127.0.0.1:5284
+                                                  ▼
+                      reader ──▶ queue (64 MiB) ──▶ writer ──▶ PostgreSQL (Neon)
+                                                  ▲
+                      shortfall check ◀── /metrics 127.0.0.1:9090
+```
+
+- The **gate** copies the bytes of each vehicle connection to
+  `fleet-telemetry`. It is open only when the child runs, the ZMQ
+  subscription has settled, the database check has passed (or degraded
+  mode applies), and the queue is below its high mark. A closed gate makes
+  the vehicle keep its data in its own buffer.
+- The **reader** decodes each ZMQ message and puts it into the **queue**
+  with its original bytes. A full queue drops the newest message and
+  records the gap.
+- The **writer** checks the migrations, then writes the queue every 15
+  minutes, at 5,000 signal rows, or when the queue reaches 75 %. It retries
+  a failed write with a growing delay and never gives up while the process
+  runs.
+- The **shortfall check** compares the `dispatch_total` counter of
+  `fleet-telemetry` with the received messages every 15 s and records a
+  gap of the ZMQ path. When the child dispatches records and the reader
+  receives none, the reader replaces its ZMQ socket (ADR 0001, "SUB
+  socket").
+- On SIGTERM the process closes the gate, drains the ZMQ socket, stops the
+  child, and writes the queue and the `stopped` event within 26 s.
+- `/health` on `PORT` answers 200 only when the gate is open and the
+  database check has passed.
+- `raw.ingest_event` records the start, the stop, the gate changes, the
+  child exits, the drops, the shortfalls, and degraded mode. The log never
+  holds a VIN, a location, a value, a payload, or a database URL.
 
 ## Repository layout
 
@@ -78,6 +118,25 @@ them to files for the server.
 | `TLS_KEY`  | Server private key, PEM format        |
 
 The server listens on port 4443 in the container.
+
+`ingest run` (not deployed yet) reads these variables and stops at the
+start when one is missing or not valid (`crates/ingest/src/config.rs`):
+
+| Variable                        | Content                                                        |
+| ------------------------------- | -------------------------------------------------------------- |
+| `PORT`                          | Port of `/health`; Railway sets it                             |
+| `INGEST_GATE_PORT`              | Public port of the gate: 4443                                  |
+| `INGEST_UPSTREAM_PORT`          | Loopback port of `fleet-telemetry`: 4444                       |
+| `INGEST_ZMQ_PORT`               | Loopback port of the ZMQ PUB socket of `fleet-telemetry`: 5284 |
+| `INGEST_METRICS_PORT`           | Loopback port of its Prometheus metrics: 9090                  |
+| `INGEST_CHILD_PROGRAM`          | Absolute path of the `fleet-telemetry` program                 |
+| `INGEST_CHILD_CONFIG`           | Absolute path of its configuration file                        |
+| `DATABASE_URL`                  | URL of the role `telemetry_ingest`; a secret                   |
+| `INGEST_FLUSH_INTERVAL_SECONDS` | Optional: the flush interval, 1 to 900, default 900            |
+
+`ingest migrate` reads `MIGRATION_DATABASE_URL`, the URL of the role
+`telemetry_migrator`. Variables that start with `INGEST_TEST_` shorten
+limits for the end-to-end tests; only a debug build reads them.
 
 Local files that must never be committed. `.gitignore` excludes them.
 

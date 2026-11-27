@@ -70,7 +70,7 @@
 //! says ("Unknown data"). The time of an alert or error item can be
 //! missing; it is then `None`, and the storage writes NULL.
 
-mod proto;
+pub mod proto;
 #[cfg(test)]
 mod tests;
 mod unknown_fields;

@@ -2,11 +2,13 @@
 //! failures, the health endpoint, the closed gate, the child supervision
 //! with a fake `fleet-telemetry`, and the shutdown sequence on SIGTERM and
 //! SIGINT. The tests of `migrate` against a database are in
-//! `tests/storage/`, because the binary always uses the schema `raw`.
+//! `tests/storage/`, because the binary always uses the schema `raw`. The
+//! tests of the delivery path with the Rust fake child are in
+//! `tests/pipeline.rs` and `tests/storage/pipeline.rs`.
 //!
 //! The fake child is `tests/fixtures/fake-fleet-telemetry`. It opens no
-//! port. In this phase the gate stays closed (provisional rule of
-//! `ingest::readiness`), so no connection reaches the child.
+//! port, so the SUB socket never connects, the gate stays closed, and no
+//! connection reaches the child.
 //!
 //! The `cfg(test)` attribute marks the helper functions as test code for
 //! Clippy, so that they may use `unwrap` and `panic` like the tests do.
@@ -33,17 +35,43 @@ const FAKE_VIN: &str = "0FAKEVXN000000001";
 /// instead of hanging.
 const WAIT: Duration = Duration::from_secs(10);
 
+/// A loopback port that is free now.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 /// The variables of a valid `run` configuration with the fake child in the
 /// given mode (`run` or `exit`).
+///
+/// The shell fake child opens no port, so the SUB socket never connects
+/// and the gate stays closed. No database answers: port 1 of the loopback
+/// interface refuses the connection. The final flush therefore cannot
+/// store the events, and its bound is short (a debug build reads
+/// `INGEST_TEST_FLUSH_DEADLINE_MS`).
 fn run_vars(mode: &str) -> Vec<(&'static str, String)> {
     vec![
         ("PORT", "0".to_owned()),
         ("INGEST_GATE_PORT", "0".to_owned()),
-        ("INGEST_UPSTREAM_PORT", "4444".to_owned()),
+        ("INGEST_UPSTREAM_PORT", free_port().to_string()),
+        ("INGEST_ZMQ_PORT", free_port().to_string()),
+        ("INGEST_METRICS_PORT", free_port().to_string()),
         ("INGEST_CHILD_PROGRAM", FAKE_CHILD.to_owned()),
         ("INGEST_CHILD_CONFIG", format!("/fake-config/{mode}")),
+        (
+            "DATABASE_URL",
+            "postgresql://telemetry_ingest:hunter2@127.0.0.1:1/neondb".to_owned(),
+        ),
+        ("INGEST_TEST_FLUSH_DEADLINE_MS", "500".to_owned()),
     ]
 }
+
+/// The exit code when the final flush cannot store the events: no
+/// database answers in these tests (ADR 0001, "Shutdown", step 6).
+const FLUSH_INCOMPLETE: i32 = 1;
 
 /// A running `ingest` process. Drop kills the process, so that a failed
 /// assertion cannot leave a server running.
@@ -246,7 +274,7 @@ fn start_with_running_child() -> (Process, u16, u16, u64) {
 fn run_and_stop_with(signal: &str) {
     let (mut process, health_port, gate_port, pid) = start_with_running_child();
 
-    // The provisional rule of this phase: the gate stays closed, so
+    // The SUB socket never connects: the gate stays closed, so
     // `/health` answers 503 and the gate closes each connection at once.
     let health = get_health(health_port);
     assert!(health.starts_with("HTTP/1.1 503 "), "{health}");
@@ -261,11 +289,21 @@ fn run_and_stop_with(signal: &str) {
     let status = process.wait();
     let elapsed = started.elapsed();
 
-    assert_eq!(status.code(), Some(0), "{:?}", process.events);
-    // No client stalls, so no step waits for its bound.
+    assert_eq!(
+        status.code(),
+        Some(FLUSH_INCOMPLETE),
+        "{:?}",
+        process.events
+    );
+    // No client stalls and the SUB socket never connected, so no step but
+    // the short flush waits for its bound.
     assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
     let messages = process.messages();
-    assert_eq!(messages[..2], ["listening", "gate_listening"]);
+    // A debug build warns about the test overrides before it starts.
+    assert_eq!(
+        messages[..3],
+        ["test_overrides", "listening", "gate_listening"]
+    );
     assert!(
         in_order(
             &messages,
@@ -274,16 +312,27 @@ fn run_and_stop_with(signal: &str) {
                 "gate_stopped",
                 "child_killed",
                 "ingest_event",
+                "flush_incomplete",
                 "shutdown_complete",
             ]
         ),
         "{messages:?}"
     );
+    // The lost events: `started` and `stopped`.
+    assert_eq!(process.with_message("flush_incomplete")[0]["events"], 2);
+    assert_eq!(process.with_message("flush_incomplete")[0]["records"], 0);
     assert!(
         in_order(&messages, &["shutdown_started", "health_server_stopped"]),
         "{messages:?}"
     );
-    assert_eq!(messages.last(), Some(&"shutdown_complete"));
+    assert_eq!(
+        messages[messages.len() - 2..],
+        ["shutdown_complete", "run_failed"]
+    );
+    assert_eq!(
+        process.with_message("run_failed")[0]["error"],
+        "the final flush did not store everything"
+    );
     let shutdown = process.with_message("shutdown_started");
     assert_eq!(shutdown[0]["reason"], format!("SIG{signal}"));
     let kinds: Vec<&str> = process
@@ -322,7 +371,12 @@ fn run_stops_at_the_deadline_when_a_health_client_stalls() {
 
     // `http::LIMITS.shutdown_deadline` is 3 s. The gate and the child stop
     // in parallel with the health server.
-    assert_eq!(status.code(), Some(0), "{:?}", process.events);
+    assert_eq!(
+        status.code(),
+        Some(FLUSH_INCOMPLETE),
+        "{:?}",
+        process.events
+    );
     assert!(elapsed >= Duration::from_secs(3), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
     let messages = process.messages();
@@ -357,7 +411,7 @@ fn the_child_output_reaches_the_log_without_the_vin_and_the_environment() {
     let mut process = Process::spawn_with_input(&["run"], &vars, Some(b"stdin of ingest\n"));
     process.read_until(|event| event["message"] == "child_output" && event["stream"] == "stderr");
     process.signal("TERM");
-    assert_eq!(process.wait().code(), Some(0));
+    assert_eq!(process.wait().code(), Some(FLUSH_INCOMPLETE));
 
     let text = process.text();
     assert!(!text.contains(FAKE_VIN), "{text}");
@@ -393,9 +447,8 @@ fn a_child_that_exits_is_recorded_and_started_again_after_1_s() {
     process.read_until(|event| event["message"] == "child_started");
     let exited = process.read_until(|event| event["message"] == "child_exited");
     assert_eq!(exited["exit_code"], 3);
-    let recorded = process.read_until(|event| event["message"] == "ingest_event");
-    assert_eq!(recorded["kind"], "child_exited");
-    assert_eq!(recorded["reason"], "exit code 3");
+    // The log task writes the line of the `ingest_event` record, so it can
+    // come before or after the lines of the supervisor.
     let scheduled = process.read_until(|event| event["message"] == "child_restart_scheduled");
     assert_eq!(scheduled["delay_ms"], 1000);
     let restarted = process.read_until(|event| event["message"] == "child_started");
@@ -416,7 +469,19 @@ fn a_child_that_exits_is_recorded_and_started_again_after_1_s() {
     );
 
     process.signal("TERM");
-    assert_eq!(process.wait().code(), Some(0), "{:?}", process.events);
+    assert_eq!(
+        process.wait().code(),
+        Some(FLUSH_INCOMPLETE),
+        "{:?}",
+        process.events
+    );
+    let recorded = process.with_message("ingest_event");
+    let exits: Vec<&&Value> = recorded
+        .iter()
+        .filter(|event| event["kind"] == "child_exited")
+        .collect();
+    assert!(!exits.is_empty(), "{:?}", process.messages());
+    assert_eq!(exits[0]["reason"], "exit code 3");
 }
 
 #[test]
@@ -441,6 +506,35 @@ fn run_with_a_missing_child_variable_stops_with_a_safe_message() {
         process.events[0]["error"],
         "INGEST_CHILD_PROGRAM is not set"
     );
+}
+
+#[test]
+fn run_with_a_database_url_that_does_not_parse_stops_with_a_static_message() {
+    let vars: Vec<(&str, String)> = run_vars("run")
+        .into_iter()
+        .map(|(name, value)| {
+            if name == "DATABASE_URL" {
+                (
+                    name,
+                    "postgresql://telemetry_ingest:hunter2@db.invalid:notaport/x".to_owned(),
+                )
+            } else {
+                (name, value)
+            }
+        })
+        .collect();
+    let (status, process) = run_to_end(&["run"], &vars);
+    assert_eq!(status.code(), Some(1));
+    // The URL is checked before any port is bound and before the child
+    // starts.
+    assert_eq!(process.messages(), ["test_overrides", "run_failed"]);
+    assert_eq!(
+        process.events[1]["error"],
+        "cannot use DATABASE_URL: database answered: configuration"
+    );
+    let text = process.text();
+    assert!(!text.contains("hunter2"), "{text}");
+    assert!(!text.contains("db.invalid"), "{text}");
 }
 
 #[test]

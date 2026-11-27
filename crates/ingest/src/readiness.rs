@@ -28,14 +28,10 @@
 //! inside the lock of the change, so the events keep the order of the
 //! changes.
 //!
-//! **Provisional rule of this phase.** The pipeline does not exist yet, so
-//! the pipeline value stays [`Pipeline::NotReady`] with the reason
-//! [`PIPELINE_ABSENT`]. The gate stays closed and `/health` answers 503.
-//! This rule cannot lose an acked record if this binary is deployed alone:
-//! an open gate would let `fleet-telemetry` ack records that no consumer
-//! receives. With the closed gate the vehicle keeps its data in its own
-//! buffer, and the failed healthcheck keeps the previous deployment
-//! running. The pipeline change removes this rule.
+//! The pipeline ([`crate::pipeline`]) is the only owner of the pipeline
+//! value. Until its first report, the value is [`Pipeline::NotReady`] with
+//! the reason [`PIPELINE_STARTING`], so the gate is closed and `/health`
+//! answers 503.
 
 use std::sync::Arc;
 
@@ -43,8 +39,8 @@ use tokio::sync::watch;
 
 use crate::events::{EventKind, EventSink, IngestEvent};
 
-/// The reason of the closed gate while no pipeline exists.
-pub const PIPELINE_ABSENT: &str = "pipeline_absent";
+/// The reason of the closed gate before the first report of the pipeline.
+pub const PIPELINE_STARTING: &str = "pipeline_starting";
 
 /// The state of gate conditions 2 to 4, from the pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +59,7 @@ pub enum Pipeline {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GateState {
     child_running: bool,
+    child_stops: u64,
     pipeline: Pipeline,
     shut: bool,
     epoch: u64,
@@ -71,7 +68,8 @@ pub struct GateState {
 impl GateState {
     const INITIAL: Self = Self {
         child_running: false,
-        pipeline: Pipeline::NotReady(PIPELINE_ABSENT),
+        child_stops: 0,
+        pipeline: Pipeline::NotReady(PIPELINE_STARTING),
         shut: false,
         epoch: 0,
     };
@@ -87,6 +85,21 @@ impl GateState {
     #[must_use]
     pub const fn is_healthy(&self) -> bool {
         self.is_open() && matches!(self.pipeline, Pipeline::Ready)
+    }
+
+    /// Gate condition 1: the child runs.
+    #[must_use]
+    pub const fn child_running(&self) -> bool {
+        self.child_running
+    }
+
+    /// The number of changes of gate condition 1 from true to false: one
+    /// for each child stop. A receiver of the watch channel can miss a
+    /// value when a stop and the next start come close together; the count
+    /// still shows the stop.
+    #[must_use]
+    pub const fn child_stops(&self) -> u64 {
+        self.child_stops
     }
 
     /// True after [`Readiness::shut`].
@@ -164,6 +177,9 @@ impl Readiness {
         self.state.send_if_modified(|state| {
             let before = *state;
             change(state);
+            if before.child_running && !state.child_running {
+                state.child_stops = state.child_stops.wrapping_add(1);
+            }
             if before.is_open() && !state.is_open() {
                 state.epoch = state.epoch.wrapping_add(1);
             }
@@ -204,12 +220,12 @@ mod tests {
 
     #[test]
     fn the_running_child_alone_does_not_open_the_gate() {
-        // The provisional rule of this phase: without a pipeline the gate
-        // stays closed.
+        // Before the first report of the pipeline, the gate stays closed.
         let (readiness, sink) = readiness();
         readiness.set_child_running(true);
+        assert!(readiness.state().child_running());
         assert!(!readiness.state().is_open());
-        assert_eq!(readiness.state().closed_reason(), Some(PIPELINE_ABSENT));
+        assert_eq!(readiness.state().closed_reason(), Some(PIPELINE_STARTING));
         assert_eq!(sink.names(), [] as [&str; 0]);
     }
 
@@ -310,6 +326,25 @@ mod tests {
         }
         let open = readiness.state().is_open();
         assert_eq!(names.last() == Some(&"gate_opened"), open);
+    }
+
+    #[tokio::test]
+    async fn a_stop_and_a_start_between_two_reads_still_count_the_stop() {
+        let (readiness, _sink) = readiness();
+        let mut receiver = readiness.subscribe();
+        readiness.set_child_running(true);
+        receiver.borrow_and_update();
+        assert_eq!(readiness.state().child_stops(), 0);
+        // The receiver reads only the last value: the child runs again.
+        readiness.set_child_running(false);
+        readiness.set_child_running(true);
+        let state = *receiver.borrow_and_update();
+        assert!(state.child_running());
+        assert_eq!(state.child_stops(), 1);
+        // A stop while the child does not run is no new stop.
+        readiness.set_child_running(false);
+        readiness.set_child_running(false);
+        assert_eq!(readiness.state().child_stops(), 2);
     }
 
     #[tokio::test]

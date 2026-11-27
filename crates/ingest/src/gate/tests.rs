@@ -11,6 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
 use tokio::task::JoinHandle;
 
 use super::*;
+use crate::events::CountWindow;
 use crate::events::recording::RecordingSink;
 use crate::logging::{ALLOWED_FIELDS, capture};
 use crate::readiness::{Pipeline, Readiness};
@@ -1178,41 +1179,6 @@ async fn a_gate_that_closes_and_opens_again_still_ends_the_connection() {
         assert_eq!(client.read_to_end(&mut rest).await.unwrap(), 0);
     })
     .await;
-}
-
-fn at(seconds: i64) -> Timestamp {
-    Timestamp::from_second(seconds).unwrap()
-}
-
-#[test]
-fn gate_full_is_recorded_at_once_and_then_at_most_once_each_interval() {
-    let start = Instant::now();
-    let after = |seconds| start + Duration::from_secs(seconds);
-    let mut refusals = Refusals::new(Duration::from_secs(60));
-    assert_eq!(refusals.due(start), None);
-
-    assert_eq!(refusals.refuse(start, at(0)), Some(CountWindow::one(at(0))));
-    assert_eq!(refusals.refuse(after(1), at(1)), None);
-    assert_eq!(refusals.refuse(after(30), at(30)), None);
-    assert_eq!(refusals.due(after(59)), None);
-    assert_eq!(
-        refusals.due(after(60)),
-        Some(CountWindow {
-            count: 2,
-            first: at(1),
-            last: at(30)
-        })
-    );
-    // Nothing to record.
-    assert_eq!(refusals.due(after(200)), None);
-    // The last record was more than an interval ago.
-    assert_eq!(
-        refusals.refuse(after(201), at(201)),
-        Some(CountWindow::one(at(201)))
-    );
-    assert_eq!(refusals.refuse(after(202), at(202)), None);
-    assert_eq!(refusals.take(), Some(CountWindow::one(at(202))));
-    assert_eq!(refusals.take(), None);
 }
 
 #[test]

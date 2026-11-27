@@ -1099,4 +1099,17 @@ mod tests {
             assert!(text.starts_with("Writer"), "{text}");
         }
     }
+
+    #[test]
+    fn the_debug_text_of_a_writer_holds_no_known_vin() {
+        // After the first write, the writer keeps the VIN of each known
+        // vehicle. A log line must never show a VIN (VISION.md).
+        let vin = "TESTVIN0000000042";
+        let mut writer = Writer::new(PgConnectOptions::new_without_pgpass());
+        writer.vehicles.insert(vin.to_owned(), 7);
+        for text in [format!("{writer:?}"), format!("{writer:#?}")] {
+            assert!(!text.contains(vin), "the VIN is in {text}");
+            assert!(text.contains("vehicles: 1"), "{text}");
+        }
+    }
 }

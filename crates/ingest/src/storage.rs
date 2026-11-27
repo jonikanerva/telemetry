@@ -210,7 +210,7 @@
 
 mod connect;
 #[cfg(test)]
-mod deadline_tests;
+pub(crate) mod deadline_tests;
 mod error;
 mod events;
 mod migrate;

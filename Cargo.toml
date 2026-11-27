@@ -11,7 +11,7 @@ publish = false
 # the latest stable release at the time of the change (DOCTRINE.md P7).
 [workspace.dependencies]
 axum = { version = "0.8.9", default-features = false }
-hyper = { version = "1.13.0", default-features = false, features = ["http1", "server"] }
+hyper = { version = "1.13.0", default-features = false, features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["service", "tokio"] }
 serde_json ={ version = "1.0.154", default-features = false, features = ["std"] }
 socket2 = { version = "0.6.5", default-features = false, features = ["all"] }
@@ -21,10 +21,13 @@ thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
 tokio = { version = "1.54.1", default-features = false, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+futures-util = { version = "0.3.34", default-features = false }
+getrandom = { version = "0.4.3", default-features = false }
 jiff = { version = "1.0.3", default-features = false, features = ["std"] }
 prost = { version = "0.14.6", default-features = false, features = ["derive", "std"] }
 prost-types = { version = "0.14.6", default-features = false, features = ["std"] }
 uuid = { version = "1.29.3", default-features = false, features = ["std"] }
+zeromq = { version = "0.7.0", default-features = false, features = ["tcp-transport", "tokio-runtime"] }
 # Build only: protobuf code generation without a protoc binary (ADR 0001).
 prost-build = { version = "0.14.6", default-features = false }
 protox = { version = "0.10.0", default-features = false }

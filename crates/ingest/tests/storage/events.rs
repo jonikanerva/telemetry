@@ -1,6 +1,6 @@
 //! The insert of `ingest_event` rows from the events of the event sink.
 
-use ingest::events::{ChildExit, CountWindow, EventKind, IngestEvent};
+use ingest::events::{ChildExit, CountWindow, DROPPED_QUEUE_FULL, EventKind, IngestEvent};
 use ingest::storage::{EventOutcome, write_events};
 use jiff::Timestamp;
 use sqlx::Connection;
@@ -42,7 +42,13 @@ fn every_kind() -> Vec<IngestEvent> {
             },
             5,
         ),
-        event(EventKind::RecordsDropped(window(3)), 6),
+        event(
+            EventKind::RecordsDropped {
+                window: window(3),
+                reason: DROPPED_QUEUE_FULL,
+            },
+            6,
+        ),
         event(EventKind::ZmqShortfall(window(1)), 7),
         event(EventKind::GateFull(window(u32::MAX)), 8),
     ]
@@ -83,6 +89,7 @@ async fn events_of_every_kind_are_stored_once() {
             [
                 ("child_exited".to_owned(), Some("exit code 1".to_owned())),
                 ("gate_closed".to_owned(), Some("child_not_running".to_owned())),
+                ("records_dropped".to_owned(), Some("queue_full".to_owned())),
                 ("stopped".to_owned(), Some("SIGTERM".to_owned())),
             ]
         );

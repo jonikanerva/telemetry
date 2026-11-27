@@ -148,6 +148,8 @@ pub struct TestRoles {
     pub setup: RoleSetup,
     pub ingest: PgConnectOptions,
     pub migrator: PgConnectOptions,
+    /// The password of the ingest role, for a URL of `ingest run`.
+    pub ingest_password: SecretString,
 }
 
 /// Runs `body` with a new, empty schema, then removes it.
@@ -219,6 +221,7 @@ where
         migrator: migrate_options(&schema)
             .username(&setup.migrator_role)
             .password(&migrator_password),
+        ingest_password: SecretString::new(ingest_password),
         setup,
     };
     let result = match applied {

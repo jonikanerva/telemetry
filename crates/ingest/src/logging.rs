@@ -64,18 +64,26 @@ use tracing_subscriber::registry::LookupSpan;
 ///   child supervision.
 /// - `applied` and `embedded`: migration counts of `ingest migrate`.
 /// - `class` and `code`: the static class and code of a database failure
-///   ([`crate::storage::StorageError`]).
+///   ([`crate::storage::StorageError`]), or the static code of a ZMQ
+///   failure ([`crate::pipeline::reader`]).
+/// - `records`, `rows`, `duplicates`, `conflicts`, `rejected`,
+///   `unprocessed`, `events`, `signal_rows`, and `bytes`: counts of the
+///   writer and of the queue ([`crate::pipeline`]).
 pub const ALLOWED_FIELDS: &[&str] = &[
     "applied",
+    "bytes",
     "child_line",
     "class",
     "code",
+    "conflicts",
     "connections",
     "count",
     "delay_ms",
+    "duplicates",
     "duration_ms",
     "embedded",
     "error",
+    "events",
     "exit_code",
     "exit_signal",
     "first_byte_ms",
@@ -87,12 +95,17 @@ pub const ALLOWED_FIELDS: &[&str] = &[
     "pid",
     "port",
     "reason",
+    "records",
+    "rejected",
+    "rows",
     "signal",
+    "signal_rows",
     "socket_options",
     "socket_options_error",
     "stream",
     "task",
     "truncated",
+    "unprocessed",
 ];
 
 /// Keys that the formatter writes itself. An event field cannot replace them.

@@ -6,10 +6,10 @@
 use std::process::ExitCode;
 
 use ingest::cli::{self, Command};
-use ingest::config::{MigrateConfig, RunConfig};
+use ingest::config::{MigrateConfig, RunConfig, TestOverrides};
 use ingest::storage::{self, MIGRATE_STATEMENT_TIMEOUT, Schema};
 use ingest::{lifecycle, logging};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 const EXIT_USAGE: u8 = 2;
 
@@ -31,13 +31,29 @@ fn main() -> ExitCode {
 }
 
 fn run() -> ExitCode {
-    let config = match RunConfig::from_vars(|name| std::env::var_os(name)) {
+    let var = |name: &str| std::env::var_os(name);
+    let mut config = match RunConfig::from_vars(var) {
         Ok(config) => config,
         Err(err) => {
             error!(error = %err, "invalid_configuration");
             return ExitCode::FAILURE;
         }
     };
+    // Only a debug build reads the test overrides (`ingest::config`, "Test
+    // overrides"). The image runs a release build, which never reads them.
+    if cfg!(debug_assertions) {
+        match TestOverrides::from_vars(var) {
+            Ok(overrides) if overrides.is_empty() => {}
+            Ok(overrides) => {
+                warn!("test_overrides");
+                config = config.with_overrides(overrides);
+            }
+            Err(err) => {
+                error!(error = %err, "invalid_configuration");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
