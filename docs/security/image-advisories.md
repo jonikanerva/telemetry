@@ -558,8 +558,8 @@ the `vuln` premise requires `zmq.addr` on the literal address
 `127.0.0.1`. The container runs two processes, `ingest` and
 `fleet-telemetry`, both as user 10001 without capabilities, and no shell
 or other program stays running. Since issue #29 the container starts as
-root: on Railway the init of Railway (PID 1) runs as root (assumption
-until the post-release check), and the entrypoint runs as root until it
+root: on Railway the init of Railway (PID 1) runs as root (observed at
+the release of PR #30 on 27 November 2026), and the entrypoint runs as root until it
 replaces itself with `ingest` through `setpriv`. A process of that user that ran in the container (for
 example after a code-execution fault in `fleet-telemetry`; a
 `railway ssh` session has at least the same access) could connect to

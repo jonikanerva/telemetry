@@ -97,14 +97,14 @@ a public URL without access control, or a monthly cost.
 
 | Data or capability               | Purpose                               | Storage or recipient                  | Retention or expiry                           |
 | -------------------------------- | ------------------------------------- | ------------------------------------- | --------------------------------------------- |
-| Raw signals, including location  | Source for periods and charts         | Neon Postgres                         | Open question; assumption: 90 days            |
+| Raw signals, including location  | Source for periods and charts         | Neon Postgres                         | No deletion until the derived periods exist; the owner sets the period in the web phase |
 | Drives, charges, parked periods  | Long-term history                     | Neon Postgres                         | No expiry                                     |
 | Vehicle identification number    | Identifies the data source            | Neon Postgres                         | No expiry                                     |
 | Tesla application private key    | Signs the vehicle telemetry config    | Owner's computer only                 | Kept while the product is in use              |
 | Ingest TLS certificate and key   | Server identity for the vehicle       | Railway service variables             | Certificate expires in 2041; CA root in 2029  |
 | Tesla OAuth access token         | Sends the telemetry config to Tesla   | Owner's computer only, `.env`         | About 8 hours                                 |
 | Database credentials of `telemetry_ingest` and `telemetry_migrator` | Let the ingest service write records and apply migrations | Railway service variables | Kept while the product is in use; rotate after a suspected leak |
-| Operational records (`raw.ingest_event`): starts, stops, gate changes, child exits, drops, shortfalls | Make gaps and restarts visible | Neon Postgres | Open question; proposal: no expiry |
+| Operational records (`raw.ingest_event`): starts, stops, gate changes, child exits, drops, shortfalls | Make gaps and restarts visible | Neon Postgres | No expiry (owner decision, 27 November 2026) |
 
 - Forbidden data flows: location, VIN, or signal data to any party other
   than Neon and Railway without owner approval. No secret in the repository,
@@ -116,8 +116,10 @@ a public URL without access control, or a monthly cost.
   replaces each VIN-shaped token with `[vin]` before the log line. The
   Railway log of earlier deployments still holds records with the VIN and
   the location until Railway removes them.
-- Approved deletion policies: none yet. The raw signal retention rule
-  becomes one when the owner approves it.
+- Approved deletion policies: none yet. Owner decision of 27 November
+  2026: no raw signal is deleted until the derived periods exist. The
+  raw signal retention rule becomes a deletion policy when the owner
+  approves it in the web phase.
 
 ## Open Questions
 
@@ -125,7 +127,10 @@ Owner decisions:
 
 - Access control for the web application. Proposal: Cloudflare Access.
 - Map provider for the drive view. A tile provider sees the viewed locations.
-- Retention period for raw signals.
+- Retention period for raw signals. The owner decides it in the web
+  phase, with the measured growth. If the first week of data shows that
+  the 1 GB of Neon fills before the web phase, the lead reports it to the
+  owner at once.
 - Price source for charging cost. Candidate: the owner's `spot-price` service.
 - Whether Codex also works in this repository (`AGENTS.md`).
 

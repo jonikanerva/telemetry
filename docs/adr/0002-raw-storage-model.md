@@ -401,9 +401,12 @@ cannot create objects in `raw` or `public`.
   decision option 1): the container starts as root, so the init and its
   environment belong to root, and the entrypoint starts `ingest` as UID
   10001 without capabilities. Then neither the child nor `ingest` can
-  read `/proc/1/environ`; the post-release check confirms the `Uid` of
-  PID 1 on Railway. The child can still read `DATABASE_URL` in the
-  environment of `ingest`.
+  read `/proc/1/environ`. The post-release check of the release of PR #30
+  (27 November 2026) confirmed it on Railway: PID 1 has `Uid: 0 0 0 0`,
+  and a process of UID 10001 cannot read `/proc/1/environ`. The child can
+  still read `DATABASE_URL` in the environment of `ingest`. Owner
+  decision of 27 November 2026: the owner accepts this risk; the child
+  gets no separate user (`STACK.md` §15, note N1).
 - Accepted risk: the pre-deploy command needs the migrator URL, and Railway
   gives the same variables to the running container [R]. Update (issue
   #14): `ingest/entrypoint.sh` unsets `MIGRATION_DATABASE_URL` before it
@@ -416,7 +419,11 @@ cannot create objects in `raw` or `public`.
   touch roles or other schemas. Neon keeps 6 hours of restore history [N1].
   Update (issue #29): the init runs as root, so that read is closed (the
   previous entry). The pre-deploy command now runs as root in its own
-  short-lived container (`STACK.md` §15).
+  short-lived container (`STACK.md` §15). Owner decision of 27 November
+  2026: the owner accepts this risk. `MIGRATION_DATABASE_URL` stays a
+  Railway service variable, `ingest migrate` stays the pre-deploy
+  command and runs as root, and the migrations do not move outside
+  Railway.
   Reassessment: when Railway can give a variable to the pre-deploy command
   only, when the migration step can run outside the service, or when a
   security finding affects the running container.
@@ -491,16 +498,23 @@ cannot create objects in `raw` or `public`.
   vendored `.proto` files.
 - A conflicting duplicate or an unknown variant needs a later reprocessing
   step. The data stays available in `raw.unprocessed_record`.
-- The raw tables grow without a deletion job. `VISION.md` still lists a
-  retention assumption of 90 days. The owner decides the retention rule.
+- The raw tables grow without a deletion job. Owner decision of
+  27 November 2026: no raw signal is deleted until the derived periods
+  exist. The owner decides the retention period in the web phase, with
+  the measured growth. `raw.ingest_event` has no expiry. If the
+  measurement of the first week shows that the 1 GB of the project fills
+  before the web phase, the lead reports it to the owner at once.
 - The privacy table of `VISION.md` does not yet list the two database
   credentials in the Railway variables. `VISION.md` is the owner's file.
 - `raw.ingest_event` makes the gaps of the ingest process visible next to
   the vehicle's own gaps.
 - The stored history has no backup beyond the 6 hours of Neon restore
   history [N1]. A wrong migration, an operator error, or a compromised
-  migrator credential found later than 6 hours cannot be undone. The lead
-  reports this to the owner together with the role decision.
+  migrator credential found later than 6 hours cannot be undone. Owner
+  decision of 27 November 2026: the owner accepts that the 6-hour
+  history of Neon is the only restore path. There is no snapshot branch
+  and no scheduled dump. So a loss that nobody notices within 6 hours is
+  permanent.
 
 ## Cost of reversal
 
@@ -512,7 +526,9 @@ model did not keep.
 ## Reassessment
 
 - The database size passes 600 MB, or 12 months of data exist.
-- The owner sets the raw retention rule.
+- The owner sets the raw retention rule (in the web phase, with the
+  measured growth), or the measured growth shows that the 1 GB fills
+  before the web phase.
 - Count of `conflicting_duplicate` rows above zero, or many
   `unknown_value_variant` or `unknown_fields` rows after a firmware update.
 - The derived phase needs other indexes or a compact copy of old data.
