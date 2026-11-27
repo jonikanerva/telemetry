@@ -177,6 +177,101 @@
       }
     },
     {
+      "files": ["e2e/**"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@playwright/test",
+                "allowTypeImports": true,
+                "message": "Only e2e/support.ts imports values from Playwright, so that every journey gets the shared fixture and its contexts (ADR 0015). Import types only, and take test, expect, and the helpers from ./support.js."
+              },
+              {
+                "name": "playwright",
+                "allowTypeImports": true,
+                "message": "Only e2e/support.ts imports values from Playwright, so that every journey gets the shared fixture and its contexts (ADR 0015). Import types only, and take test, expect, and the helpers from ./support.js."
+              },
+              {
+                "name": "playwright/test",
+                "allowTypeImports": true,
+                "message": "Only e2e/support.ts imports values from Playwright, so that every journey gets the shared fixture and its contexts (ADR 0015). Import types only, and take test, expect, and the helpers from ./support.js."
+              },
+              {
+                "name": "playwright-core",
+                "allowTypeImports": true,
+                "message": "Only e2e/support.ts imports values from Playwright, so that every journey gets the shared fixture and its contexts (ADR 0015). Import types only, and take test, expect, and the helpers from ./support.js."
+              }
+            ],
+            "patterns": [
+              {
+                "regex": "(^|/)generated(/|$)",
+                "message": "Only the facade packages/api-client/src/index.ts imports the generated client."
+              },
+              {
+                "regex": "^telemetry-web-api-client/",
+                "message": "Import the package root telemetry-web-api-client only."
+              }
+            ]
+          }
+        ],
+        "eslint/no-restricted-properties": [
+          "error",
+          {
+            "property": "newContext",
+            "message": "Open browser contexts and pages through the helpers of e2e/support.ts, so that the Firefox workaround applies (ADR 0015)."
+          },
+          {
+            "property": "launch",
+            "message": "Open browser contexts and pages through the helpers of e2e/support.ts, so that the Firefox workaround applies (ADR 0015)."
+          },
+          {
+            "property": "launchPersistentContext",
+            "message": "Open browser contexts and pages through the helpers of e2e/support.ts, so that the Firefox workaround applies (ADR 0015)."
+          },
+          {
+            "property": "launchServer",
+            "message": "Open browser contexts and pages through the helpers of e2e/support.ts, so that the Firefox workaround applies (ADR 0015)."
+          },
+          {
+            "property": "connect",
+            "message": "Open browser contexts and pages through the helpers of e2e/support.ts, so that the Firefox workaround applies (ADR 0015)."
+          },
+          {
+            "property": "connectOverCDP",
+            "message": "Open browser contexts and pages through the helpers of e2e/support.ts, so that the Firefox workaround applies (ADR 0015)."
+          },
+          {
+            "object": "browser",
+            "property": "newPage",
+            "message": "Open browser contexts and pages through the helpers of e2e/support.ts, so that the Firefox workaround applies (ADR 0015)."
+          }
+        ]
+      }
+    },
+    {
+      "files": ["e2e/support.ts", "e2e/playwright.config.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "regex": "(^|/)generated(/|$)",
+                "message": "Only the facade packages/api-client/src/index.ts imports the generated client."
+              },
+              {
+                "regex": "^telemetry-web-api-client/",
+                "message": "Import the package root telemetry-web-api-client only."
+              }
+            ]
+          }
+        ],
+        "eslint/no-restricted-properties": "off"
+      }
+    },
+    {
       "files": ["packages/api-client/src/index.ts"],
       "rules": {
         "eslint/no-restricted-imports": [

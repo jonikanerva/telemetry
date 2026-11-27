@@ -9,7 +9,7 @@
 // The requests run inside the page with fetch, so the cookie store of the
 // engine decides. The `request` fixture of Playwright has its own cookie
 // store and would give the same answer in every engine.
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support.js';
 
 type Outcome = { readonly setStatus: number; readonly checkStatus: number; readonly body: unknown };
 

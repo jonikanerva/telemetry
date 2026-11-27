@@ -5,11 +5,18 @@
 import process from 'node:process';
 
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
 import { loginByApi, resetAuth } from './auth-support.js';
-import { SERVER_VERSION, WCAG_AA_TAGS, cspViolations, recordCspViolations, recordForeignRequests } from './support.js';
+import {
+  SERVER_VERSION,
+  WCAG_AA_TAGS,
+  cspViolations,
+  expect,
+  recordCspViolations,
+  recordForeignRequests,
+  test,
+} from './support.js';
 
 test.beforeEach(async ({ page, request, baseURL }) => {
   await resetAuth(request);
