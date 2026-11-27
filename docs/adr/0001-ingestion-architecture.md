@@ -1,1689 +1,490 @@
 # ADR 0001: Ingestion architecture
 
-- Status: Accepted, 26 November 2026. Issue #4. The lead decided the open
-  points within delegated authority on 26 November 2026 (section "Lead
-  decisions").
+- Status: Accepted, 26 November 2026 (issue #4). Amended by issues #13, #14,
+  and #29, and by the owner decisions of 27 November 2026. The PRs of these
+  issues hold the review history.
 - Scope: the path from the vehicle to PostgreSQL. ADR 0002 owns the tables.
 
 ## Context
 
-The Railway service `telemetry` runs Tesla's `fleet-telemetry` v0.10.1. The
-server terminates the vehicle mTLS WebSocket behind a Railway TCP proxy
-(`telemetry.calmdonut.com:57438` to container port 4443). The server uses
-only the `logger` dispatcher. Every record, with the VIN and the location,
-goes to the Railway log. This must end.
+Tesla's `fleet-telemetry` v0.10.1 terminates the vehicle mTLS WebSocket
+behind a Railway TCP proxy (`telemetry.calmdonut.com:57438` to port 4443).
+Its `logger` dispatcher wrote every record, with the VIN and the location,
+to the Railway log. The goal is a Rust process that stores every record in
+PostgreSQL on Neon (Free plan). The owner accepts a loss of up to 15
+minutes of queued data at a crash, a deploy, or a Neon outage; each such
+loss stays visible as a gap (`VISION.md`, 27 November 2026).
 
-The goal of this phase is a Rust ingest process that stores every record in
-PostgreSQL 18 on Neon (Free plan). `VISION.md` puts "History first": a lost
-hour of data cannot be collected again.
+Facts. Upstream paths refer to tag `v0.10.1`, commit `6689adb` (Sources).
 
-Facts that drive the decision. Upstream links point to tag `v0.10.1`, commit
-`6689adb`.
-
-1. Tesla documents [T]: on a loss of connectivity, and when the server
-   disconnects, the vehicle buffers 5000 messages, "at least 2,500 seconds
-   of data", and delivers them after the reconnect. It reconnects with
-   exponential backoff, at most 30 s apart. When `delivery_policy` is
-   `latest`, it resends data that the server did not ack. The vehicle
-   config does not set `delivery_policy`, and Tesla documents no default.
-   Not verified: what the vehicle does with a message that it sent but
-   that the server did not ack, without `delivery_policy`. The owner saw
-   records with `IsResend` under the current config, so some resend
-   happens.
+1. Without a connection, the vehicle buffers 5000 messages, "at least 2,500
+   seconds of data", and delivers them after the reconnect, with backoff at
+   most 30 s apart [T]. A resend of data without an ack is documented only
+   for `delivery_policy: latest`, which the config does not set. The owner
+   saw `IsResend` records, so some resend happens.
 2. The server acks a record right after it hands the record to the
-   dispatchers. `Dispatch` calls each producer in order, in the read loop of
-   the socket ([`telemetry/serializer.go#L90`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/telemetry/serializer.go#L90),
-   [`server/streaming/socket.go#L273-L280`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/socket.go#L273-L280)). Without reliable acks, the
-   vehicle gets the ack before the consumer has the record.
-3. With `reliable_ack_sources`, the ack waits only until the producer call
-   returns. No dispatcher waits for a consumer:
-
-   | Dispatcher  | When the reliable ack fires                                   | Consumer down or slow                                                 |
-   | ----------- | ------------------------------------------------------------- | --------------------------------------------------------------------- |
-   | `zmq`       | After `SendMessage` on a PUB socket returns ([`datastore/zmq/zmq.go#L73-L86`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/zmq/zmq.go#L73-L86)) | PUB send never blocks. PUB drops all messages when no subscriber is connected, and drops messages for a subscriber at the high water mark (default 1000) [Z1][Z2][Z3]. The record is acked and lost. |
-   | `mqtt`      | After every per-field publish completes ([`datastore/mqtt/mqtt.go#L139-L188`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/mqtt/mqtt.go#L139-L188)). The broker acks only at QoS 1 or 2; the default is QoS 0 ([`mqtt.go#L65`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/mqtt/mqtt.go#L65)) | At QoS 1 or 2 the broker holds the record. But each field goes out as a bare value, without `created_at` or `is_resend` ([`datastore/mqtt/mqtt_payload.go#L14-L28`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/mqtt/mqtt_payload.go#L14-L28)). |
-   | `redis`     | After `PUBLISH` returns without error ([`datastore/redis/redis.go#L97-L120`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/redis/redis.go#L97-L120)) | Pub/sub keeps nothing. A publish with no subscriber succeeds. The record is acked and lost. |
-   | `logger`    | Never. The config rejects `logger` as an ack source ([`config/config.go#L492-L521`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L492-L521)) | Not applicable.                                                       |
-
-   `connectivity` cannot have reliable acks ([`config/config.go#L495`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L495)). The
-   server creates these events itself, with its own clock
-   ([`server/streaming/server.go#L149-L160`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/server.go#L149-L160)).
-4. The ZMQ message has two frames: the topic `<namespace>_<record type>`
-   and the record payload. It does not carry the transaction ID or the
-   receive time ([`datastore/zmq/zmq.go#L77`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/zmq/zmq.go#L77)).
-5. With `rate_limit.enabled`, the server skips a message over the limit. It
-   does not dispatch it and does not ack it
-   ([`server/streaming/socket.go#L205-L218`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/socket.go#L205-L218)). The current limit is 1000
-   messages in 30 s. A reconnecting vehicle can send 5000 messages.
-6. The server binds the ZMQ socket and then listens on its TLS port at once
-   ([`cmd/main.go#L66-L79`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/cmd/main.go#L66-L79)). It installs no signal handler. On SIGTERM, the
-   Go runtime ends the process at once.
-7. Railway sends SIGTERM to the old deployment when the new one is active.
-   The time to SIGKILL (`RAILWAY_DEPLOYMENT_DRAINING_SECONDS`) defaults to
-   0 [R1][R2]. A healthcheck runs only before a deployment becomes active
-   [R3]. A pre-deploy command runs in a separate container with the service
-   variables. A failed command stops the deployment [R4]. The default restart
-   policy is `On Failure` with at most 10 restarts [R5].
-8. When PID 1 of a PID namespace ends, the kernel sends SIGKILL to all
-   processes in the namespace [K].
-9. Neon: compute scales to zero after 5 minutes of inactivity and cannot
-   stay on. The Free plan has 100 CU-hours each month for each project. Neon
-   suspends the compute when the CU-hours are used, and rejects writes when
-   the 1 GB storage is full [N1]. A suspended compute starts again "within a
-   few hundred milliseconds" [N2]. The documentation does not say whether an
-   idle open connection keeps the compute active [N3].
+   dispatchers (`telemetry/serializer.go#L90`).
+3. A reliable ack waits only until the producer call returns. PUB drops
+   every message without a subscriber and at the high water mark (default
+   1000) [Z1][Z2][Z3]; the record is acked and lost.
+4. The ZMQ message has two frames: the topic `<namespace>_<record type>` and
+   the payload, with no transaction ID and no receive time.
+5. The server skips and does not ack a message over its rate limit.
+6. The server binds the ZMQ socket and then listens on its TLS port at once.
+   It has no signal handler; SIGTERM ends it at once.
+7. Railway sends SIGTERM to the old deployment when the new one is active
+   [R1]. A healthcheck runs only before a deployment becomes active [R3]. A
+   failed pre-deploy command stops the deployment [R4].
+8. When PID 1 of a PID namespace ends, the kernel kills all processes in the
+   namespace [K].
+9. Neon compute scales to zero after 5 minutes without activity. After 100
+   CU-hours in a month Neon suspends the compute [N1].
 
 ## Decision
 
 ### Transport: ZMQ on the loopback interface
 
-`fleet-telemetry` publishes all four record types with the `zmq`
-dispatcher to `tcp://127.0.0.1:5284`. The Rust process subscribes with a SUB
-socket to the prefix `tesla_telemetry_`. The `logger` dispatcher is removed.
-`reliable_ack_sources` stays unset, because a reliable ack on ZMQ gives no
-extra guarantee (fact 3) and the ack channel is unbuffered
-([`config/config_initializer.go#L67`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config_initializer.go#L67)).
-
-ZMQ is the only candidate without a broker or a new provider that delivers
-the complete record. The Rust process compensates for the missing ZMQ
-guarantee with the layout below.
+`fleet-telemetry` publishes all four record types with the `zmq` dispatcher
+to `tcp://127.0.0.1:5284`. `ingest` subscribes with a SUB socket to the
+prefix `tesla_telemetry_`. The `logger` dispatcher is removed.
+`reliable_ack_sources` stays unset (fact 3). ZMQ is the only candidate
+without a broker or a new provider that delivers the complete record. The
+layout compensates for the missing guarantee.
 
 ### Layout: one Railway service, one image, Rust is the parent of the server
 
-The service `telemetry` runs one image with two processes.
-
-- `ingest` (Rust) is PID 1. It starts `fleet-telemetry` as its child and
-  supervises it. Because of fact 8, `fleet-telemetry` never runs without
-  the consumer. Update (release of 27 November 2026): on Railway an init
-  that Railway adds is PID 1, and `ingest` is PID 2, its child. The init
-  exits when `ingest` exits, so fact 8 still ends `fleet-telemetry` with
-  `ingest` (section "Process tree on Railway"). Update (issue #29): the
-  container starts as root, and the entrypoint drops to user 10001 with no
-  capabilities before it starts `ingest` (section "Process tree on
-  Railway", owner decision).
-- `ingest` owns the public port. It listens on `0.0.0.0:4443` and forwards
-  each accepted TCP connection byte for byte to `fleet-telemetry` on
-  `127.0.0.1:4444`. It does not terminate TLS and does not read the bytes.
-  This is the **gate**. `fleet-telemetry` still terminates mTLS.
-- The gate is open only when all of these are true:
+- `ingest` starts `fleet-telemetry` as its child. Under Docker `ingest` is
+  PID 1; on Railway it is PID 2 under an init ("Process tree on Railway").
+  In both cases fact 8 ends the child with `ingest`.
+- `ingest` owns the public port `0.0.0.0:4443` and copies each accepted TCP
+  connection byte for byte to `127.0.0.1:4444` without TLS. This is the
+  **gate**. The service has a TCP proxy to port 4443 and no HTTP domain.
+- The gate is open only when four gate conditions are true:
   1. the child runs;
-  2. the SUB socket is connected and 250 ms have passed since its
-     `Connected` event, so that the PUB side has applied the subscription
-     (since review round 2 of PR #22: since the connect and the
-     subscription that the reader made itself; "SUB socket" in "Decisions
-     of the pipeline change");
-  3. the start-up check passed, or the database has given **no answer**
-     for 120 s. The check is one database round trip, and every migration
-     that the binary embeds is applied (ADR 0002).
-     - **No answer** means that no session starts: a network or TLS error,
-       a connect timeout, or any other error before the session is
-       authenticated, except an authentication error. Neon does not
-       document the error of a compute suspended for the CU-hour quota, so
-       that error also counts as no answer.
-     - **An answered failure** is an authentication error (SQLSTATE class
-       28) or a missing migration. The gate stays closed, and `/health`
-       fails. This is a configuration fault, and the vehicle buffers.
-     - After 120 s of no answer, the gate opens in **degraded mode**: the
-       records go to the queue, and the writer runs the same check before
-       its first write. If that check is an answered failure, the gate
-       closes at once and the writer keeps the queue.
-     - Reason: after a restart during a database outage, the 64 MiB queue
-       then protects the data, not only the vehicle buffer of 5000
-       messages. The pre-deploy command proves the schema just before a
-       deploy, so degraded mode does not accept records for a schema that
-       is too old.
-     - The `started` and `degraded_mode` events wait in the memory queue,
-       so a crash in degraded mode leaves no event of that run.
-     - The check repeats on the cadence of the retry rule in "Delivery
-       path";
-  4. the queue did not close the gate. The queue closes the gate at the high
-     mark. The gate opens again when the queue is below the low mark and the
-     last write succeeded, or when the queue is empty (issue #13, "No
-     permanent close").
-- When the gate closes, `ingest` stops forwarding and closes every
-  forwarded connection. The vehicle then keeps its data in its own buffer
-  (fact 1). This moves buffering to the vehicle whenever the consumer cannot
-  take records. A closed gate accepts each new connection and closes it at
-  once (PR #18): the listener stays bound, so a wrong port fails the start,
-  and no client waits in the listen backlog. The Railway TCP proxy accepts
-  the client connection first in both designs, so the vehicle sees the same
-  result as with a closed listener.
-- The gate closes the start race of fact 6. The vehicle cannot reach
-  `fleet-telemetry` before the subscription exists.
-- Connection rules. The gate cannot see inside TLS, so it does not guess
-  which connection is the vehicle. It has three rules only:
+  2. the SUB socket is connected and subscribed, and the settle time of
+     250 ms has passed ("SUB socket");
+  3. the start-up check passed (one round trip, and every embedded
+     migration is applied, ADR 0002), or the database has given **no
+     answer** for 120 s. **No answer**: no session starts (a network, TLS,
+     or timeout error, or any error before authentication except an
+     authentication error). **An answered failure**: an authentication
+     error (SQLSTATE class 28) or a missing migration; the gate stays
+     closed, `/health` fails, and the vehicle buffers. After 120 s of no
+     answer, the gate opens in **degraded mode**: records go to the queue,
+     and the writer runs the check before its first write; an answered
+     failure then closes the gate. The check repeats on the cadence of
+     "Delivery path", step 5;
+  4. the queue did not close the gate ("Delivery path", step 2).
+- A closed gate closes every forwarded connection, so the vehicle buffers
+  (fact 1). It accepts and closes each new connection at once. The gate also
+  closes the start race of fact 6.
+- Gate rules. The gate cannot see inside TLS, so it does not guess which
+  connection is the vehicle:
   1. **First answer within 10 s.** The gate closes a connection when
-     `fleet-telemetry` has sent no byte 10 s after the accept. Evidence:
-     the Go TLS server reads the complete ClientHello before it writes
-     anything
-     ([`crypto/tls/handshake_server.go#L43-L64`](https://github.com/golang/go/blob/go1.27.4/src/crypto/tls/handshake_server.go#L43-L64)),
-     and it answers a ClientHello at once, with its first flight or with an
-     alert. Upstream sets no timeout on its `http.Server`
-     ([`server/streaming/server.go#L84`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/server.go#L84)),
-     so Go applies no handshake deadline
-     ([`net/http/server.go#L965-L977`](https://github.com/golang/go/blob/go1.27.4/src/net/http/server.go#L965-L977)).
-     A peer that never sends a ClientHello therefore never gets a byte and
-     is closed. A vehicle sends its ClientHello as the first message after
-     the TCP connect. The ClientHello is one small message, and 10 s allows
-     several TCP retransmissions on a poor mobile link. A vehicle that
-     misses the rule reconnects with its normal backoff and buffers
-     meanwhile. Not verified on the vehicle: the deployment PR checks it.
-  2. **Resource bound of 1024 connections.** The bound exists only to bound
-     memory and file descriptors. Each forwarded connection uses two
-     copy buffers of 8 KiB (one `BufReader` of 8 KiB with
-     `tokio::io::copy_buf` for each direction, PR #18), so 1024 connections
-     use 16 MiB of buffers, plus small task state. The 16 MiB excludes kernel socket
-     buffers and the memory that `fleet-telemetry` uses for each
-     connection; the deployment PR records the container memory at the
-     bound. `ingest` holds two descriptors for each connection (2048), and
-     `fleet-telemetry` one. At the bound, the gate accepts and closes each
-     new connection at once, counts it, and records at most one `gate_full`
-     event each minute with the count (ADR 0002).
-  3. **TCP keep-alive on each accepted socket**, with the values that Go
-     uses for `fleet-telemetry` today: idle 15 s, interval 15 s, 9 probes
-     ([`net/dial.go#L18-L27`](https://github.com/golang/go/blob/go1.27.4/src/net/dial.go#L18-L27),
-     [`net/tcpsock.go#L289-L307`](https://github.com/golang/go/blob/go1.27.4/src/net/tcpsock.go#L289-L307)).
-     Behind the gate, these Go probes reach only `ingest` on the loopback
-     interface, so the gate must set them on the public side. The kernel
-     then closes a connection whose peer is gone, and the copy task ends
-     with an error. The **dead-peer bound** has two cases:
-     - An idle gone peer (no unacknowledged data on the socket): keep-alive
-       closes it after about 15 s + 9 × 15 s = 150 s.
-     - A gone peer with unacknowledged data (the gate has sent bytes that
-       the peer never acked): Linux sends no keep-alive probe while data is
-       unacknowledged
-       ([`net/ipv4/tcp_timer.c#L794-L795`](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/tcp_timer.c#L794-L795)),
-       so the retransmission timeout closes it instead. With the default
-       `tcp_retries2` of 15, that is about 925 to 1,045 s
-       ([`ip-sysctl.rst`, `tcp_retries2`](https://github.com/torvalds/linux/blob/v6.12/Documentation/networking/ip-sysctl.rst#L697-L707)).
+     `fleet-telemetry` sends no byte within 10 s of the accept. The Go TLS
+     server answers a ClientHello at once and has no handshake deadline.
+  2. **Resource bound of 1024 connections** (two 8 KiB buffers and two
+     descriptors each). At the bound, the gate closes each new connection at
+     once and records at most one `gate_full` event each minute.
+  3. **TCP keep-alive on each accepted socket**: idle 15 s, interval 15 s,
+     9 probes, as Go sets for `fleet-telemetry`. **Dead-peer bound**: about
+     150 s for an idle gone peer; about 925 to 1,045 s for a gone peer with
+     unacknowledged data (retransmission timeout, `tcp_retries2` 15) [L].
+     Both are below the vehicle buffer. A rejected option leaves the
+     connection open with `socket_options` `failed`. After rule 1, the gate
+     closes no live connection by itself.
 
-     Go sets no `TCP_USER_TIMEOUT` either, so both cases equal the present
-     deployment. The larger bound is below the vehicle buffer of at least
-     2,500 s. A live peer answers the probes in its TCP stack, also when it
-     sends no data, so a quiet, authenticated vehicle is not affected. Set
-     in Rust with a direct dependency on `socket2` 0.6 with the crate
-     feature `all` (0.6.5, MIT OR Apache-2.0):
-     `SockRef::from(&stream).set_tcp_keepalive(&TcpKeepalive::new()
-     .with_time(15 s).with_interval(15 s).with_retries(9))`. `with_retries`
-     exists only with feature `all`, and `zeromq` 0.7 pulls `socket2`
-     without features, so `ingest` declares it directly. This is a safe
-     API; first-party code needs no `unsafe`. The ingest PR tests that an
-     accepted socket has these values. When the operating system rejects
-     an option, the connection stays open (PR #18): the history comes
-     first, and the dead-peer bound of that connection then depends on the
-     operating system defaults. The `gate_connection_closed` event of that
-     connection has `socket_options` `failed`; deployment check 5 below
-     looks for it.
+Start order: the entrypoint writes the TLS files, raises the soft open-file
+limit, and starts `ingest run`, which starts the child, connects SUB, runs
+the start-up check, and opens the gate. The image uses `CMD`, so the
+pre-deploy command replaces it. A child exit closes the gate, records a gap
+event, and restarts the child after 1 s, doubling to 30 s. When `ingest`
+fails, the container ends, and Railway restarts it.
 
-  After rule 1, the gate never closes or evicts a connection by itself.
-  Only the peer, the dead-peer bound (about 150 s idle, about 925 to
-  1,045 s with unacknowledged data), `fleet-telemetry`, a closed gate, or
-  the shutdown close it. A quiet, authenticated vehicle therefore keeps
-  its connection. When `fleet-telemetry` ends its side, the gate forwards
-  the remaining bytes and the end of the stream to the client, waits at
-  most 5 s for the client to end its side, and then closes the whole
-  connection (PR #18). So a client cannot keep a slot after
-  `fleet-telemetry` closes; the 5 s start after the last bytes are written
-  to the client socket.
+**Watchdog.** No later healthcheck would see a hung `ingest` [R3]. A
+watchdog thread outside the Tokio runtime checks heartbeats. The reader, the
+writer, and the gate acceptor beat at least each second. Database deadlines: connect 15 s,
+statement 30 s, transaction attempt 90 s, close 5 s. At a heartbeat older
+than 30 s (reader, gate acceptor) or 120 s (writer), the watchdog logs the
+task and ends the process.
 
-  Comparison with the present deployment: today `fleet-telemetry` accepts
-  connections without a count limit and without a handshake timeout, and
-  the kernel closes a dead peer of Go within the same dead-peer bound (Go
-  sets keep-alive and no `TCP_USER_TIMEOUT`). The Go runtime
-  raises its open-file soft limit to the hard limit [G], so today the
-  bound is the hard limit of the container and its memory. Railway
-  documents neither. The gate keeps the same dead-peer bound and the same
-  exposure class (a live peer that stalls inside the handshake holds a
-  connection), and removes one case (a silent peer). A flood of 1024
-  connections is enough to fill the gate. A flood is also enough today, but
-  at a limit that nobody has measured. Keep-alive works only on the TCP
-  connection that the container sees. Whether the Railway TCP proxy passes
-  the client's TCP connection through or terminates it is not documented;
-  if it terminates it, the close of a dead client depends on the proxy,
-  today and with the gate (a deployment check).
-  `ingest/entrypoint.sh` raises the soft open-file limit to the hard limit
-  before the `exec`, as Go does for itself (issue #14). The release
-  records `ulimit -n` of the container (`docs/ingest-release.md`).
+**ZMQ shortfall check.** PUB drops at its high water mark without notice
+(fact 3). Every 15 s, `ingest` reads `dispatch_total` of `V`, `alerts`, and
+`errors` on `127.0.0.1:9090/metrics` and compares its growth with its own
+count of received messages. A gap in two reads in a row is a shortfall, and
+`ingest` records each new part as a `zmq_shortfall` event (ADR 0002). The
+shutdown makes one final read after its drain. `connectivity` records are
+outside the check.
 
-Start order: `ingest/entrypoint.sh` writes the TLS files and replaces
-itself with `ingest run` (`exec`). `ingest` starts the child, connects SUB,
-runs the start-up check, and opens the gate. The image uses `CMD`, not
-`ENTRYPOINT`, so that the pre-deploy command replaces the start command.
-The deployment change (issue #14) moved `Dockerfile`, `entrypoint.sh`, and
-`config/server_config.json` to `ingest/` (the config is now
-`ingest/server_config.json`).
-
-When the child exits: close the gate, record a gap event (ADR 0002),
-restart the child after 1 s, doubling to at most 30 s. The queue stays in
-memory. When `ingest` itself fails, the container ends. Railway restarts it
-with restart policy `ALWAYS`.
-
-**Watchdog.** Railway runs the healthcheck only at the start of a
-deployment [R3], so a hung `ingest` would stay up while the child keeps
-acking. `ingest` therefore runs a watchdog on a separate operating-system
-thread, outside the Tokio runtime:
-
-- The reader, the writer, and the gate acceptor each update a heartbeat
-  timestamp at least once a second, also when they have no work.
-- The writer's heartbeat covers its waits: every database call has a
-  deadline (connect 15 s, statement 30 s, each transaction attempt 90 s on
-  the client, the close 5 s). The storage calls a progress hook of the
-  writer after the connect and before each transaction attempt, so the
-  longest wait without a beat is one attempt and the close, 95 s. The
-  writer also beats while it sleeps before a retry. So a live writer
-  always beats within 120 s.
-- If the heartbeat of the reader or of the gate acceptor is older than
-  30 s, or the heartbeat of the writer is older than 120 s, the watchdog
-  logs the task name and ends the process with `std::process::exit`.
-- PID 1 then ends, the kernel kills the child (fact 8), and Railway
-  restarts the container. The vehicle buffers meanwhile. On Railway,
-  `ingest` is PID 2: its exit ends the init (PID 1), and then the same
-  happens (section "Process tree on Railway").
-
-**ZMQ shortfall check.** PUB drops messages without notice when its send
-queue for the subscriber is full (fact 3). Upstream sets no `SNDHWM`, so
-the libzmq default of 1000 applies, and the real limit can be up to 90 %
-lower [Z2]. The reader never waits for the writer or the database, so the
-send queue fills only when the reader is starved or hung. `ingest` cannot
-see these drops directly. It detects them:
-
-- `fleet-telemetry` exports `dispatch_total` for each record type on
-  `127.0.0.1:9090/metrics`
-  ([`server/streaming/socket.go#L288-L291`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/socket.go#L288-L291),
-  [`server/monitoring/metrics_server.go#L31-L44`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/monitoring/metrics_server.go#L31-L44)).
-- Every 15 s (60 s before review round 2 of PR #22; see "SUB socket"
-  below), `ingest` reads the counter for `V`, `alerts`, and `errors`,
-  and compares the growth since the child started with its own count of
-  received messages for these topics. The gap of one read is
-  `dispatched - received`.
-- The counter grows when `Dispatch` returns, so one read can count messages
-  that are still in flight. `ingest` therefore reports a shortfall only
-  when two reads in a row both show a gap. The confirmed gap is the smaller
-  of the two. The gap is cumulative since the child started, so `ingest`
-  reads its own count after each HTTP response and reports only the part of
-  the confirmed gap that it has not reported before, as an `ingest_event`
-  of kind `zmq_shortfall` with the count and the time window (ADR 0002).
-  The values of the lost records are gone, but the gap is visible.
-- The shutdown sequence makes one final read after its drain step. No
-  message is in flight then, so one read is enough.
-- `connectivity` records are outside the check: the server dispatches them
-  directly, and `dispatch_total` does not count them
-  ([`server/streaming/server.go#L149-L191`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/server.go#L149-L191)).
-- When the watchdog ends the process, no final read happens and no
-  `zmq_shortfall` event exists for that run.
-- The ingest PR confirmed the metric name and labels in the upstream
-  source; the deployment PR confirms them on the real binary.
-
-Railway settings of the service. The lead applies them as service settings
-and `RAILWAY_*` variables (lead decision 7). The table "Railway settings of
-the service `telemetry`" in `STACK.md` §15 is the one documented place of
-the values, and the deployment test checks it. Issue #14 corrected the
-Dockerfile path, the watch patterns, and the pre-deploy command (see
-"Decisions of the deployment change"):
-
-| Setting                      | Value                                   | Reason                                            |
-| ---------------------------- | --------------------------------------- | ------------------------------------------------- |
-| Dockerfile path              | `/ingest/Dockerfile`                    | The build needs the repository root as context.   |
-| Watch paths                  | The build inputs, `/ingest/**`, `/rust-toolchain.toml`, and `/.dockerignore` (`STACK.md` §15) | A web or documentation merge does not redeploy ingest. |
-| Pre-deploy command           | `/usr/local/bin/ingest migrate`         | Migrations are a separate release step. The Railway schema allows one string or an array with one string. |
-| Pre-deploy timeout           | 1200 s                                  | Ends a pre-deploy command that never ends; longer than the 15-minute deadline of `ingest migrate`. |
-| Healthcheck path             | `/health` on `PORT`                     | A broken release does not replace a working one.  |
-| Draining time                | 30 s                                    | Time for the shutdown sequence below.             |
-| Overlap time                 | 0 s                                     | The vehicle reconnects by itself.                 |
-| Restart policy               | Always                                  | No limit of 10 restarts.                          |
-
-`/health` returns 200 only when the gate is open and the start-up check
-passed. Degraded mode does not count, so a deploy during a database outage
-fails its healthcheck and the old deployment keeps running.
+Railway settings: `STACK.md` §15 is the one documented place (lead decision
+7). `/health` returns 200 only when the gate is open and the start-up check
+passed, so a deploy during an outage fails its healthcheck and the old
+deployment keeps running.
 
 ### `fleet-telemetry` configuration
 
-`host` `127.0.0.1`, `port` 4444, `records` `V`, `alerts`, `errors`,
-`connectivity` to `["zmq"]`, `zmq.addr` `tcp://127.0.0.1:5284`,
-`transmit_decoded_records` `false`, `log_level` `info` (`debug` logs raw
-payloads, [`telemetry/record.go#L130`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/telemetry/record.go#L130)), `rate_limit.message_limit`
-10000 in 30 s (above the vehicle buffer of 5000), no `reliable_ack_sources`,
-`monitoring.prometheus_metrics_port` 9090 on the default host `127.0.0.1`
-(for the shortfall check). Issue #14 checked each key name against the
-JSON tags of the tag `v0.10.1`
-([`config/config.go#L42-L141`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/config/config.go#L42-L141),
-[`datastore/zmq/zmq.go#L18-L32`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/zmq/zmq.go#L18-L32),
-[`metrics/metrics.go#L17-L37`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/metrics/metrics.go#L17-L37)).
-Upstream has no key `reliable_ack`; the earlier config had one without
-effect, and `ingest/server_config.json` drops it.
-
-The vehicle telemetry config stays as merged in PR #6. It does not set
-`delivery_policy` (lead decision 4). Tesla documents neither the default
-nor the billing effect, so the 3 USD rule of `STACK.md` §15 cannot be
-applied to it.
+`ingest/server_config.json`: port 4444 on `127.0.0.1`; `V`, `alerts`,
+`errors`, and `connectivity` each to `["zmq"]`; `zmq.addr`
+`tcp://127.0.0.1:5284`; `transmit_decoded_records` `false`; `log_level`
+`info` (`debug` logs payloads); `rate_limit.message_limit` 10000 in 30 s;
+no `reliable_ack_sources`; metrics port 9090 on `127.0.0.1`. The vehicle
+config does not set `delivery_policy` (lead decision 4).
 
 ### Wire format: protobuf
 
-`transmit_decoded_records` is `false`. The payload is the protobuf message
-of the record type. The Rust process decodes it with code generated from
-the upstream `.proto` files of the deployed tag. The files are vendored in
-`crates/ingest/proto/`, with the tag and commit in a comment. They change
-only together with the `fleet-telemetry` image tag.
-
-Reasons: protobuf keeps `int32`, `int64`, `float`, and `double` apart.
-Enums stay numbers, also unknown ones. JSON (`protojson`) writes `int64` as
-strings and enum names, and needs a hand-written mapping for about 55 value
-variants.
-
-Note: upstream changes some values before dispatch, in every format. It
-parses location strings, rewrites strings in scientific notation to five
-decimals, and shifts the AEB enum for client 1.3.0, which this vehicle runs
-([`telemetry/record.go#L152-L278`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/telemetry/record.go#L152-L278)). The stored value is the value after
-these changes.
+`ingest` decodes the protobuf payload with code generated from the upstream
+`.proto` files, vendored in `crates/ingest/proto/` with the image tag.
+Protobuf keeps integer and float types and unknown enum numbers apart.
+Upstream changes some values before dispatch: it parses location strings,
+rewrites scientific notation to five decimals, and shifts the AEB enum for
+client 1.3.0. The stored value is the value after these changes.
 
 ### Crates
 
-| Purpose            | Crate and line                        | Licence             | Maintenance (crates.io, 26 Nov 2026) | C code or first-party `unsafe` |
-| ------------------ | ------------------------------------- | ------------------- | ------------------------------------ | ------------------------------ |
-| ZMQ SUB            | `zeromq` 0.7, features `tokio-runtime`, `tcp-transport` | MIT  | 0.7.0, 27 Oct 2026             | Pure Rust. No `unsafe` in its `src/`. Its reconnect can stop for good; the reader does not use it ("SUB socket" in "Decisions of the pipeline change"). |
-| Gate keep-alive    | `socket2` 0.6, feature `all` (direct dependency) | MIT OR Apache-2.0 | 0.6.5, 24 Nov 2026     | Safe API for gate rule 3. `TcpKeepalive::with_retries` exists only with feature `all`; `zeromq` pulls `socket2` without features. The crate uses `unsafe` inside; first-party code needs none. |
-| Protobuf runtime   | `prost` 0.14, `prost-types` 0.14      | Apache-2.0          | 0.14.6, 12 Nov 2026                  | None.                          |
-| Protobuf codegen   | `prost-build` 0.14 with `protox` 0.10 (build only) | Apache-2.0; MIT OR Apache-2.0 | 0.14.6; 0.10.0, 7 Oct 2026 | Pure Rust. No `protoc` binary. |
-| Database           | `sqlx` 0.9, `postgres`, `runtime-tokio`, `tls-rustls-aws-lc-rs`, `migrate`, `macros`, `uuid`, `json` | MIT OR Apache-2.0 | 0.9.1, 18 Nov 2026 | aws-lc-rs builds C. It is the one rustls provider of `STACK.md` §5. |
-| Time               | `jiff` 1, `jiff-sqlx` 1               | Unlicense OR MIT    | 1.0.3; 1.0.0, 15 Nov 2026            | None. Line 1 is the latest stable release (lead decision 5). |
-| Runtime and rest   | `tokio`, `tokio-util`, `axum` (health), `tracing`, `tracing-subscriber`, `thiserror`, `uuid`, `serde_json`, `regex` | MIT or MIT/Apache-2.0 | Current | None. |
-
-Rejected crates: `zmq` 0.10 (last release 4 November 2022, links the C++
-library libzmq). `protobuf` 4.x from Google builds C code through `cc`.
-`protobuf` 3.7 had its last release on 10 March 2025.
-
-`prost` drops unknown fields
-([prost-derive 0.14.6 `src/lib.rs` line 191](https://docs.rs/crate/prost-derive/0.14.6/source/src/lib.rs)).
-A new `Value` variant therefore decodes as `None`. ADR 0002 stores such a
-record unchanged instead of a guessed value. The decode also finds every
-other field that the vendored schema does not know and stores the record
-with reason `unknown_fields` (ADR 0002, "Unknown data").
+`zeromq` 0.7 (pure Rust, no `unsafe` in its `src/`; the reader does not use
+its reconnect, "SUB socket"), `socket2` 0.6 with feature `all` for gate rule
+3, `prost` 0.14 with `prost-build` and `protox` (no `protoc`), `sqlx` 0.9
+with the one rustls provider of `STACK.md` §5, and `jiff` 1. `STACK.md` §6
+pins them. Rejected: `zmq` 0.10 (links the C++ libzmq) and `protobuf` 4.x
+(builds C code). `prost` drops unknown fields, so the decode detects them
+(ADR 0002, "Unknown data").
 
 ### Delivery path and bounded buffering
 
-1. A reader task reads the SUB socket without pause. It decodes each
-   message and puts one item into one in-memory queue. An item holds the
-   topic, the original payload bytes, the receive time, and the decoded
-   rows. It stays in the queue until its rows commit, because ADR 0002 can
-   need the original bytes.
-2. The queue is bounded by 64 MiB, counted as the payload bytes plus the
-   decoded rows of all items. High mark: 75 % closes
-   the gate. Low mark: 25 %, after a successful write, opens it again; an
-   empty queue opens it after any write ("No permanent close"). The
-   last 25 % takes the records that are in flight when the gate closes.
-3. If the queue is full, the reader drops the newest message, counts it, and
-   keeps reading. The writer stores the count and the time range as a gap
-   event (ADR 0002).
-4. A writer task flushes when the oldest queued record is 15 minutes old,
-   when 5000 signal rows wait, or at shutdown. A flush is normally one
-   transaction (ADR 0002). The interval is the variable
-   `INGEST_FLUSH_INTERVAL_SECONDS`, default 900 (lead decision 1).
-5. On a write failure, the transaction rolls back. The writer keeps the
-   batch and retries after 1 s, doubling to at most 5 minutes, with jitter.
-   It never gives up while the process runs. Every error except SQLSTATE
-   classes 22 and 23 is retried: connection errors, timeouts, and all other
-   classes. This includes a full Neon storage, whose SQLSTATE Neon does not
-   document; the storage PR records it. Classes 22 and 23 are not retried
-   as they are. The writer splits the batch into halves and writes each
-   half in its own transaction, until it finds the bad record. That record
-   goes to the unprocessed table (ADR 0002) in its own transaction. The
-   other records commit.
-   Retry cadence, for the writer and for the start-up check: a failure
-   with no answer retries after 1 s, doubling to at most 5 minutes. An
-   attempt with no answer starts no session, so it adds no compute time.
-   When the database answers with the same failure three times in a row
-   (for example an authentication error, a missing migration, or a full
-   storage), the cadence drops to one attempt each 60 minutes until an
-   attempt succeeds. Each answered attempt keeps the compute active for
-   about 5 minutes, so a rejection that lasts a whole month costs at most
-   about 61 hours, or 15 CU-hours.
-   Recovery: an answered failure needs a manual fix (a credential, a
-   migration, or free storage). After the fix, the lead restarts the
-   service; the new process starts again at the 1-s cadence. A change of a
-   Railway variable already redeploys the service. Reason: the fix is
-   manual in any case, and a shorter cadence would keep the compute awake
-   during a long rejection. Without the restart, the next attempt can come
-   up to 60 minutes later, which is longer than the vehicle buffer.
-6. No connection pool. Each database call (a flush, an event insert, the
-   start-up check) opens its own connection with a connect timeout of 15 s,
-   runs all its transactions on it, and closes it before it returns. No
-   connection stays open between flushes (fact 9), and none is used by two
-   calls. Reason (PR #19, review round 2): a pool returns a used
-   connection and checks it with a round trip that has no time limit in
-   `SQLx` 0.9.1, so a server that goes silent at that moment could hold a
-   pool slot without bound and stall the writer. A pool earns nothing
-   here: one writer and a flush every 15 minutes.
+1. A reader task reads the SUB socket without pause, decodes each message,
+   and queues one item (topic, payload bytes, receive time, decoded rows)
+   until its rows commit.
+2. The queue holds at most 64 MiB. At 75 % it closes the gate. Below 25 %
+   after a successful write, or when empty, it opens the gate ("No
+   permanent close").
+3. A full queue drops the newest message and counts it; the writer stores a
+   gap event (ADR 0002).
+4. The writer flushes when the oldest record is 15 minutes old, at 5000
+   signal rows, at the high mark, or at shutdown
+   (`INGEST_FLUSH_INTERVAL_SECONDS`, 1 to 900, default 900; lead decision
+   1).
+5. A failed write rolls back; the writer keeps the batch and retries without
+   end. Every error except SQLSTATE classes 22 and 23 is retried. For those,
+   the writer splits the batch until it finds the bad record, which goes to
+   the unprocessed table (ADR 0002). Retry cadence of the writer and the
+   start-up check: no answer retries after 1 s, doubling to 5 minutes, with
+   jitter. After three equal answered failures without progress, it is one
+   attempt each 60 minutes, because each answered attempt keeps the compute
+   awake. After the manual fix, the lead restarts the service.
+6. No connection pool. Each database call opens its own connection (connect
+   timeout 15 s) and closes it before it returns, so no connection stays
+   open between flushes (fact 9). A `SQLx` 0.9.1 pool checks a used
+   connection without a time limit.
 
-Why 15 minutes. At 0.25 CU, 100 CU-hours allow 400 active hours in a
-730-hour month. A flush interval under 5 minutes keeps the compute active
-for as long as the car streams, plus 5 minutes. The hours below come from
-the usage estimate of the tuned vehicle config
-([`docs/telemetry-usage-estimate.md`](../telemetry-usage-estimate.md)).
-The estimate uses assumed hours, so these numbers are provisional.
-
-| Flush interval | Planning case (133 awake hours, about 300 wake-ups) | Worst case (car awake all month) |
-| -------------- | --------------------------------------------------- | -------------------------------- |
-| 10 s           | about 160 h, 40 CU-hours                            | about 720 h, 180 CU-hours        |
-| 15 minutes     | about 70 h, 18 CU-hours                             | about 240 h, 60 CU-hours         |
-
-With 15 minutes, each flush keeps the compute up for about 5 minutes of
-each 15. Only this interval keeps the worst case inside the plan and
-leaves room for the web application. The cost: a crash of `ingest` can
-lose up to 15 minutes of acked records. A deploy or a database outage does
-not lose them (below). The arithmetic needs a compute of 0.25 CU, so the
-production compute has a fixed size of 0.25 CU (lead decision 3, applied
-on 26 November 2026).
-
-The `test` branch (ADR 0002) draws from the same 100 CU-hours of the
-project. Its compute also has a fixed size of 0.25 CU and scales to zero
-after 5 minutes. Assumption: verification runs keep it active for at most
-20 hours each month, including the 5-minute tails. That is at most 5
-CU-hours. Rule: tests close their connections when they end, and no
-process keeps a connection to the `test` branch open between runs.
-
-| Budget line (CU-hours each month)  | Planning case | Worst case |
-| ---------------------------------- | ------------: | ---------: |
-| Production, 15-minute flush        | about 18      | about 60   |
-| `test` branch, at most 20 h        | at most 5     | at most 5  |
-| **Total**                          | **about 23**  | **about 65** |
-
-The rest of the 100 CU-hours is the margin for the web application and for
-error in the assumed hours.
+**Why 15 minutes.** At 0.25 CU, 100 CU-hours allow 400 active hours in a
+month. An interval under 5 minutes keeps the compute active as long as the
+car streams. With the hours of `docs/telemetry-usage-estimate.md`
+(provisional), a 10-s interval uses about 40 CU-hours (planning case) and
+180 (car awake all month); 15 minutes uses about 18 and 60. The `test`
+branch adds at most 5, so the total is about 23 and 65. Only 15 minutes
+keeps the worst case inside the plan. The arithmetic needs a fixed 0.25 CU
+compute (lead decision 3). The cost is the accepted loss budget: a crash
+loses up to one flush interval. A restart during a long outage can lose
+more (the whole queue, "Delivery guarantee"), and the gap stays visible.
+Two cases leave no stored event of the loss. A crash in degraded mode: the
+`started` and `degraded_mode` events wait in the memory queue. A database
+that refuses every record with class `Data` (known limit N6): the gate
+opens and closes in cycles, and no record is stored.
 
 ### Shutdown on SIGTERM or SIGINT
 
-1. Close the gate and close all forwarded connections. The vehicle
-   reconnects to the new deployment.
+1. Close the gate and every forwarded connection (bound 1 s).
 2. Read the SUB socket until no message arrives for 1 s, at most 3 s.
-3. Make the final shortfall read (see "ZMQ shortfall check").
-4. Stop the child with SIGKILL. It has no vehicle connection at this point.
+3. Make the final shortfall read (bound 1 s).
+4. Stop the child with SIGKILL (bound 1 s).
 5. Flush the queue, with a deadline of 20 s.
-6. If the flush fails, log the count of lost rows and exit with code 1.
+6. If the flush leaves data unstored, log `flush_incomplete` with the
+   counts and exit with code 1.
 
-The total stays under `drainingSeconds` 30.
+The budget is 26 s, under `drainingSeconds` 30.
 
 ### Delivery guarantee
 
-| Hop                                   | Guarantee                                                                 |
-| ------------------------------------- | ------------------------------------------------------------------------- |
-| Vehicle to `fleet-telemetry`          | Messages sent while no connection exists are buffered (5000) and delivered after the reconnect [T]. A resend of a message that was sent but not acked is documented only for `delivery_policy: latest`, which the config does not set. The owner saw `IsResend` records, so some resends happen. Not verified. |
-| `fleet-telemetry` to `ingest`         | At most once. ZMQ has no ack. The gate keeps the consumer present.       |
-| `ingest` to PostgreSQL                | At least once while the process lives. Retries are safe, because every insert is idempotent (ADR 0002). |
-| End to end                            | At least once, except in the bounded cases below. This includes deploys and database outages up to the buffer limits. The database removes duplicates. |
-
-Remaining loss. Each line names the bound and how the loss becomes
-visible:
+`fleet-telemetry` to `ingest` is at most once (ZMQ has no ack), and the gate
+keeps the consumer present. `ingest` to PostgreSQL is at least once while
+the process lives; every insert is idempotent (ADR 0002). End to end is at
+least once, also over deploys and outages within the buffers, except:
 
 | Case | Bound | Detection |
 | ---- | ----- | --------- |
-| `ingest` crashes (panic, out of memory, SIGKILL, host failure) | The whole queue: normally at most one flush interval (15 minutes); during a database outage everything that waits, up to 64 MiB. | A `started` event without an earlier `stopped` event. The count of lost rows is unknown. |
-| `ingest` hangs without exiting while the child keeps acking | Until the watchdog ends the process: 30 s for the reader or the gate, 120 s for the writer. Then as in the crash line. | The watchdog log line, and a `started` event without a `stopped` event. A hang in the watchdog thread itself has no detection. |
-| PUB drops at the libzmq send high water mark (reader starved or hung) | A hung reader: at most 30 s of messages, then the watchdog acts. A slow but live reader: no time bound, but the reader only decodes and queues, so it is far faster than one vehicle stream. | A slow reader: `zmq_shortfall` event after two reads with a gap. A hung reader: only the watchdog log line, because the watchdog exit makes no final read. Not when the child dies before the next read. |
-| Database outage, process stays up | No loss until the queue is full (64 MiB, many days at the planned rate). Then the gate is closed, and the vehicle buffer (5000 messages, at least 2,500 s) is the last protection. After that the vehicle drops data. | `records_dropped` events for drops in `ingest`. Drops in the vehicle are not visible. |
-| Restart during a database outage, including a Neon suspension after 100 CU-hours, which lasts until the next billing period [N1] | The queue that existed before the restart is lost (crash line). After the restart the gate stays closed for 120 s (vehicle buffer only), then opens in degraded mode. Then as in the outage line. | As in the crash and outage lines. A Neon suspension also shows as failed writes in the log. |
-| Shutdown flush fails within 20 s, for example a deploy during a database outage | The queue at shutdown. | The log has the count. A `stopped` event cannot be written. |
-| The child dies by itself | Messages in its libzmq send queue: milliseconds of data. | `child_exited` event. The count is unknown. |
-| The SUB socket stops receiving while the gate is open (for example the `zeromq` defect of "SUB socket", or a lost `Disconnected` event) | The records that the child dispatches and acks with the gate open until the stall rule decides: "SUB socket", "Detection bound" (less than 4P + 2D + G = 63.5 s for one stall in every case, over up to three openings of the gate; less than 32.75 s, 47.75 s, and 62.75 s with 0, 1, and 2 failed metrics reads while the gate stays open). Between two stalls in a row the gate stays closed for 30 s, doubling to 15 minutes, and the vehicle buffers. The vehicle does not resend acked records. | `zmq_shortfall` events with the count, the `gate_closed` event with the reason `subscriber_stalled`, and the log line `subscriber_rebuilt`. |
-| Shutdown step 1 ends with a slot of the gate still taken (a runtime starved past the 1 s bound of step 1) | The records that the remaining copy tasks forward after the drain of step 2, and whose acknowledgements they forward to the vehicle. | The log line `gate_connections_open` with the count. A `zmq_shortfall` event only when the dispatch comes before the final shortfall read. |
-| A connection closes with messages that were sent but not acked (gate closing, deploy, rate limit) | Those messages, if the vehicle does not resend them (fact 1, not verified). | None in `ingest`. Stored `is_resend` values show whether resends happen. |
-| Accepted risk: a peer that stalls inside the TLS handshake | A live peer holds one connection until it closes it. A peer that goes away holds it until the dead-peer bound closes it (gate rule 3): about 150 s after its last answer when no data is unacknowledged (keep-alive), about 925 to 1,045 s when data is unacknowledged (retransmission timeout, `tcp_retries2` 15). Both are below the vehicle buffer of at least 2,500 s. This is the same class of exposure that upstream has today. If the Railway proxy terminates TCP, the close of a gone peer depends on the proxy (deployment check). | None for a single peer. |
-| Accepted risk: a flood that fills the 1024-connection bound | No new connection while the flood holds the bound: while the flooding peers keep their connections alive, plus the dead-peer bound after they go away (about 150 s idle, about 925 to 1,045 s with unacknowledged data). The vehicle cannot connect and relies on its own buffer (at least 2,500 s). Then as in the next line. | `gate_full` events, and gaps between `connectivity_event` rows. |
-| Any downtime longer than the vehicle buffer for a reason other than the database: a crash loop of `ingest` or of the child, a watchdog loop, a closed gate after an answered failure, a broken release, a Railway outage, or a flood | No bound after the vehicle buffer (at least 2,500 s). The vehicle drops data. | Gaps between `connectivity_event` rows, missing `started` events, and the Railway deployment status. The amount of lost vehicle data is not visible. |
+| `ingest` crashes | The queue: normally one flush interval; during an outage up to 64 MiB. | `started` without an earlier `stopped`. |
+| `ingest` hangs | 30 s or 120 s, then as a crash. | The watchdog log line. |
+| PUB drops at the high water mark | A hung reader: 30 s. A slow reader: no bound. | `zmq_shortfall` events. |
+| Outage, process up | Nothing until the queue is full; then the vehicle buffer. | `records_dropped` events. |
+| Restart during an outage | The queue before the restart. | As a crash and an outage. |
+| Final flush fails | The queue at shutdown. | `flush_incomplete`. |
+| The child dies | Milliseconds of its send queue. | `child_exited`. |
+| SUB socket stalls with the gate open | Less than `4P + 2D + G` = 63.5 s ("Detection bound"). | `zmq_shortfall`, `gate_closed` with `subscriber_stalled`. |
+| A gate slot outlives shutdown step 1 | Records forwarded after step 2. | `gate_connections_open`. |
+| Sent messages without an ack at a close | Unless the vehicle resends them. | Stored `is_resend` values. |
+| Handshake stall or flood at the gate (lead decision 6) | The bound is full, plus the dead-peer bound. | `gate_full`, `connectivity_event` gaps. |
+| Downtime beyond the vehicle buffer | No bound. | `connectivity_event` gaps, missing `started`. |
 
 ### Logging
 
-`ingest` logs JSON through `tracing` with an allowlist of fields: event
-name, record type, counts, sizes, durations, queue fill, gate state,
-SQLSTATE, and constraint name. It never logs a VIN, a location, a signal
-value, a payload, a database URL, or the text of a database error (the text
-can contain row values). The child's stdout and stderr go through `ingest`.
-`ingest` replaces each VIN-shaped token (17 characters from
-`[A-HJ-NPR-Z0-9]`) with `[vin]` and truncates lines at 8 KiB. Upstream logs
-a VIN on some error paths, for example
-[`server/streaming/server.go#L197`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/server.go#L197).
+`ingest` logs JSON with an allowlist of fields. It never logs a VIN, a
+location, a signal value, a payload, a database URL, or the text of a
+database error. The child's output goes through `ingest`, which replaces
+each VIN-shaped token (17 characters from `[A-HJ-NPR-Z0-9]`) with `[vin]`
+and truncates lines at 8 KiB.
 
 ### Decisions of the pipeline change (issue #13)
 
-The pipeline change implements the delivery path above
-(`crates/ingest/src/pipeline/`). This section records the points that the
-sections above leave open. Each point has a test.
+`crates/ingest/src/pipeline/` and its tests state the details.
 
-- **Configuration.** `ingest run` reads `DATABASE_URL` (the role
-  `telemetry_ingest`), `INGEST_ZMQ_PORT` (the port of `zmq.addr`, 5284),
-  `INGEST_METRICS_PORT` (the port of `monitoring.prometheus_metrics_port`,
-  9090), and `INGEST_FLUSH_INTERVAL_SECONDS` (optional, 1 to 900, default
-  900). Both new ports are on the loopback interface and must differ from
-  the other ports. An interval above 900 s would make the crash loss
-  larger than the bound of "Delivery guarantee".
-- **Test overrides.** The end-to-end tests run the real binary with a
-  schema of their own and shorter limits (`INGEST_TEST_*`, `src/config.rs`).
-  Only a debug build reads these variables, and each one can only make
-  its limit smaller. The image must run a release build
-  (`cargo build --release`), which never reads them. What enforces this
-  rule: the `cfg!(debug_assertions)` gate in `src/main.rs` is the only
-  reader of `TestOverrides`, and the workspace sets no profile that turns
-  on debug assertions in a release build. The process tests show that a
-  debug build reads the variables and logs `test_overrides` as its first
-  line. No automated test runs the release binary: a manual run on 26
-  November 2026 showed that a release binary ignores
-  `INGEST_TEST_QUEUE_BYTES=1`, which a debug build rejects. The
-  deployment change must check the image binary: a start with
-  `INGEST_TEST_QUEUE_BYTES=1` does not stop with `invalid_configuration`,
-  and no log line is `test_overrides`. After each release, the deployment
-  log must hold no `test_overrides` line. Update (issue #14): the CI job
-  `image-check` starts the image with `INGEST_TEST_QUEUE_BYTES=1` and
-  `INGEST_TEST_DEGRADED_AFTER_MS=1000`, and fails when the process stops
-  at the start, logs `test_overrides`, or enters degraded mode before
-  110 s; the deployment test requires the one build line
-  `cargo build --release --locked -p ingest`.
-- **ZMQ messages.** The first frame is the topic, the second frame the
-  payload. A message with one frame has an empty payload; a message with
-  more frames has the other frames joined, so no received byte is lost.
-  The decode then stores such a message as unprocessed. Upstream sends two
-  frames (fact 4).
-- **SUB socket.** `zeromq` 0.7.0 with the features `tcp-transport` and
-  `tokio-runtime`. Review round 2 of PR #22 (finding B2) found a defect of
-  the crate: its reconnect can stop for good. The reader therefore owns
-  the life of its socket and does not use the reconnect of the crate.
-  - **The defect.** `SubSocketBackend::peer_connected`
-    (`src/sub_backend.rs`, lines 282 to 290) sends the remembered
-    subscriptions to a new peer. When that send fails (the peer ended
-    after its ZMTP READY), it logs and returns without registering the
-    peer. `try_reconnect` still returns `Ok` (`src/reconnect.rs`, line
-    242), and the reconnect task sends `Connected` and waits for a
-    disconnect notification (lines 166 to 175). Only `peer_disconnected`
-    sends that notification, and it never runs for a peer that is not
-    registered. The first connect (`connect_with_reconnect`,
-    `src/sub_backend.rs`, lines 330 to 377) has the same shape. The
-    reviewer reproduced both results through the reader: the gate stayed
-    closed for good, or it stayed open with no subscriber, so every
-    forwarded record was lost.
-  - **Defence 1: one socket for each child, and connect before
-    subscribe.** The reader makes a new socket at each child stop, when
-    the socket reports `Disconnected`, and when the subscription cannot
-    be sent. A socket connects without a subscription and subscribes
-    after the connect. With no subscription, `peer_connected` always
-    registers the peer, so a peer that ends always ends in `Disconnected`.
-    The send of the subscription then goes to the registered peer, and
-    its result is first-party evidence of the connect. The settle time
-    starts from the results of these calls, not from a `Connected` event.
-    The crate has no option to turn off its reconnect; dropping a socket
-    stops its reconnect task.
-  - **Defence 2: the stall rule.** A rule that needs no event of the
-    crate, so that an unknown stall of the same class cannot last. Two
-    successful metrics reads `m` and `n` of one socket, with or without
-    failed reads between them: when the child dispatched records between
-    the response of `m` and the response of `n`, and the reader received
-    no record between the snapshot before the request of `m` and a
-    snapshot 2 s (the grace) after the response of `n`, the socket is
-    stalled. A live subscription receives each record that the child
-    dispatched before the response of `n` within milliseconds; the grace
-    covers a slow turn of the reader. A drop at the libzmq high water mark
-    drops the newest records, and the queued older ones still arrive. An
-    idle child dispatches nothing, so the rule cannot act while no
-    vehicle is connected. The first snapshot comes before the request, so
-    a record that arrives during the request of `m` does not look older
-    than the counter of the child. A new socket of the same child starts
-    with no point, so records that the child dispatched before the new
-    subscription do not count against it. A failed read keeps the last
-    point, so failed reads delay the decision but cannot prevent it.
-    (Review round 3 of PR #22, finding B3: the rule of round 2 compared
-    three reads, so one record received just after a snapshot moved the
-    decision out by one period.) The reader then clears gate condition 2
-    with the reason `subscriber_stalled` and replaces the socket. The
-    rule names the socket that it judged, so a request cannot replace a
-    newer socket.
-  - **Repeated stalls.** The first stall gets a new socket at once. After
-    each further stall in a row without a received record, the reader
-    waits 30 s, doubling to 15 minutes, before the next socket, and gate
-    condition 2 stays false during the wait. So the vehicle keeps its
-    data in its own buffer (at least 2,500 s) during the wait, and the
-    gate opens a stalled socket for at most one detection window between
-    two waits. A received record or a child stop ends the row.
-  - **Period.** The shortfall check and the stall rule share one metrics
-    read each 15 s (it was 60 s before review round 2). One read is a
-    small HTTP request on the loopback interface.
-  - **Unreadable metrics.** After two failed metrics reads in a row, the
-    shortfall task clears gate condition 2 with the reason
-    `metrics_unreadable`, and it reads each 1 s until a read succeeds;
-    that read sets the condition true again. Without this rule, a dead
-    subscription could lose acked records without a bound while the
-    reads fail, because the stall rule needs successful reads. Two, not
-    one: a healthy child can answer one read late (the deadline is
-    0.75 s), and two failed reads in a row are 15 s apart. Cost: a child
-    whose metrics endpoint keeps failing keeps the gate closed, and the
-    vehicle buffers. That is a configuration fault of the child; it shows
-    as a `gate_closed` event with the reason `metrics_unreadable` and the
-    log lines `shortfall_read_failed` and `metrics_unreadable`. While a
-    child restarts, its reads fail too, but condition 1 already closes the
-    gate; the reads each 1 s open the condition about 1 s after the
-    metrics of the new child answer.
-  - **Detection bound.** This is the one statement of the bound; the
-    other texts refer to it. Let `P` be the read period (15 s), `D` the
-    read deadline (0.75 s), and `G` the grace (2 s). The values are for
-    the schedule of the reads; the timer and scheduling delay of the
-    process (milliseconds) add to them.
-    - The decision comes at the second successful read after the start of
-      the stall, one grace after its response. The worst case is a stall
-      that starts just after the snapshot of a read: the first successful
-      read after it cannot decide, because its comparison still sees the
-      last received record.
-    - While the gate is open, at most two failed reads come before each
-      of these two successful reads, so at most four in total. Two failed
-      reads in a row close the gate ("Unreadable metrics"), and the reads
-      of such an episode, while the gate is closed, lose nothing. The read
-      that ends an episode opens the gate, and it can be the first of the
-      two successful reads; so one stall can span up to three openings of
-      the gate.
-    - For a child that dispatches without a pause, the time with the gate
-      open from the start of the stall to the decision is less than
-      `4P + 2D + G` (63.5 s) in every case: each of the two stretches up
-      to a successful read gives at most `2P + D` with the gate open, and
-      the grace after the decision adds `G`.
-    - While the gate stays open the whole time, with `f` failed reads
-      (0, 1, or 2), the time is less than `(2 + f) × P + D + G`: 32.75 s,
-      47.75 s, and 62.75 s.
-    - For a new socket of the same child, the first lost record counts
-      from the new socket. For a new generation, the first successful read
-      after the first dispatch can decide.
-    - For a child that dispatches with pauses, the bound counts time with
-      dispatches: the lost records come from at most two intervals
-      between successful reads (the interval in which the stall starts,
-      and the interval of the decision), plus two short tails: the records
-      that the child dispatches between the snapshot and the response of
-      the read before the stall (less than `D`), and the records of the
-      grace after the decision (`G`). An interval without a dispatch loses
-      nothing.
-    - The decision clears gate condition 2 first, so the loss ends with
-      it. Between two stalls in a row the gate stays closed ("Repeated
-      stalls").
-    - Tests: `the_worst_case_timeline_meets_the_bound_of_adr_0001` and
-      `sporadic_dispatch_loses_records_of_two_dispatching_intervals_at_most`
-      pin the rule on synthetic reads. `loop_tests` in
-      `pipeline/shortfall.rs` runs the production read loop with a
-      scripted metrics server and scaled times: the cases with 0, 1, and
-      2 failed reads and the cases with episodes of unreadable metrics,
-      and an evidence test (`#[ignore]`) that runs every pattern of seven
-      reads, with fast and with slow answers. In that run (scaled times:
-      `4P + 2D + G` = 1,850 ms), all 256 patterns decided, at most four
-      failed reads came with the gate open and at most three openings,
-      and the largest values were 1,850 to 1,863 ms, all in patterns with
-      two episodes of unreadable metrics (for example `F F S F F S`); the
-      excess is the scheduling delay of the test machine.
-    - In the time with the gate open, `fleet-telemetry` acks each record
-      after it hands the record to the PUB socket, and PUB drops it
-      without a subscriber (fact 2, the `zmq` row of fact 3). So the
-      vehicle does not resend these records: they are lost, and the
-      `zmq_shortfall` events show the count. When the gate closes, the
-      vehicle keeps its new data in its own buffer (at least 2,500 s), as
-      for every closed gate.
-  - **Known behaviour: a reopening read that decides (review round 4 of
-    PR #22, note N15).** After unreadable metrics, the read that ends the
-    episode opens gate condition 2 before the grace, and it can itself
-    decide the stall. Then the gate opens for the grace (2 s) and closes
-    again with the reason `subscriber_stalled`. Cost: up to 2 s of acked
-    records, which the bound above includes (the last `G` of `4P + 2D +
-    G`), and one pair of `gate_opened` and `gate_closed` events; a
-    vehicle that connects in that time is cut again. A change that lets
-    this read decide before it opens the gate would remove the opening;
-    it is left for a later change, because this change keeps the code of
-    the reviewed version.
-  - **Replacement order.** The reader first clears gate condition 2, so
-    the gate closes and no new record is dispatched. Then it reads the old
-    socket to its end: the `Disconnected` event of the peer, after which
-    no message of that peer can come, or 200 ms without a message, at
-    most 1 s. Then it drops the socket. So a replacement loses no record
-    that the old socket received. After a lost peer, the next socket
-    waits 0, then 100 ms doubling to 5 s; a received record or a child
-    stop resets the wait.
-  - **Generation.** The first socket after a child stop starts a new
-    generation of the received counts. The gate state counts the child
-    stops, and the reader compares the count, because the watch channel
-    can merge a stop and the next start into one value. A child stop
-    during a connect attempt replaces the new socket, because its peer
-    can be the old child.
-  - **Visibility (review note N7).** The crate writes its own errors to
-    the `log` crate, and the process has no bridge to it. The process
-    does not add one: the text of the crate can hold data, and the log
-    allows only first-party fields. The failure is visible through
-    first-party records instead: the `gate_closed` event with the reason
-    `subscriber_stalled` or `metrics_unreadable`, the `zmq_shortfall`
-    events, and the log lines `subscriber_rebuilt` with a static reason
-    (`child_stopped`, `peer_lost`, `subscribe_failed`, or `stalled`) and
-    `metrics_unreadable`.
-  - **Known limit: the window of the counter (review note N11).** The
-    reader can count a record before `fleet-telemetry` adds it to
-    `dispatch_total`, because the counter grows after `Dispatch` returns.
-    When the snapshot before a request and the response of that read both
-    fall into this gap of microseconds, and no other record arrives
-    before the grace of the next read, the rule asks for a new socket of
-    a healthy subscription. The cost is one replacement: the gate closes
-    for about 0.5 s, and the vehicle reconnects. A rule that ignores a
-    growth of one record would close this window, but it would also miss
-    a stall in which the child dispatches one record at a time. The test
-    `the_microsecond_window_of_the_counter_is_a_known_false_stall` pins
-    the limit.
-  - **Known limit: the reconnect task of the crate (review note N12).**
-    `try_reconnect` of `zeromq` 0.7.0 has no timeout and does not watch
-    the shutdown request. A reconnect task that is inside it when the
-    reader drops a socket lives until that attempt ends: with a peer that
-    never answers the handshake, the task and its TCP connection stay. If
-    the attempt succeeds, the task registers a peer on the dropped socket,
-    which nobody reads, and then sees the shutdown request and ends, which
-    closes the connection. The reader does not wait for such a task: the
-    tests `a_shutdown_in_the_drain_of_a_rebuild_ends_the_reader_within_its_bound`
-    and `a_shutdown_in_a_stall_wait_ends_the_reader_at_once` show that a
-    shutdown ends the reader within its bound, and the process ends with
-    `shutdown_background`, which drops every task that is left.
-  - **Keep `zeromq` 0.7.0.** Reasons: it is pure Rust, with no C build
-    and no `unsafe` in its `src/`; the libzmq binding was rejected above
-    ("Crates"); the two defences make the reader independent of the
-    reconnect logic of the crate. Reassess when upstream fixes the lost
-    disconnect notification, or when a second defect of this class shows
-    up. Owner decision of 27 November 2026: the stall detection stays as
-    it is (metrics period 15 s, loss bound below 63.5 s, `zeromq` 0.7.0).
-    Reassess after the one-week follow-up. No report of the reconnect
-    defect goes upstream without the owner.
-- **No answer for the cadence and gate condition 3.** SQLSTATE class `08`
-  and `57P` (for example `57P01`, the server ended the session at a Neon
-  compute restart) count as no answer. They are transient and need no
-  manual fix. Without this rule, three compute restarts in a row would
-  move the writer to the 60-minute cadence, which is longer than the
-  vehicle buffer.
-- **Degraded mode.** The time of no answer starts with the first check
-  that has no answer yet, so the limit can pass during a check that waits
-  for the connect timeout of 15 s. An answered failure ends the time; a
-  new time of no answer of 120 s enters degraded mode again.
-- **Equal answered failures.** A write that stored records before it
-  failed made progress: the cadence starts again at 1 s, and only attempts
-  without progress count toward the three equal failures.
-- **Statement timeout.** After SQLSTATE `57014` or a client deadline, the
-  next batch has half the signal rows and half the bytes, down to one
-  record; a successful batch restores the full size. Without this rule,
-  the same batch would time out again, and the third timeout would park
-  the writer at 60 minutes.
-- **Flush trigger at the high mark.** The writer also flushes when the
-  queue closes the gate. Without it, a burst of records without signal
-  rows could keep the gate closed for up to one flush interval.
-- **Batches.** The writer writes the queue from the front, one
-  transaction for each call (at most 5,000 signal rows and 8 MiB of
-  messages), and removes the items after each commit.
-- **No permanent close.** Invariant: a gate condition of the pipeline is
-  false only while a future event of the process can make it true. No
-  state waits for an action of the owner or for a record that the closed
-  gate keeps out. Each condition has one owner, and the owner keeps the
-  invariant:
-  - Condition 4 (the queue): the queue holds the gate closed only while
-    it holds at least one item. While an item waits, the writer always
-    has a next attempt: a flush at once, because the closed queue wants a
-    flush, or a retry on the cadence, which never gives up. A successful
-    write opens the gate. An empty queue has no next write, so the queue
-    itself opens the gate when it becomes empty, also after a failed
-    write. Two paths empty the queue after a failure: the writer removes
-    a refused last record, or a failed write committed every record.
-    Review round 1 of PR #22 found the first path (finding B1): before
-    this rule, the gate stayed closed until a manual restart.
-  - Condition 3 (the writer): while the check has not passed (`Pending`,
-    `Refused`, or `Degraded`), the next check always has a time on the
-    cadence. A passed check stays passed for the process.
-  - Condition 2 (the reader): while the child runs and the socket is not
-    settled, the reader is in a bounded connect attempt (5 s), a bounded
-    subscribe (5 s), a pause after a failed connect (100 ms), a wait
-    after a lost peer (at most 5 s), a wait after a repeated stall (30 s
-    to 15 minutes; a child stop ends it), a bounded drain (at most 1 s),
-    or the settle time (250 ms) ("SUB socket" above). No step waits for
-    an event of the crate to start a settle time.
-  - Condition 2 (the shortfall task, "Unreadable metrics"): the condition
-    is false while the metrics reads fail; a read follows each 1 s, and
-    the first successful read sets it true. A dropped `Disconnected` event or
-    another silent stall of a settled socket ends through the stall rule
-    as soon as the child dispatches records. Premises in `zeromq` 0.7.0,
-    read in its source: `peer_disconnected` sends `Disconnected` to the
-    monitor before it notifies the reconnect task
-    (`src/sub_backend.rs`, lines 306 to 322); the monitor holds 1,024
-    events (`src/sub.rs`, line 106) and drops an event when it is full,
-    and the reader reads it at each turn of its loop. The reconnect of
-    the crate is not a premise any more: it can stop for good (the
-    defect above). Review round 1 cited `src/backend.rs` here, which is
-    the backend of other socket types.
-  - Condition 1 (the supervisor): the supervisor restarts the child
-    without end (PR #18).
-  - The shutdown closes the gate for the rest of the process on purpose.
-    No path cancels a shutdown.
-  The tests: one for each path that empties the queue after a failure,
-  one for a full queue in degraded mode, one for a refused check that
-  passes later, the reproduction of finding B2 (a child that ends after
-  the handshake, at a restart and as the first child), a child stop
-  without a `Disconnected` event, a stall request, and a replacement
-  that keeps every received record.
-- **Known limit: a database that refuses every record (review note
-  N6).** When every record fails with class `Data` (for example after a
-  broken later migration), the gate cycles: the queue fills and closes
-  the gate, the writer drops each record as refused, and the empty queue
-  opens the gate again. No record is stored. The signal is a
-  `records_dropped` event with the reason `database_refused` for each
-  dropped record. The check of the migrations at the start and the
-  pre-deploy command make this case unlikely; a bounded fix would need a
-  rule that tells a defect from a schema fault, which this change does
-  not add.
-- **Refused record.** When the database refuses even the
-  `unprocessed_record` row of a record (the defect case of the storage
-  contract), the writer removes the record, logs the SQLSTATE, and records
-  a `records_dropped` event with the reason `database_refused` and the
-  receive time of the record. A full queue gives the reason `queue_full`.
-- **Writer heartbeat.** The writer beats each second while it waits for a
-  trigger or a retry, and before each database call. The storage calls a
-  progress function after the connect and before each transaction of a
-  call, and the writer beats there, because one call can hold many
-  transactions when a data error splits a batch. The longest wait without
-  a beat is 15 s before the first progress call, 90 s between two, and
-  95 s after the last; the start-up check is one call of at most 90 s.
-  All are below the limit of 120 s. A call that waits past every deadline
-  ends the process through the watchdog. The writer makes one call at a
-  time, so the process holds at most one database connection.
-- **Events.** The events wait in a buffer of at most 10,000 events (about
-  1 MiB); a new event beyond the bound is counted and not kept, except the
-  `stopped` event. The events take part in the flush interval like the
-  records. After the start-up check passes, the writer flushes at once, so
-  the `started` event is stored while the compute is awake. The buffer
-  makes the event times strictly increasing in microseconds, so that two
-  events of one kind never share the key `(run_id, kind, occurred_at)`.
-  A task writes the log line of each event; the record of an event takes
-  no I/O, also when it is called inside the lock of the gate state.
-- **Shortfall check.** The metric is `dispatch_total` with the label
-  `record_type`, without a namespace
-  ([`server/streaming/socket.go#L378-L382`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/server/streaming/socket.go#L378-L382),
-  [`metrics/adapter/prometheus/prometheus.go#L27-L42`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/metrics/adapter/prometheus/prometheus.go#L27-L42));
-  the Prometheus collector exists only when the metrics port is set
-  ([`metrics/metrics.go#L59-L66`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/metrics/metrics.go#L59-L66)).
-  A value can be in float notation, for example `1e+06`. The gap of one
-  read is the sum over `V`, `alerts`, and `errors` of `dispatched -
-  received`, each at least 0. The reader counts a message by its raw
-  topic before the queue can drop it, so a drop is not also a shortfall.
-  The counts start again with the first connected socket after a child
-  stop. The window of a `zmq_shortfall` event starts at the last read
-  without a new gap. A read has a body of at most 1 MiB and a deadline of
-  0.75 s for the connect, the request, and the body. The response also
-  holds `vin_signal_count` with the VIN as a label; the parser reads only
-  `dispatch_total`.
-- **Shutdown.** Each step gives its work its bound minus 250 ms and aborts
-  it at the bound. Step 1 is the exception: it aborts the gate task at its
-  bound minus 250 ms (750 ms), and then waits until every slot of the gate
-  is free, at most until its bound (1 s). Each copy task holds the slot of
-  its connection until it has dropped both sockets, also when an abort
-  ends it, because the runtime cancels an aborted task later. So when
-  every slot is free, no copy task writes a byte to `fleet-telemetry` or
-  to a vehicle after step 1. Bytes that a copy task wrote before can still
-  wait in the loopback receive buffer of `fleet-telemetry`; the line "A
-  connection closes with messages that were sent but not acked" of the
-  remaining loss covers them. A slot that is still taken at the bound is
-  logged as `gate_connections_open` (a line of the remaining loss). The
-  gate stop itself waits at most 250 ms for its connection tasks and then
-  200 ms for the slots, so it ends 300 ms before the abort of step 1. A
-  smaller margin (50 ms before PR #24 review note 3) lets a slow host abort
-  a gate stop that would have ended in time, with `task_stop_timeout` in
-  the log. The 250 ms are enough for a healthy runtime, where the
-  connection tasks end within milliseconds. A connection task that misses
-  them is aborted: its sockets close in the same way, but its
-  `gate_connection_closed` line is missing. The `stopped` event is
-  recorded before step 5, so the final flush stores it. A final flush that
-  leaves records or events unstored logs `flush_incomplete` with the
-  counts, and the process exits with code 1.
+- **Test overrides.** Only a debug build reads `INGEST_TEST_*`, and each can
+  only lower its limit. The image runs a release build; `image-check` proves
+  that it ignores `INGEST_TEST_QUEUE_BYTES=1` and
+  `INGEST_TEST_DEGRADED_AFTER_MS=1000`.
+- **SUB socket.** The reconnect of `zeromq` 0.7.0 can stop for good after a
+  failed subscription send to a new peer. The reader owns its socket.
+  - **Defence 1.** One socket for each child, replaced at a child stop, a
+    `Disconnected` event, or a failed subscription. The socket subscribes
+    after the connect.
+  - **Defence 2: the stall rule.** For two successful metrics reads `m` and
+    `n` of one socket: when the child dispatched between their responses
+    and the reader received nothing from before the request of `m` until 2
+    s (the grace) after the response of `n`, the socket is stalled. The
+    reader clears gate condition 2 with `subscriber_stalled` and replaces
+    the socket. After repeated stalls without a received record, it waits
+    30 s, doubling to 15 minutes, with the condition false.
+  - **Unreadable metrics.** After two failed reads in a row (deadline
+    0.75 s), the shortfall task clears gate condition 2 with
+    `metrics_unreadable` and reads each 1 s until a read succeeds.
+  - **Detection bound.** `P` is the read period (15 s), `D` the read
+    deadline (0.75 s), and `G` the grace (2 s). The decision comes one grace
+    after the second successful read after the stall starts. With the gate
+    open, at most four failed reads and three openings fall into one stall.
+    The time with the gate open is less than `4P + 2D + G` (63.5 s); with
+    the gate open the whole time and `f` failed reads, less than
+    `(2 + f) × P + D + G` (32.75 s, 47.75 s, 62.75 s). With pauses in the
+    dispatch, at most two read intervals plus `D` and `G` lose records. The
+    records are acked, so the vehicle does not resend them. The test
+    `the_worst_case_timeline_meets_the_bound_of_adr_0001` pins the bound.
+  - **Known limit (note N11).** The reader can count a record before the
+    counter grows, so the rule can replace a healthy socket; the gate closes
+    for about 0.5 s.
+  - **Keep `zeromq` 0.7.0.** Owner decision of 27 November 2026: the stall
+    detection stays. Reassess after the one-week follow-up or at a second
+    defect of this class. No report of the reconnect defect goes upstream
+    without the owner.
+- **Reader and event bounds** (`Limits` in `pipeline.rs`). A connect
+  attempt of the reader has 5 s. A socket rebuild has `rebuild_drain` 1 s,
+  `rebuild_quiet` 200 ms, and a backoff of 100 ms to 5 s. The process keeps
+  the events in memory until the writer stores them, at most 10,000. A
+  metrics response has at most 1 MiB.
+- **Writer rules.** SQLSTATE classes `08` and `57P` count as no answer. A
+  write that stored records resets the cadence. After a statement timeout
+  the next batch is half the size. The writer also flushes when the queue
+  closes the gate. A batch is one transaction of at most 5,000 signal rows
+  and 8 MiB. A `records_dropped` event has the reason `queue_full` or, when
+  the database refuses even the unprocessed row, `database_refused`.
+- **No permanent close.** Invariant: a gate condition is false only while a
+  future event of the process can make it true. The queue opens the gate
+  when it becomes empty, also after a failed write; the check always has a
+  next time on the cadence; the reader is always in a bounded step; the
+  shortfall task reads each 1 s while metrics fail; the supervisor restarts
+  the child without end. Only the shutdown closes the gate for good.
+- **Shutdown.** Each step aborts its work at its bound. Step 1 waits until
+  every gate slot is free, at most 1 s, and logs a remaining slot as
+  `gate_connections_open`. The `stopped` event is recorded before step 5.
 
 ### Decisions of the deployment change (issue #14)
 
-The deployment change builds the image of "Layout" (`ingest/Dockerfile`)
-and records these points. `crates/ingest/tests/deployment.rs` checks that
-the files agree; the CI job `image-check` checks the running container
-(`STACK.md` §3).
+`crates/ingest/tests/deployment.rs` checks that the files agree;
+`image-check` checks the running container (`STACK.md` §3).
 
-- **TLS files: a minimal entrypoint, not Rust code.**
-  `ingest/entrypoint.sh` writes `TLS_CERT` and `TLS_KEY` to
-  `/etc/fleet-telemetry/tls/`, removes both variables, raises the soft
-  open-file limit, and replaces itself with `ingest run` (`exec`), so
-  `ingest` takes the process of the script: PID 1 under Docker, PID 2
-  under the init of Railway. Reasons: the start order above already names the
-  entrypoint; a shell builtin (`printf`) writes the key, so no process
-  argument holds it; `umask 077` gives mode 0600; `unset` before the `exec`
-  keeps the key out of the environment of `ingest`
-  (`/proc/<pid of ingest>/environ`). Update (release of 27 November 2026):
-  this protects only under Docker without an init. On Railway the init
-  (PID 1, UID 10001) keeps the full environment, and a process of UID
-  10001 can read it (section "Process tree on Railway"),
-  and `ingest` starts the child with an empty environment. Update (issue
-  #29): the entrypoint runs as root, gives the TLS files to user 10001
-  with `chown`, and starts `ingest` through `setpriv`; the init then runs
-  as root, and a process of UID 10001 cannot read its environment. In Rust, the
-  removal of a variable (`std::env::remove_var`) is `unsafe` in edition
-  2024, which the workspace forbids, and the raise of the limit needs
-  `unsafe` code or a new crate. The deployment test runs a copy of the
-  script with temporary paths and checks the modes, the environment, and
-  the failure without a variable.
-- **Non-root user.** The final stage runs as user and group 10001. No part
-  needs root: all ports are above 1023, and only the entrypoint writes
-  files, into `/etc/fleet-telemetry/tls/` (mode 0700, owner 10001).
-  Upstream runs `fleet-telemetry` as a non-root user too
-  (`gcr.io/distroless/cc-debian12:nonroot`). A numeric user needs no
-  `useradd` step. Update (release of 27 November 2026): on Railway the
-  init also runs as 10001, so its environment is readable by `ingest`
-  and the child; option 1 of the proposal in "Process tree on Railway"
-  would replace this decision. Superseded (issue #29, owner decision of
-  27 November 2026): the image has no `USER` line and starts as root. The
-  entrypoint drops to user and group 10001 with `setpriv` before it
-  starts `ingest`. `ingest` and `fleet-telemetry` still run as 10001, and
-  now also without capabilities and with `no_new_privs`. The reasons above
-  still hold for `ingest` and the child; only the entrypoint and the
-  pre-deploy command run as root.
-- **Fixed settings in the image.** The `ENV` lines of the Dockerfile set
-  the ports and the child paths. The Railway service variables hold only
-  `PORT` (8080) and the secrets. So the settings change with the code,
-  and the deployment test checks them against `ingest/server_config.json`.
-- **Builder image.** `rust:1.100.0-slim-trixie`: the official Rust image,
-  the version of `rust-toolchain.toml`, on the Debian release of the final
-  stage, so that the binary links against the same glibc. It has gcc and
-  libc6-dev for `aws-lc-sys`, which builds with `cc` and pregenerated
-  bindings on `x86_64-unknown-linux-gnu`. The build does not copy
-  `rust-toolchain.toml`: the file also names rustfmt and Clippy, which the
-  slim image does not have, and rustup would download them during the
-  build. The `vuln` allowlist ties the tag to the file instead. The
-  builder image is not scanned (`STACK.md` §13: an exception that the
-  independent reviewer approved and the owner accepted on 27 November
-  2026).
-- **Build inputs.** The `COPY` lines name each input: `Cargo.toml`,
-  `Cargo.lock`, `.cargo/`, `crates/`, `db/` (`include_str!` of
-  `db/roles.sql`), `migrations/` (`sqlx::migrate!`), and `.sqlx/`. A
-  build of exactly these paths from `git archive` passed locally with
-  `--release --locked` and `SQLX_OFFLINE=true`. `.dockerignore` is an
-  allowlist of the same paths. The watch paths are the same paths plus
-  `ingest/**`, `rust-toolchain.toml`, and `.dockerignore`.
-- **Railway config as code is deprecated.** The Railway documentation
-  (read on 27 November 2026) says: "Existing `railway.json` /
-  `railway.toml` files continue to work for services that already use
-  them until 2026-12-01 (hard cutoff). New services cannot opt into Config
-  as Code." The service `telemetry` has no config file. So the lead sets
-  each value of the table above as a service setting or a `RAILWAY_*`
-  variable (`STACK.md` §15; lead decision 7). The repository holds no
-  Railway settings file. The deployment test holds the values as
-  constants and checks them against the image, the code, and the table
-  of `STACK.md` §15. The lead applies the
-  settings without a deployment before the merge, so the deployment of the
-  merge is the first one with them (`docs/ingest-release.md`, section 1).
-- **Release build only.** Only `cfg(debug_assertions)` keeps a build from
-  reading `INGEST_TEST_*` ("Decisions of the pipeline change"). The
-  deployment test requires the one build line `cargo build --release
-  --locked -p ingest` and the copy from `target/release/`, and the CI job
-  `image-check` starts the image with `INGEST_TEST_QUEUE_BYTES=1` and `INGEST_TEST_DEGRADED_AFTER_MS=1000`
-  and fails when the process stops at the start, degraded mode comes before 110 s, or a `test_overrides`
-  line appears.
-- **Pre-deploy command.** One string, `/usr/local/bin/ingest migrate`. The
-  Railway schema allows a string or an array with at most one string, so
-  the earlier value with two elements was not valid. Pre-deploy timeout
-  1200 s: longer than the client deadline of `ingest migrate` (15
-  minutes), so it never cuts a migration, but it ends a command that
-  never ends, for example an image whose `ENTRYPOINT` starts a server
-  and gets the command as arguments. Update (issue #29): the command
-  runs as root, because the image has no `USER` line. The command stays
-  the same, so a rollback to an earlier image still works, and no Railway
-  setting changes. Accepted as a bounded change: the pre-deploy container
-  is short-lived and separate, it holds `MIGRATION_DATABASE_URL` anyway,
-  and `ingest migrate` has no listener and ends (`STACK.md` §15).
-- **Healthcheck timeout.** The default of 300 s.
-- **Recovery.** A rollback restores the image and the custom variables of
-  the earlier deployment. A rollback to the image before this decision
-  needs the pre-deploy command and the healthcheck path cleared first, and
-  it writes the VIN and the location to the log again
-  (`docs/ingest-release.md`).
-- **Shortfall check on the real binary.** A series of `dispatch_total`
-  that never grew is absent and counts as 0
-  (`crates/ingest/src/pipeline/metrics.rs`). So a renamed metric would
-  make the check report no shortfall without an error. The release reads
-  the metrics of the real binary once (`docs/ingest-release.md`).
+- The entrypoint is a short shell script, not Rust code:
+  `std::env::remove_var` is `unsafe` in edition 2024. `ingest` starts the
+  child with an empty environment.
+- The `ENV` lines set the ports and paths. The service variables hold only
+  `PORT` (8080) and the secrets.
+- The builder image is `rust:<toolchain>-slim-trixie`, the Debian release of
+  the final stage; it is not scanned (`STACK.md` §13).
+- `.dockerignore` and the `COPY` lines name the same inputs; the watch paths
+  add `ingest/**`, `rust-toolchain.toml`, and `.dockerignore`.
+- Pre-deploy command `/usr/local/bin/ingest migrate`, timeout 1200 s.
+- A rollback restores the image and the variables. A rollback to the image
+  before this decision needs the pre-deploy command and the healthcheck
+  path cleared first (`docs/ingest-release.md`).
+- An absent `dispatch_total` series counts as 0, so the release reads the
+  metrics of the real binary once.
 
 ### Process tree on Railway (observed at the release, 27 November 2026)
 
-Lead observation through `railway ssh` after the release of PR #23
-(release record on PR #23):
+PID 1 is `/run/podman-init -- /entrypoint.sh`, an init that Railway adds;
+`ingest run` is PID 2, and `fleet-telemetry` is its child. Assumption: the
+init is catatonit [P1][P2]. It forwards signals, except `SIGCHLD`, the
+terminal stop signals, and its own fault signals, to `ingest`, reaps orphans, and exits with `ingest`. So SIGTERM reaches
+`ingest` (observed at the release of PR #30), and a forced end of `ingest`
+ends the container. `ingest` is not PID 1, so a forwarded signal without a
+handler ends it.
 
-- PID 1 is `/run/podman-init -- /entrypoint.sh`, an init that Railway
-  adds. The entrypoint replaces itself with `ingest` (`exec`), so
-  `/usr/local/bin/ingest run` is PID 2, with parent 1 and UID 10001.
-  `fleet-telemetry` is a child of PID 2. So "`ingest` is PID 1" is false
-  on Railway. In the CI job `image-check`, Docker starts the image without
-  an init, and `ingest` is PID 1 there.
-- The init. Podman documents `--init` as "an init inside the container
-  that forwards signals and reaps processes", mounted at
-  `/run/podman-init` [P1]. Podman's default container init is catatonit.
-  Assumption: the binary at `/run/podman-init` on Railway is catatonit;
-  it was not identified. The catatonit source [P2] shows: it forwards each
-  signal except `SIGCHLD`, the terminal stop signals, and its own fault
-  signals to the one process that it started (not to the process group,
-  unless `-g`); it reaps every zombie of the container; and when the
-  process that it started exits, it exits too, with the exit code of that
-  process (128 plus the signal number after a signal).
+The init holds every service variable in `/proc/1/environ`. While the image
+ran as user 10001, every process of that user could read it. Options for
+the owner:
 
-What changes, and what does not:
+1. **Start as root, drop in the entrypoint.** Chosen on 27 November 2026,
+   implemented by issue #29.
+2. **A separate UID for the child**, with `CAP_SETUID` in `ingest`.
+   Declined on 27 November 2026: the owner accepts that the child can read
+   `DATABASE_URL` of `ingest` (`STACK.md` §15, note N1).
+3. **Keep the accepted risk.** Not chosen.
 
-- **Reaping.** `ingest` still waits for its own child (Tokio). Each other
-  process that loses its parent goes to PID 1, and the init reaps it [P2]. So
-  the gap "no general reaping" (`crates/ingest/src/child.rs`) does not
-  apply on Railway. At the release, the container had no zombie.
-- **SIGTERM.** Railway sends SIGTERM to PID 1; by [P2] the init forwards
-  it to `ingest`, which runs the shutdown sequence. Without the
-  forward, no `shutdown_started` line would appear, and SIGKILL would end
-  the container after `drainingSeconds`. Observed at the release of PR
-  #30 (27 November 2026, deployment
-  `dcda346d-1934-4054-a25b-5a32cc286c6d`): the previous deployment
-  logged `shutdown_started`, `gate_stopped`, `child_killed`, a final
-  `flushed`, and `shutdown_complete` within 2 s, with no
-  `task_stop_timeout`, `gate_connections_open`, or `flush_incomplete`. So
-  the init forwards SIGTERM (Linux check 2 on Railway).
-- **Other signals.** `ingest` is not PID 1 on Railway, so the kernel rule
-  that protects PID 1 from signals without a handler does not apply to
-  it. A signal that the init forwards and that `ingest` does not handle
-  (for example `SIGHUP` or `SIGQUIT`) ends `ingest` with the default
-  action. Railway documents no such signal.
-- **Forced end of `ingest` (Linux check 4).** A watchdog exit, a crash, or
-  SIGKILL of `ingest` ends the process that the init started; the init
-  then exits [P2], PID 1 ends, the kernel ends `fleet-telemetry` (fact 8),
-  and Railway restarts the container (restart policy "Always").
-  Documented by the catatonit source, not observed on Railway. The check
-  can now be produced on purpose: a `railway ssh` session (UID 0) can
-  send SIGKILL to PID 2, if the session may signal a process of UID
-  10001 (not tested; the same session cannot read the environment of
-  that process). Cost: the queue since the last flush is lost (the
-  crash line of "Delivery guarantee").
-- **Environment of PID 1.** The init started with every service variable:
-  `TLS_CERT`, `TLS_KEY`, `DATABASE_URL`, and `MIGRATION_DATABASE_URL`. The
-  entrypoint removes the TLS variables and the migrator URL only in the
-  process that becomes `ingest`, so `/proc/1/environ` of the init still
-  holds them. Observed by the lead on 27 November 2026 in the production
-  container: `/proc/1/status` of `/run/podman-init -- /entrypoint.sh`
-  shows `Uid: 10001 10001 10001 10001`, and `ptrace_scope` is 0. So the
-  init runs as the user of the image, the same user as `ingest` and
-  `fleet-telemetry`. The kernel lets a process read `/proc/<pid>/environ`
-  of another process of the same UID (a ptrace read check; Yama
-  `ptrace_scope` restricts only the attach mode, and it is 0 here, which
-  also allows the memory read). So `fleet-telemetry` and `ingest` can read
-  all four variables in `/proc/1/environ`. This follows from that kernel
-  rule; nobody read the file directly, because the `railway ssh` session
-  (UID 0) has no right to read it. Consequence: on Railway the `unset` in
-  the entrypoint gives no protection. It protects only under Docker
-  without an init (the CI job `image-check`). `STACK.md` §15 (accepted
-  risks) names the exposure; the options to close it follow. Update: a
-  probe in the production container on 27 November 2026 confirmed the
-  read by a process of UID 10001 (exit code only). The owner chose
-  option 1 (below); issue #29 implements it. Update (release of PR #30,
-  27 November 2026, merge `8080e2c`, deployment
-  `dcda346d-1934-4054-a25b-5a32cc286c6d`): the init follows the image
-  user. PID 1 `/run/podman-init -- /entrypoint.sh` now has
-  `Uid: 0 0 0 0`. `ingest` (PID 2) and `fleet-telemetry` (PID 15) have
-  `Uid` and `Gid` 10001, empty `Groups`, all capability sets 0, and
-  `NoNewPrivs: 1`. The TLS directory has mode 700 and the TLS files mode
-  600, owner 10001:10001. From UID 10001, the read of
-  `/proc/self/environ` exits with 0 and the read of `/proc/1/environ`
-  exits with 1. The container had no zombie, and the pre-deploy command
-  ran as root (`migrated` logged). So the exposure of this point is
-  closed on Railway.
-
-**Proposal for the owner: close the environment of PID 1.** Each option
-needs an owner decision; the lead does not choose. Assumption of options 1
-and 2: the init runs as the user that the image names, as observed for
-10001. Owner decision of 27 November 2026: option 1. Issue #29 implements
-it; the part "Decision of issue #29 (option 1)" below records the result.
-Owner decision of 27 November 2026 (decisions review after the first
-release): no option 2. The owner accepts the risk that `fleet-telemetry`
-can read `DATABASE_URL` in the environment of `ingest`; no separate user
-for the child and no `PR_SET_DUMPABLE` change (`STACK.md` §15, note N1).
-
-1. **Start as root, drop in the entrypoint.** The image has no
-   `USER 10001`, so the init (PID 1) and its environment belong to UID 0.
-   The entrypoint writes the TLS files as root, sets their owner to
-   10001, removes the variables, and then replaces itself with
-   `setpriv --reuid=10001 --regid=10001 --clear-groups` and
-   `ingest run` (`exec`). `setpriv` comes from util-linux; the change must
-   confirm that the final image contains it. Then no process of UID 10001
-   can read `/proc/1/environ`. Costs and changes:
-   - It replaces the decision "Non-root user": the image starts as root,
-     and the drop happens in the entrypoint. A fault in the entrypoint
-     before the drop runs as root.
-   - The Dockerfile and entrypoint allowlists of `vuln`
-     (`scripts/vuln-premise-test.sh` and the `vuln` task) change with the
-     files.
-   - The `image-check` assertions change: PID 1 under Docker is then the
-     entrypoint as root until the `exec`, then `ingest` as 10001 through
-     `setpriv`; the check must show the UID of `ingest` and of the child,
-     and that UID 10001 cannot read `/proc/1/environ` on a container with
-     an init.
-   - File ownership: the TLS directory and files need an explicit owner
-     (10001) and mode, because root creates them.
-   - `ingest` (PID 2, UID 10001) still holds `DATABASE_URL` in its own
-     environment, so the child can still read it, unless `ingest` also
-     reads and clears it. In Rust, `std::env::remove_var` is `unsafe`
-     (forbidden in the workspace); the bounded fix of `STACK.md` §15 (a
-     0600 file that `ingest` reads and deletes) does not help while
-     `ptrace_scope` is 0, because the child can then read the memory of
-     `ingest`.
-2. **A separate UID for the child (the stronger variant).** `ingest`
-   starts `fleet-telemetry` as another user, for example 10002. A process
-   of another UID cannot read the environment or the memory of `ingest`
-   or of the init, whatever `ptrace_scope` is. Costs and changes: `ingest`
-   needs the capabilities `CAP_SETUID` and `CAP_SETGID` to start the child
-   as another user (a file capability on the binary, or a start as root
-   and a partial drop), and `ingest` then holds these capabilities while
-   it runs; the TLS files must be readable by the child user and not by
-   others; the child code in `crates/ingest/src/child.rs` changes, and the
-   tests and `image-check` change with it. Option 2 alone does not close
-   the environment of PID 1 against a fault in `ingest`; with option 1 it
-   closes both paths.
-3. **Keep the accepted risk.** No change. The exposure of `STACK.md` §15
-   stays until the owner decides.
-
-**Decision of issue #29 (option 1).**
-
-- `ingest/Dockerfile` has no `USER` line, so the container starts as
-  root. The init of Railway and its environment then belong to UID 0
-  (observed at the release of PR #30: `Uid: 0 0 0 0` for PID 1).
-- `ingest/entrypoint.sh` runs as root. It copies the TLS variables to
-  shell variables that are not exported and removes `TLS_CERT`,
-  `TLS_KEY`, and `MIGRATION_DATABASE_URL` before it runs a program.
-  Limit: if the container environment already holds a variable named
-  `cert` or `key`, the shell keeps that variable exported, and the key
-  reaches the environment of `ingest`. Issue #31 tracks the fix (`unset
-  cert key` before the copy); it has no schedule by owner decision. The
-  script removes old TLS files with `rm -f` and writes the new ones with
-  `umask 077` and noclobber (`set -C`). The noclobber of dash is not a
-  plain `O_EXCL` open: for an existing target that is not a regular file,
-  the write can succeed (a probe wrote through a symbolic link to a
-  FIFO). So the defence against a link that a process of UID 10001 left
-  from an earlier start in the same container filesystem rests on the
-  `rm -f` before the write, and on the premise that no process of UID
-  10001 runs while the root part of the entrypoint runs. It
-  gives both files to 10001 (`chown`), raises the soft open-file limit,
-  and replaces itself (`exec`) with `setpriv --reuid 10001 --regid 10001
-  --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs
-  /usr/local/bin/ingest run`. `setpriv` comes from util-linux, which is
-  part of `debian:trixie-slim` (`/usr/bin/setpriv`).
-- Fail closed: `set -eu` stops the script at the first failed command.
-  No line starts `ingest` as root. If `setpriv` cannot drop the
-  privileges, it exits with an error and does not start `ingest`. A start
-  as user 10001 fails in `setpriv` (it needs root to clear the groups
-  and the bounding set). A start as any other non-root UID fails
-  earlier, at `rm -f` or at the write of a TLS file. The container stops
-  in each case.
-- No explicit check that the script runs as root: a start as another
-  user cannot start `ingest` as root, because `rm -f`, the write, or
-  `setpriv` stops it. The CI job `image-check` proves this with a start
-  as user 10001.
-- What it closes: a process of UID 10001 (`ingest`, `fleet-telemetry`,
-  or a process that they start) cannot read `/proc/1/environ`. The kernel
-  allows that read only for the same UID or with `CAP_SYS_PTRACE`, and
-  both processes have no capabilities. So `MIGRATION_DATABASE_URL` and
-  `TLS_KEY` are no longer in reach of a code-execution fault in these
-  processes.
-- What stays: `DATABASE_URL` in the environment of `ingest`, which
-  `fleet-telemetry` can read as the same user (`STACK.md` §15, note N1;
-  the owner accepted this risk on 27 November 2026 and declined
-  option 2). The entrypoint and the pre-deploy command (`ingest
-  migrate`, in its own short-lived container) run as root; the owner
-  accepted the pre-deploy command as root on 27 November 2026.
-- Evidence before merge: the deployment test runs a copy of the
-  entrypoint with stubs for `setpriv` and `chown` and checks their exact
-  arguments, the file modes, the environments, the link defence, and the
-  stop when `chown` or `setpriv` fails. The `vuln` allowlists fix the
-  lines, and `scripts/vuln-premise-test.sh` makes each new premise fail.
-  The CI job `image-check` checks the credentials of `ingest` and
-  `fleet-telemetry` in a container without an init and in a container
-  with the init of Docker (`docker run --init`, tini), and in the second
-  one that PID 1 is UID 0 and that UID 10001 cannot read
-  `/proc/1/environ`.
-- Evidence after the release (`docs/ingest-release.md`, section 3.1):
-  the `Uid` of PID 1 on Railway is 0, a process of UID 10001 cannot read
-  `/proc/1/environ` (exit code only), and the capability sets of `ingest`
-  are empty. tini is not the init of Railway, so `image-check` does not
-  replace these checks. Result at the release of PR #30: all three
-  passed (section "Process tree on Railway", update of the point
-  "Environment of PID 1").
-- **What `image-check` proves.** Under Docker without an init it shows the
-  image, the entrypoint, the release build, the empty environment of the
-  child, the descriptors, the shutdown order after SIGTERM to `ingest`, and
-  the reaping by `ingest` of its child. Since issue #29 it also runs the
-  image under the init of Docker (tini): the process tree with `ingest`
-  as a child of PID 1, the credentials, the denied read of
-  `/proc/1/environ`, and SIGTERM through an init. It does not show the
-  init of Railway itself: its user, its signal forward, or its reaping of
-  orphans.
-- **What does not change.** The gate, the pipeline, the shutdown sequence,
-  the file modes, the user 10001 of `ingest` and `fleet-telemetry`, and
-  the listeners. Observed listeners:
-  `0.0.0.0:4443` (gate), `0.0.0.0:8080` (`/health`), `127.0.0.1:4444`
-  (`fleet-telemetry`), `127.0.0.1:5284` (ZMQ), `127.0.0.1:9090`
-  (metrics).
+**Decision of issue #29 (option 1).** The image has no `USER` line. The
+entrypoint runs as root, removes the TLS and migrator variables, writes the
+TLS files (mode 0600, owner 10001), and starts `ingest run` through
+`setpriv` as UID and GID 10001 with no groups, no capabilities, and
+`no_new_privs`. Observed at the release of PR #30: PID 1 has UID 0, and UID
+10001 cannot read `/proc/1/environ`. `STACK.md` §15 records what stays.
 
 ## Key alternatives
 
-- **MQTT.** Needs a broker process or service. The per-field messages lose
-  `created_at` and `is_resend`, so the vehicle time is lost. Rejected.
-- **Redis pub/sub.** Needs a Redis service. Pub/sub keeps nothing for an
-  absent subscriber and the ack fires anyway. The Redis error logs contain
-  the VIN ([`datastore/redis/redis.go#L103`](https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c/datastore/redis/redis.go#L103)). Rejected.
-- **Logger output through a pipe.** No ack source. The log format is not a
-  contract. Diagnostics and records share one stream. A blocked reader stops
-  all sockets. Rejected.
-- **Kafka, Kinesis, Google Pub/Sub.** New paid providers. Rejected by
-  `VISION.md`.
-- **A Rust implementation of the vehicle protocol.** It could ack after the
-  commit and use the vehicle buffer as the only queue. This is the only true
-  end-to-end guarantee. But it puts first-party code on the internet-facing
-  mTLS endpoint and re-implements an undocumented envelope format
-  (`messages/` in upstream) with no specification except the source.
-  `STACK.md` §0 keeps the upstream server. Rejected for now; see the
-  reassessment conditions.
-- **Two Railway services over the private network.** Each deploy or crash of
-  `ingest` loses records while `fleet-telemetry` keeps acking, and the gate
-  is not possible across services. It also costs about 1 to 2 USD each
-  month, and `zeromq` has no CURVE encryption (the private network uses
-  WireGuard [R6]). Rejected.
-- **Stop the child instead of a gate.** Simpler, but it cannot close the
-  start race of fact 6, and each pause restarts the server. Rejected.
-- **Flush every few seconds.** Lowest crash loss, but the worst case uses
-  about 180 CU-hours. Rejected for now (lead decision 1).
-- **A durable spool on a Railway volume.** `ingest` would append each
-  received message to a file on a volume (length, checksum, payload) and
-  sync it before it counts as queued. It would remove the record from the
-  file after the commit, and replay the file after a restart. This attacks
-  the largest remaining loss: a crash would lose almost nothing, and a
-  restart during a database outage would keep the queue. The volume would
-  cost about 0.15 USD for each GB each month [R7], a few cents here.
-  Rejected for now, because:
-  - Railway keeps no two deployments active with the same volume, so each
-    redeploy has a downtime even with a healthcheck [R3]. The old
-    deployment stops before the new one is proven. A broken release then
-    stops ingest until the lead redeploys the previous version, and the
-    vehicle buffer (at least 2,500 s) is the only protection. Without a
-    volume, a failed healthcheck keeps the old deployment running.
-  - The repository cannot build or test the image before a merge (`STACK.md`
-    §13), so a broken release is more likely than a crash of `ingest`.
-  - The spool adds code with its own failure modes: sync, corruption,
-    replay order, and a full volume. The pre-deploy command has no volume
-    [R8].
-
-  The crash loss stays bounded to one flush interval and is visible as a
-  gap. Reassessment: the spool becomes the better trade when one of these
-  is true: the repository gets a container build check before merge; a
-  crash or a restart during an outage shows a real gap in `ingest_event`;
-  or Railway keeps the old deployment when a new deployment with a volume
-  fails.
+- **MQTT, Redis pub/sub.** Need a broker or a service. MQTT loses the
+  vehicle time; Redis keeps nothing for an absent subscriber and logs the
+  VIN. Rejected.
+- **Logger output through a pipe.** No ack source and no stable format.
+- **Kafka, Kinesis, Google Pub/Sub.** New paid providers.
+- **A Rust implementation of the vehicle protocol.** The only true
+  end-to-end ack, but first-party code on the mTLS endpoint and an
+  undocumented envelope format. Rejected for now.
+- **Two Railway services.** No gate across services; each deploy loses
+  acked records.
+- **Stop the child instead of a gate.** Cannot close the start race of fact
+  6.
+- **Flush every few seconds.** About 180 CU-hours in the worst case.
+- **A durable spool on a Railway volume.** A crash would lose almost
+  nothing. Rejected for now: with a volume each redeploy has a downtime,
+  and a broken release stops ingest; the pre-deploy command has no volume
+  [R8]. The spool is the known measure against a loss above the 15-minute
+  budget at a restart during a long outage. Reassess when a crash or an
+  outage restart shows a real gap, or when Railway keeps the old deployment
+  when a new deployment with a volume fails. The earlier condition, a
+  container build check before merge, is met (CI job `image-check`).
 
 ## Consequences
 
-- No record reaches the Railway log. The VIN leak of the logger ends.
-- Every merge that touches the ingest paths redeploys the service. The
-  vehicle disconnects for some seconds and buffers. Acked records are not
-  lost. Messages in flight without an ack depend on a vehicle resend (not
-  verified).
-- Data reaches PostgreSQL up to 15 minutes late. The live dashboard of a
-  later phase needs another path, for example a second ZMQ subscriber.
-- First-party code now sits on the public port, but it only copies bytes.
-- Accepted risk at the gate (lead decision 6; the owner accepted it on
-  27 November 2026): a live peer that stalls
-  inside the TLS handshake holds a connection until it closes it; a peer
-  that goes away is closed within the dead-peer bound (about 150 s idle,
-  about 925 to 1,045 s with unacknowledged data), as with upstream today.
-  A flood that fills the 1024-connection bound blocks the vehicle while
-  the flood holds the bound, plus the dead-peer bound. Both bounds are
-  below the vehicle buffer of at least 2,500 s, and the vehicle relies on
-  that buffer meanwhile. `gate_full` events and
-  connectivity gaps show it. See "Reassessment".
-- The vehicle config does not change in this phase.
-- `ingest` must handle PID 1 duties: signal handlers and reaping its child.
-  On Railway the init does the PID 1 duties (section "Process tree on
-  Railway"); `ingest` still installs its handlers and reaps its own child.
+- No record reaches the Railway log.
+- Each merge that touches the ingest paths redeploys the service; the
+  vehicle disconnects for some seconds and buffers.
+- Data reaches PostgreSQL up to 15 minutes late. Owner decision of 27
+  November 2026: views up to 15 minutes behind are acceptable, and the live
+  dashboard is optional. A live view would need another path, for example a
+  second ZMQ subscriber.
+- First-party code sits on the public port, but it only copies bytes.
+- On Railway the init does the PID 1 duties; `ingest` still handles signals
+  and reaps its own child.
 
 ## Cost of reversal
 
-Medium. The transport is a few lines of server config and one reader task.
-A change to a two-service layout or to MQTT changes the deployment and the
-reader. A Rust protocol server replaces the gate and the child, and keeps
-the writer and the storage.
+Medium. The transport is a few lines of config and one reader task. A Rust
+protocol server would replace the gate and the child and keep the writer.
 
 ## Reassessment
 
-- Gap events or crash restarts show material loss.
+- Gap events or crash restarts show a loss above the accepted budget.
 - `zmq_shortfall` events appear, or the watchdog ends the process.
-- The Neon CU-hours of the project (production and `test` together) pass
-  65 in a month, or the live dashboard needs data within seconds.
-- The first `gate_full` event, or evidence of peers that stall inside the
-  TLS handshake. A candidate measure then is to detect an established
-  session (for example the first `connectivity` event after an accept) and
-  to treat connections without one differently.
-- Upstream changes the ZMQ dispatcher, adds a consumer ack, or stops
-  maintenance.
-- `zeromq` stops releases or the vendored `.proto` files fall two upstream
+- The Neon CU-hours pass 65 in a month, or the owner asks for the optional
+  live dashboard.
+- The first `gate_full` event, or peers that stall inside the handshake.
+- Upstream changes the ZMQ dispatcher or adds a consumer ack.
+- `zeromq` stops releases, or the vendored `.proto` files fall two upstream
   releases behind.
 
 ## Lead decisions
 
-The lead decided these points on 26 November 2026, within delegated
-authority.
-
-1. **Flush interval: default 900 s** (`INGEST_FLUSH_INTERVAL_SECONDS`).
-   Reason: the Neon limit of 100 CU-hours is a hard stop. When it is used
-   up, Neon suspends the compute until the next month, and days of history
-   are lost. A crash loses at most one flush interval, and an
-   `ingest_event` gap makes the loss visible. Each interval below the
-   5-minute scale-to-zero timeout keeps the compute awake whenever the car
-   is awake. So the real choice is "always on while awake" or about 15
-   minutes. Owner decision of 27 November 2026: the interval stays 900 s.
-   A value of 300 s or less keeps the compute active for the whole awake
-   time, because the compute suspends only after 5 minutes without
-   activity. Reassessment: after the one-week follow-up, with the measured
-   awake hours (the owner's condition; it replaces the earlier 30 days).
-   Lower the interval (for example to 60 s) only if the measured awake
-   hours keep a month below 60 CU-hours at the always-on rate.
-2. **Second database role `telemetry_migrator`** (ADR 0002). The owner
-   authorised an application role with limited privileges. A separate
-   least-privilege migration role serves the same intent and keeps
-   `neondb_owner` out of Railway. The lead reports this decision to the
-   owner.
-3. **Fixed production compute of 0.25 CU** (autoscaling minimum and maximum
-   0.25). Applied by the lead on 26 November 2026 through the Neon API on
-   the production endpoint `ep-young-dawn-bgyaj83l`. The response showed
-   minimum 0.25, maximum 0.25, and `suspend_timeout_seconds` 0 (the plan
-   default of 5 minutes). The `test` branch compute also has a fixed 0.25
-   CU. The owner confirmed on 27 November 2026: the production compute
-   stays fixed at 0.25 CU, and the storage keeps no connection pool.
-4. **`delivery_policy` is not adopted now.** Tesla documents neither the
-   default nor the billing effect, so the 3 USD rule cannot be estimated.
-   The vehicle config stays as merged in PR #6. Owner decision of
-   27 November 2026: `delivery_policy` stays unset. Reassessment: the
-   stored `is_resend` data of the first week, or Tesla documentation.
-5. **`jiff` and `jiff-sqlx` line 1.** No manifest exists yet, so no
-   separate `chore/deps` PR is needed. `DOCTRINE.md` P7 requires the latest
-   stable release. `STACK.md` §6 now names line 1. The first workspace PR
-   pins the exact resolved versions.
-6. **Accepted gate risk.** The gate does not read TLS, so it cannot tell
-   the vehicle from another peer. A live peer that stalls inside the TLS
-   handshake holds a connection until it closes it, and a flood that fills
-   the 1024-connection bound blocks the vehicle while it lasts plus the
-   dead-peer bound: about 150 s for an idle gone peer (keep-alive), about
-   925 to 1,045 s for a gone peer with unacknowledged data (retransmission
-   timeout, `tcp_retries2` 15). The vehicle then relies on its own buffer
-   (at least 2,500 s). This is the same class of exposure, and the same
-   dead-peer bound, as upstream today. The decision adds no cost and the
-   lead can reverse it. Owner decision of 27 November 2026: the owner
-   accepts this risk, and the gate gets no handshake deadline.
-   `TCP_USER_TIMEOUT` was considered and not adopted: it would shorten the
-   second case, but it is Linux-only conditional code that cannot be
-   tested on the development machine, and Go sets none either, so it goes
-   beyond parity with upstream. Reassessment: the first `gate_full` event,
-   or evidence of peers that stall inside the handshake.
-7. **Railway settings by hand; Infrastructure as Code waits** (27
-   November 2026, issue #14). Railway deprecated config as code and
-   accepts no new config file [R9]; the lead confirmed the text. Owner
-   decisions of 27 November 2026 (chat with the lead): no `railway.json`
-   and no file in its place; Infrastructure as Code (IaC,
-   `.railway/railway.ts`) if it is possible and safe, otherwise wait until
-   December 2026. The assessment below found IaC not safe to adopt now, so
-   the service settings and `RAILWAY_*` variables of the table in
-   `STACK.md` §15 carry the release. The release does not wait for IaC.
-   Evidence (read on 27 November 2026: [R11], [R12], the Railway CLI
-   5.75.0 help, and the npm package `railway` 3.19.0):
-   - **Scope (safe with a named partial).** "One project definition, one
-     apply, and omitting a resource means deleting it" [R11]. With a named
-     partial: "A named partial only deletes resources it owns. Resources
-     owned by other partials, or not yet owned by any partial, are left
-     alone when they're missing from your file" [R11]. `railway config
-     plan` previews without a change and has `--detailed-exit-code`; an
-     apply runs a plan first and asks for confirmation [R11]. So a partial
-     `telemetry` would leave the other services of `calmdonut` alone. Not
-     documented: how a partial takes ownership of an existing service (the
-     page says only "declare the resources in a named partial and use the
-     ordinary plan/apply workflow"), and what the file changes at the
-     project level. `railway config pull` imports the whole linked
-     project and has no option for one service (CLI help).
-   - **Coverage (blocking).** The reference [R12] documents the build and
-     start commands, `healthcheck`, `healthcheckTimeout`, `preDeploy`,
-     the source with `rootDirectory`, domains, and `env` with
-     `preserve()` for an existing value. It does not document the
-     Dockerfile path, the watch paths, the pre-deploy timeout, the
-     draining time, the overlap time, the restart policy, or a TCP proxy.
-     The type declarations of the npm package `railway` 3.19.0 have these
-     fields (`build.dockerfilePath`, `build.watchPatterns`,
-     `deploy.preDeployTimeoutSeconds`, `deploy.drainingSeconds`,
-     `deploy.overlapSeconds`, `deploy.restartPolicyType`, `tcpProxies`
-     keyed by the container port), but no documentation says how an apply
-     treats them. In particular, nothing says that a declared or omitted
-     TCP proxy keeps the existing public port 57438, which the signed
-     vehicle config holds.
-   - **Effects of an apply (blocking).** Not documented: whether an apply
-     that changes build or deploy settings starts a deployment. The page
-     says only that a change of `tracing.enabled` "redeploys the service"
-     [R12]. A deployment before the merge would build `main` with the new
-     settings; an unknown proxy change could disconnect the vehicle.
-   - **Tooling (cost).** The CLI applies the file from a developer
-     machine or from CI with a project token (`RAILWAY_TOKEN`); "Railway
-     doesn't read `.railway/` during deploys" [R11]. The file needs the npm
-     package `railway` (3.19.0, MIT, Node 22 or newer, dependencies
-     `graphql` and `@graphql-typed-document-node/core`; releases 3.17.0, 3.18.0, and 3.19.0 between 13 and 26 November 2026).
-     That adds Node, a `package.json`, a lockfile, and their freshness and
-     vulnerability checks to a phase that has no Node tooling (`STACK.md`
-     §0), and a CI apply needs a repository secret, which is an owner
-     setting.
-   Reassessment: in December 2026, or earlier when the IaC reference
-   documents a per-service scope for an existing service, the Dockerfile
-   path, watch paths, pre-deploy timeout, draining and overlap time,
-   restart policy, and TCP proxy (with the rule that keeps an existing
-   public port), and whether an apply starts a deployment. Owner decision
-   of 27 November 2026 (decisions review): the December reassessment is a
-   separate task with a `railway config plan` dry run. Adopt IaC only if
-   the plan does not touch the TCP proxy port and starts no deployment.
-   A plan makes no change, so it cannot show by itself whether an apply
-   starts a deployment; that answer needs the documentation or another
-   proof without a deployment.
+1. **Flush interval: default 900 s.** A used-up CU-hour quota suspends Neon
+   until the next month. Owner decision of 27 November 2026: it stays 900 s.
+   Reassess after the one-week follow-up with the measured awake hours.
+   Lower the interval only if the measured awake hours keep a month below
+   60 CU-hours at the always-on rate.
+2. **Second database role `telemetry_migrator`** (ADR 0002), so
+   `neondb_owner` stays out of Railway.
+3. **Fixed compute of 0.25 CU** for production (endpoint
+   `ep-young-dawn-bgyaj83l`) and `test`, confirmed by the owner on 27
+   November 2026.
+4. **`delivery_policy` stays unset.** Tesla documents neither the default
+   nor the billing effect. Confirmed by the owner on 27 November 2026.
+   Reassess with the `is_resend` data of the first week.
+5. **`jiff` and `jiff-sqlx` line 1.**
+6. **Accepted gate risk.** A live peer that stalls inside the TLS handshake
+   holds a connection, and a flood that fills the 1024 bound blocks the
+   vehicle while it lasts plus the dead-peer bound (gate rule 3), as with
+   upstream. No `TCP_USER_TIMEOUT` and no handshake deadline; the owner
+   accepted this risk on 27 November 2026. Reassess at the first
+   `gate_full` event or on evidence of stalling peers.
+7. **Railway settings by hand; Infrastructure as Code waits.** Railway
+   deprecated config as code [R9]. The owner decided on 27 November 2026: no
+   `railway.json`. The blocking facts for Infrastructure as Code
+   (`.railway/railway.ts`) [R11][R12]: the reference does not document the
+   Dockerfile path, watch paths, pre-deploy timeout, draining and overlap
+   time, restart policy, or TCP proxy, nor whether an apply keeps port
+   57438 or starts a deployment. The December 2026 reassessment is a
+   separate task with a `railway config plan` dry run (owner decision). A
+   plan cannot show whether an apply starts a deployment.
 
 ## To verify at first deployment
 
-The deployment PR must produce evidence for each point. If a point fails,
-the PR changes the design and updates this ADR. Update (issue #14):
-`docs/ingest-release.md` gives the command and the expected result of
-each point. Before the merge, the CI job `image-check` checks in the built
-image, without Railway, a vehicle, or a database: `ingest` is PID 1
-through the `CMD` and the entrypoint, and the binary is a release build
-(it ignores `INGEST_TEST_*`, "Test overrides"); the SUB socket settles on
-the libzmq PUB socket of the real binary; each metrics read of the real
-binary succeeds for about two minutes (no `shortfall_read_failed`, no
-`metrics_unreadable`, no `subscriber_stalled`); after each of three
-child exits the reader ends its socket, connects to the new child,
-settles, and the gate opens again; and Linux checks 2 (without a stored
-`stopped` event), 3, and 6 below. Each point still needs its evidence on
-Railway. `image-check` runs under Docker without an init, where `ingest`
-is PID 1; on Railway `ingest` is PID 2 under an init (section "Process
-tree on Railway").
+`docs/ingest-release.md` gives the command and the expected result of each
+point. `image-check` covers the container part before the merge. Status
+after the releases of PR #23 and PR #30 (27 November 2026):
 
-Status after the release of 27 November 2026 (release record on PR #23;
-lead observation), updated with the release of PR #30 on the same day
-(merge `8080e2c`, deployment `dcda346d-1934-4054-a25b-5a32cc286c6d`; lead
-observation). "Pending" names what the point still needs.
+| Point | Status |
+| ----- | ------ |
+| Railway runs `CMD` through the entrypoint | Closed: `ingest` is PID 2. |
+| Healthcheck on `PORT`; pre-deploy `ingest migrate` | Passed; a stop on failure is not observed. |
+| Settle time of 250 ms | Pending: no `zmq_shortfall` after the first vehicle connection of a start. |
+| SUB socket defences: `V`, `alerts`, `errors` go to `zmq` | Closed. |
+| SUB socket defences: child exits, stall rule, high water mark | Pending: each child exit ends the socket; no false `subscriber_stalled` in the first week. |
+| Client address through the TCP proxy | Closed: shared range 100.64.0.0/10; no per-source limit. |
+| Gate rule 1 | Pending: first-week maximum of `first_byte_ms`. |
+| Quiet connection of 30 minutes | Pending. |
+| Dead-peer bound | Pending: about 150 s idle, about 1,045 s with unacknowledged data. |
+| `dispatch_total` on the real binary | Pending: one read after the first records. |
+| No `test_overrides` line | Closed. |
+| `unknown_fields` false positives, Neon compute size and use | Pending (one week). |
 
-| Point | Status | Evidence or what it needs |
-| ----- | ------ | ------------------------- |
-| Railway runs the image `CMD` through the entrypoint | Closed, with a correction | Railway runs `CMD` under its init: PID 1 `/run/podman-init -- /entrypoint.sh` (UID 10001), PID 2 `/usr/local/bin/ingest run` (UID 10001), `fleet-telemetry` a child of PID 2. `ingest` is not PID 1, and the init keeps every service variable where UID 10001 can read it (section "Process tree on Railway"). Since the release of PR #30, PID 1 has UID 0, and UID 10001 cannot read its environment. |
-| Healthcheck on `PORT` without an HTTP domain | Closed (first half) | The healthcheck on `/health` passed; deployment `SUCCESS` about 2 minutes after the merge. The old deployment kept on a failed healthcheck: documented, not observed. |
-| Pre-deploy command runs `ingest migrate` with the service variables | Closed (first half) | `migrated` with `applied` 1 and `embedded` 1 in the pre-deploy step. A failure that stops the deployment: documented, not observed. |
-| Settle time of 250 ms | Pending | Needs the first vehicle connection of a start without a `zmq_shortfall` event. |
-| SUB socket defences: `V`, `alerts`, `errors` go to `zmq` | Closed | The configuration in the container sends `V`, `alerts`, `errors`, and `connectivity` each to `["zmq"]`. |
-| SUB socket defences: the other three points | Pending | Child exits on Railway (vehicle awake), and one week for the stall rule and the high water mark. |
-| Client address through the TCP proxy | Closed | `peer_class` `shared` on the first gate connections: the container sees an address of the shared range (100.64.0.0/10), not the client address. A per-source limit is not possible. |
-| Gate rule 1 | Pending (one week) | `first_byte_ms` 0 to 5 on the first gate connections; the maximum over the first week is still to record. |
-| Quiet connection of 30 minutes | Pending | Needs AC charging or another awake, quiet period. |
-| Dead-peer bound | Pending | Kernel `6.12.12+bpo-cloud-amd64`, `tcp_retries2` 15 (as assumed). The idle and unacknowledged-data cases and the proxy behaviour are still to test. |
-| Open-file limit and memory at the bound | Partly closed | Limit 1048576 soft and hard. Memory at 1024 connections: optional, not measured. |
-| `dispatch_total` on the real binary | Pending | The child has dispatched records; the metrics read of the runbook is still to record. |
-| No `test_overrides` line | Closed | No `test_overrides`, `task_stop_timeout`, or `gate_connections_open` line in the log of the new deployment. |
-| Linux check 1 | Closed | Green `ci` and `image-check` of the merged head (`3ec0d14`, run 45941109755). |
-| Linux check 2 (shutdown on a redeploy) | Closed (release of PR #30) | The init forwards SIGTERM to `ingest`. The previous deployment logged `shutdown_started`, `gate_stopped`, `child_killed`, a final `flushed`, and `shutdown_complete` within 2 s, with no `task_stop_timeout`, `gate_connections_open`, or `flush_incomplete`. |
-| Linux check 3 (no zombie after child exits) | Partly closed | No zombie at both releases; the three child exits on Railway are still to do. |
-| Linux check 4 (forced end) | Pending | Now possible on purpose: SIGKILL of PID 2 from a `railway ssh` session; it loses the queue since the last flush. Not tested: whether the session (UID 0, which cannot read the environment of UID 10001) may signal a process of UID 10001. |
-| Linux check 5 (socket options) | Partly closed | The TLS probe connection had `socket_options` `set`, `keepalive` `15/15/9`, `nodelay` `true`; the vehicle connections and the idle dead-peer case are still to record. |
-| Linux check 6 (child environment and descriptors) | Closed by CI only | `railway ssh` runs as UID 0 and gets "Permission denied" on `/proc/<pid>/environ` of UID 10001. The evidence is `image-check` under Docker (empty child environment, no listener of `ingest` in the child). Until the release of PR #30, the empty environment of the child did not keep the service variables from it on Railway: the child could read `/proc/1/environ` of the init. Since that release, the init runs as UID 0, and UID 10001 cannot read that file (section "Process tree on Railway"). |
-| `unknown_fields` false positives, Neon compute | Pending (one week) | |
-| Init of Railway runs as root (issue #29) | Closed (release of PR #30) | PID 1 `/run/podman-init -- /entrypoint.sh` has `Uid: 0 0 0 0`. `ingest` (PID 2) and `fleet-telemetry` (PID 15): `Uid` and `Gid` 10001, empty `Groups`, all capability sets 0, `NoNewPrivs: 1`. TLS directory 700 and files 600, owner 10001:10001. From UID 10001, the read of `/proc/self/environ` exits with 0 and the read of `/proc/1/environ` with 1 (exit codes only). The pre-deploy command ran as root (`migrated`). |
+Linux checks (`STACK.md` §13):
 
-- Railway runs the image `CMD` (through `ingest/entrypoint.sh` and `exec`)
-  so that `ingest` is PID 1 in the container. Answered at the release: on
-  Railway `ingest` is PID 2 under an init (status table above).
-- Railway runs the healthcheck on `PORT` for a service that has only a TCP
-  proxy and no HTTP domain, and keeps the old deployment when the
-  healthcheck fails.
-- The pre-deploy command runs `ingest migrate` in place of the start
-  command, with the service variables, and a failure stops the deployment.
-- A settle time of 250 ms after the SUB connection is enough for the PUB
-  side to apply the subscription. Update (issue #13): the ingest PR tested
-  the settle time only against the fake child of the tests, which uses the
-  PUB socket of the `zeromq` crate, not libzmq. The real binary needs
-  libzmq through cgo and was not built. The deployment PR checks it: no
-  `zmq_shortfall` event after the first vehicle connection of a start.
-  Update (issue #14): the CI job `image-check` checks that the SUB socket
-  connects to the libzmq PUB socket of the real binary and settles. It
-  cannot show that the subscription is applied, because no record flows
-  without a vehicle. The release checks it (`docs/ingest-release.md`,
-  "Settle time of 250 ms").
-- The SUB socket defences against the real binary (review round 3 of PR
-  #22, note N10):
-  - An exit of `fleet-telemetry` gives the end of the stream, and so the
-    `Disconnected` event, through libzmq: the log shows
-    `subscriber_disconnected` or `subscriber_rebuilt` with the reason
-    `child_stopped` at each child exit. Defence 1 is tested only with the
-    PUB socket of the `zeromq` crate and a fake peer.
-  - The false-positive rate of the stall rule in the first week: no
-    `gate_closed` event with the reason `subscriber_stalled`, and no
-    `subscriber_rebuilt` with the reason `stalled`. Record each one with
-    the counts of the shortfall check around it.
-  - `V`, `alerts`, and `errors` all go to the `zmq` dispatcher in the
-    configuration of `fleet-telemetry`. A counted record type that went to
-    another dispatcher would give false stalls in periods with only that
-    type.
-  - On a live libzmq subscription, a loss at the high water mark is
-    followed by the arrival of the older queued records, so a loss is
-    never the last traffic of a live socket (the premise of the stall
-    rule). A `zmq_shortfall` event without a following stall shows it.
-- Whether the container sees the client address of a connection through
-  the Railway TCP proxy. Record the answer. A per-source limit is possible
-  only if it does; that is a later decision.
-- Gate rule 1 against the real vehicle: the gate records the time from
-  accept to the first server byte for each connection. For the connections
-  that stay open longer than 60 s (the vehicle), the maximum over the first
-  week is far below 10 s, for example below 2 s. Record the values.
-- An awake, parked vehicle that sends little, for example during AC
-  charging, keeps one connection open for at least 30 minutes, with no
-  reconnect loop: `connectivity_event` shows one `CONNECTED` and no
-  `DISCONNECTED` in that time.
-- Dead-peer bound through the Railway TCP proxy. A test client connects
-  through the proxy, sends a ClientHello, receives the server flight, and
-  then disappears without FIN or RST (for example, its network is cut).
-  - Idle case: the client has acked everything before it disappears. The
-    gate must close the connection within about 150 s plus a margin.
-  - Unacknowledged-data case: the server side sends data after the client
-    has disappeared (for example, the client disappears in the middle of
-    the server flight). The gate must close the connection within about
-    1,045 s plus a margin.
-  - Record the container's `net.ipv4.tcp_retries2` value and kernel
-    version, and whether the proxy passes the client's TCP connection
-    through or terminates it. If a case does not close within its bound,
-    or the proxy terminates TCP and keeps the container side open, record
-    the result and decide the measure in the deployment PR.
-- The container's open-file limit (`ulimit -n`) allows the 1024-connection
-  bound, and the container memory at the bound. The ingest PR tests that
-  the gate refuses connection 1025 and records `gate_full`.
-- The `dispatch_total` metric name and labels on the real binary, and that
-  the shortfall check reports zero in normal use. Update (issue #13): the
-  name and the label are confirmed in the upstream source ("Decisions of
-  the pipeline change"), not on the real binary. Update (issue #14): the
-  CI job `image-check` checks that the metrics of the real binary answer
-  on 127.0.0.1:9090. The series appears only after the first dispatch, so
-  the release reads it after the first records (`docs/ingest-release.md`,
-  "`dispatch_total` on the real binary"). An absent series counts as 0, so
-  this read is the only evidence that the name matches.
-- Linux runtime of `ingest` (PR #18 tested on macOS only; `STACK.md` §13).
-  Before the first deployment that starts `ingest`:
-  1. `cargo nextest run --workspace --locked` passes one time on
-     linux/amd64. Update (issue #20): the CI workflow runs this suite on
-     linux/amd64 for each PR, without the tests that need a database. The
-     deployment PR links the green run of its head (`STACK.md` §13).
-  2. `ingest` is PID 1 (on Railway: PID 2 under the init, which forwards
-     SIGTERM to it). On a redeploy, the log of the old deployment shows
-     `shutdown_started` with reason `SIGTERM`, `gate_stopped`,
-     `child_killed` with `exit_signal` 9, the `stopped` event, and
-     `shutdown_complete` within `drainingSeconds`, and no
-     `task_stop_timeout` and no `gate_connections_open` (PR #24).
-  3. After at least three child exits and restarts, the process table of
-     the container has no zombie (`ps` state `Z`).
-  4. After a forced end of `ingest` (a watchdog exit or SIGKILL of `ingest`),
-     the container ends, Railway restarts it, a new `started` event
-     follows, and no `fleet-telemetry` process survives without `ingest`.
-     Update (issue #14): a process inside the container cannot end PID 1
-     on purpose (the kernel ignores a signal to PID 1 from its own PID
-     namespace when PID 1 has no handler for it [K]), and Railway has no
-     command for a SIGKILL. The check waits for the first natural watchdog
-     exit or crash. Update (release of 27 November 2026): on Railway
-     `ingest` is PID 2, so a `railway ssh` session can send it SIGKILL
-     (if the session may signal it; not tested); the init then exits and the container ends [P2] (section
-     "Process tree on Railway").
-  5. Every `gate_connection_closed` event of a normal connection has
-     `socket_options` `set`, `keepalive` `15/15/9` (read back from the
-     socket), and `nodelay` `true` (none has `failed`), and the idle
-     dead-peer case above closes in about 150 s. If the Railway proxy
-     terminates TCP, `ss -tio` in the container shows the keep-alive
-     timers, or check 1 covers them. The image has no `ss`; the timer
-     column of `/proc/net/tcp` shows the same timers.
-  6. `fleet-telemetry` starts with an empty environment, and
-     `/proc/<child pid>/fd` has no listener of `ingest`.
-- The false-positive rate of `unknown_fields` on real vehicle payloads.
-  For each `raw.unprocessed_record` row with reason `unknown_fields` in the
-  first week, decode the stored payload and confirm that it holds a field
-  that the vendored schema does not know. Record the count and the result.
-  A row without such a field is a false positive and a defect of the
-  decode.
-- After the first week, the effective compute size in the Neon console or
-  API is still 0.25 CU for production and `test`, and the consumption
-  matches the budget of section "Why 15 minutes". If Neon changed the size,
-  repeat the arithmetic before a longer flush or a bigger compute is
-  accepted.
+1. `cargo nextest run --workspace --locked` on linux/amd64. Closed by CI.
+2. On a redeploy, the old deployment logs `shutdown_started` (`SIGTERM`),
+   `gate_stopped`, `child_killed` (`exit_signal` 9), the `stopped` event,
+   and `shutdown_complete` within `drainingSeconds`, without
+   `task_stop_timeout` or `gate_connections_open`. Closed (PR #30).
+3. No zombie after three child exits. Partly closed.
+4. A forced end of `ingest` ends the container, Railway restarts it, and a
+   new `started` event follows. Pending.
+5. Each `gate_connection_closed` of a normal connection has `socket_options`
+   `set`, `keepalive` `15/15/9`, and `nodelay` `true`. Partly closed.
+6. `fleet-telemetry` starts with an empty environment and no listener of
+   `ingest`. Closed by `image-check` only.
 
 ## Not verified
 
-- Whether the vehicle resends a message that it sent but that was not
-  acked, without `delivery_policy: latest`. Tesla documents no default
-  value.
-- Whether the vehicle resends a rate-limited message before it reconnects.
-- Whether an idle connection keeps a Neon compute active. No connection
-  stays open between calls, so the answer does not change the design.
+Whether the vehicle resends a sent message without an ack, or a
+rate-limited message.
 
 ## Sources
 
-- Upstream source: <https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c> (tag `v0.10.1`), README section "Reliable Acks".
-- [T] Tesla Fleet Telemetry, "System Behavior: Failure handling" and "Changelog 1.0.0": <https://developer.tesla.com/docs/fleet-api/fleet-telemetry>
-- [Z1] libzmq `zmq_socket`, ZMQ_PUB: <https://libzmq.readthedocs.io/en/latest/zmq_socket.html>
-- [Z2] libzmq `zmq_setsockopt`, ZMQ_SNDHWM: <https://libzmq.readthedocs.io/en/latest/zmq_setsockopt.html>
-- [Z3] ZeroMQ Guide, chapter 1: "If a publisher has no connected subscribers, then it will simply drop all messages", and the "slow joiner" explanation: <https://zguide.zeromq.org/docs/chapter1/>
+- Upstream: <https://github.com/teslamotors/fleet-telemetry/blob/6689adb831691b1de211b4aa8220babf7309f31c> (tag `v0.10.1`).
+- [T] Tesla Fleet Telemetry: <https://developer.tesla.com/docs/fleet-api/fleet-telemetry>
+- [Z1] libzmq `zmq_socket`: <https://libzmq.readthedocs.io/en/latest/zmq_socket.html>
+- [Z2] libzmq `zmq_setsockopt`: <https://libzmq.readthedocs.io/en/latest/zmq_setsockopt.html>
+- [Z3] ZeroMQ Guide, chapter 1: <https://zguide.zeromq.org/docs/chapter1/>
 - [R1] Railway, Deployment teardown: <https://docs.railway.com/deployments/deployment-teardown>
-- [R2] Railway, Variables reference: <https://docs.railway.com/variables/reference>
 - [R3] Railway, Healthchecks: <https://docs.railway.com/deployments/healthchecks>
 - [R4] Railway, Pre-deploy command: <https://docs.railway.com/deployments/pre-deploy-command>
-- [R5] Railway, Restart policy: <https://docs.railway.com/deployments/restart-policy>
-- [R6] Railway, Private networking: <https://docs.railway.com/networking/private-networking>
-- [R7] Railway, Plans and pricing (volume storage 0.15 USD for each GB each month): <https://docs.railway.com/pricing/plans>
-- [R8] Railway, Volumes (not mounted during pre-deploy): <https://docs.railway.com/volumes>
-- [R9] Railway, Config as code (deprecated; existing files work until 2026-12-01; new services cannot opt in), read 27 November 2026: <https://docs.railway.com/guides/config-as-code>, and the schema <https://railway.com/railway.schema.json> (`preDeployCommand`: a string or an array with at most one item)
-- [R11] Railway, Infrastructure as Code, read 27 November 2026: <https://docs.railway.com/infrastructure-as-code>
-- [R12] Railway, Infrastructure as Code reference, read 27 November 2026: <https://docs.railway.com/infrastructure-as-code/reference>
-- [R10] Railway, Dockerfiles (`RAILWAY_DOCKERFILE_PATH`; build variables only through `ARG`), build configuration (watch paths operate from `/`), start command, and deployment actions (a rollback restores the image and the custom variables), read 27 November 2026: <https://docs.railway.com/builds/dockerfiles>, <https://docs.railway.com/builds/build-configuration>, <https://docs.railway.com/deployments/start-command>, <https://docs.railway.com/deployments/deployment-actions>
-- [L] Linux kernel at tag `v6.12`: `net/ipv4/tcp_timer.c` (no keep-alive probe while data is unacknowledged) and `Documentation/networking/ip-sysctl.rst` (`tcp_retries2`, default 15, about 924.6 s as a lower bound): <https://github.com/torvalds/linux/tree/v6.12>. The container's kernel version is a deployment check.
-- [G] Go 1.19 release notes: programs that import `os` raise the `RLIMIT_NOFILE` soft limit to the hard limit: <https://go.dev/doc/go1.19>. Go TLS, HTTP server, and TCP keep-alive source at tag `go1.27.4` (upstream builds with Go 1.27): <https://github.com/golang/go/tree/go1.27.4/src>
+- [R8] Railway, Volumes: <https://docs.railway.com/volumes>
+- [R9] Railway, Config as code: <https://docs.railway.com/guides/config-as-code>
+- [R11] Railway, Infrastructure as Code: <https://docs.railway.com/infrastructure-as-code>
+- [R12] Railway, Infrastructure as Code reference: <https://docs.railway.com/infrastructure-as-code/reference>
+- [L] Linux `v6.12`, `tcp_timer.c` and `ip-sysctl.rst`: <https://github.com/torvalds/linux/tree/v6.12>
 - [K] Linux `pid_namespaces(7)`: <https://man7.org/linux/man-pages/man7/pid_namespaces.7.html>
-- [P1] Podman, option `--init`: "Run an init inside the container that forwards signals and reaps processes. The container-init binary is mounted at `/run/podman-init`." <https://github.com/containers/podman/blob/main/docs/source/markdown/options/init.md>, read 27 November 2026
-- [P2] catatonit, `catatonit.c` (main branch, read 27 November 2026): the signal loop forwards every signal but `SIGCHLD`, `SIGTSTP`, `SIGTTOU`, and `SIGTTIN` to the started process; `reap_zombies` reaps all children and ends the loop with the exit code of the started process. <https://github.com/openSUSE/catatonit/blob/main/catatonit.c>
+- [P1] Podman `--init`: <https://github.com/containers/podman/blob/main/docs/source/markdown/options/init.md>
+- [P2] catatonit: <https://github.com/openSUSE/catatonit/blob/main/catatonit.c>
 - [N1] Neon plans: <https://neon.com/docs/introduction/plans>
-- [N2] Neon scale to zero: <https://neon.com/docs/introduction/scale-to-zero>
-- [N3] Neon computes, "Compute is not suspending": <https://neon.com/docs/manage/computes>
-- Crate data: <https://crates.io/api/v1/crates/> for each crate, read 26 November 2026. `zeromq` 0.7.0 source read from the published crate.
