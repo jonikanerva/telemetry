@@ -102,6 +102,10 @@ export type LogoutData = {
 
 export type LogoutErrors = {
     /**
+     * The request is not valid, or it carries more than one session cookie.
+     */
+    400: Problem;
+    /**
      * The request did not come from the application origin.
      */
     403: Problem;
@@ -138,6 +142,10 @@ export type GetSessionData = {
 };
 
 export type GetSessionErrors = {
+    /**
+     * The request is not valid, or it carries more than one session cookie.
+     */
+    400: Problem;
     /**
      * The request has no valid session.
      */

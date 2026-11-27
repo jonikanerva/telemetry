@@ -1200,6 +1200,31 @@ async fn session_responses_match_the_contract() {
             app.call(request).await
         }),
     ];
+    // The guard answers of each session operation: two session cookies
+    // (400) and, for DELETE, another origin (403).
+    let two = format!("{cookie}; __Host-telemetry_session={}", "ef".repeat(32));
+    let two_cookie_get = app.session(Some(&two)).await;
+    let two_cookie_delete = app.logout(Some(&two)).await;
+    let two_cookie_post = {
+        let mut request = login_request(&json!({ "password": PASSWORD }).to_string());
+        request.headers_mut().insert(COOKIE, two.parse().unwrap());
+        app.call(request).await
+    };
+    for reply in [&two_cookie_get, &two_cookie_delete, &two_cookie_post] {
+        reply.problem(ProblemCode::InvalidRequest);
+    }
+    problems.push(("get", two_cookie_get));
+    problems.push(("delete", two_cookie_delete));
+    problems.push(("post", two_cookie_post));
+    problems.push(("delete", {
+        let request = HttpRequest::builder()
+            .method("DELETE")
+            .uri("/api/v1/session")
+            .header("origin", "https://evil.example")
+            .body(Body::empty())
+            .unwrap();
+        app.call(request).await
+    }));
     for _ in 0..5 {
         problems.push(("post", app.login_with("wrong password", None).await));
     }
@@ -1213,15 +1238,21 @@ async fn session_responses_match_the_contract() {
             "{method} {status}"
         );
         assert_eq!(reply.headers[CONTENT_TYPE], PROBLEM_CONTENT_TYPE);
-        seen.insert(status);
+        seen.insert(format!("{method} {status}"));
     }
-    assert!(
-        seen.is_superset(
-            &["400", "401", "403", "415", "429"]
-                .map(str::to_owned)
-                .into()
-        )
-    );
+    for expected in [
+        "get 400",
+        "get 401",
+        "post 400",
+        "post 401",
+        "post 403",
+        "post 415",
+        "post 429",
+        "delete 400",
+        "delete 403",
+    ] {
+        assert!(seen.contains(expected), "{expected}: {seen:?}");
+    }
 
     let logout = app.logout(Some(&cookie)).await;
     assert_eq!(logout.status, StatusCode::NO_CONTENT);

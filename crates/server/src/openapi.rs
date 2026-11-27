@@ -56,9 +56,13 @@ pub(crate) fn documented_router_with(slice: OpenApiRouter<AppState>) -> OpenApiR
     // which has none; an empty licence object is not useful.
     document.info.license = None;
     document.info.contact = None;
-    OpenApiRouter::with_openapi(document)
+    let mut router = OpenApiRouter::with_openapi(document)
         .routes(routes!(health::health))
-        .nest(API_BASE, auth::router().merge(slice))
+        .nest(API_BASE, auth::router().merge(slice));
+    // The guard answers before any handler; its answers go into the
+    // document for every API operation (`auth::responses`).
+    auth::responses::declare_guard_responses(router.get_openapi_mut());
+    router
 }
 
 /// The `OpenAPI` document as pretty JSON with a trailing newline.

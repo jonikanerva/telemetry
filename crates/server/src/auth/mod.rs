@@ -42,6 +42,7 @@ pub mod clock;
 pub mod cookie;
 pub mod origin;
 pub mod password;
+pub mod responses;
 pub mod store;
 #[cfg(feature = "test-server")]
 pub mod test_routes;
