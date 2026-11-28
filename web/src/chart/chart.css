@@ -41,6 +41,11 @@
   height: 160px;
 }
 
+/* ScatterChart.tsx: the SVG height plus no margin. */
+.chart-frame-scatter {
+  height: 260px;
+}
+
 /* The keyboard cursor is the hidden range input; its focus shows on the frame. */
 .chart-frame:focus-within {
   outline: var(--focus-ring);

@@ -20,7 +20,7 @@ use utoipa_axum::routes;
 use crate::app::AppState;
 use crate::health::{self, Health, HealthStatus};
 use crate::problem::{Problem, ProblemCode};
-use crate::{auth, battery};
+use crate::{auth, battery, consumption};
 
 /// The version of the API contract. It changes only with an incompatible
 /// change of the contract, not with the crate version.
@@ -44,7 +44,7 @@ struct ApiDoc;
 /// The routes of the contract: `/health` and the API under [`API_BASE`].
 #[must_use]
 pub fn documented_router() -> OpenApiRouter<AppState> {
-    documented_router_with(battery::router())
+    documented_router_with(battery::router().merge(consumption::router()))
 }
 
 /// The routes of the contract with `slice` in the place of the battery

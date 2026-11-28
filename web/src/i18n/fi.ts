@@ -39,6 +39,7 @@ export const fi = {
   // Navigation of the shell.
   navLabel: 'Näkymät',
   navBattery: 'Akku',
+  navConsumption: 'Kulutus',
 
   // The battery view (battery/).
   batteryTitle: 'Akku',
@@ -134,4 +135,35 @@ export const fi = {
     rejected_request: 'Palvelin hylkäsi pyynnön. Lataa sivu uudelleen.',
   },
   staleUsableTitle: 'Päivitys epäonnistui',
+
+  // The consumption view (consumption/).
+  consumptionTitle: 'Kulutus',
+  consumptionLoading: 'Haetaan ajoja…',
+  noDrivesTitle: 'Ei ajoja valitulla aikavälillä.',
+  unknownValue: 'ei tietoa',
+  notYet: '–',
+  driveOngoing: 'käynnissä',
+  drivesTitle: 'Ajot',
+  driveColumns: ['Alkoi', 'Kesto', 'Matka (km)', 'Energia (kWh)', 'Wh/km', 'Ulkolämpö (°C)', 'Keskinopeus (km/h)'],
+  totalsLine: (drives: number, km: string, kwh: string, whPerKm: string) =>
+    `${String(drives)} ${drives === 1 ? 'ajo' : 'ajoa'}: ${km} km, ${kwh} kWh, ${whPerKm} Wh/km.`,
+  totalsUnknown: (count: number) =>
+    count === 1
+      ? '1 ajolla ei ole kulutusarvoa (matka tai energia puuttuu, tai matka on alle 1 km), eikä se ole mukana summissa.'
+      : `${String(count)} ajolla ei ole kulutusarvoa (matka tai energia puuttuu, tai matka on alle 1 km), eivätkä ne ole mukana summissa.`,
+  totalsDataLoss: (count: number) =>
+    count === 1
+      ? '1 ajo on merkitty: datan menetys ajon aikana, joten sen arvot voivat olla väärin.'
+      : `${String(count)} ajoa on merkitty: datan menetys ajon aikana, joten niiden arvot voivat olla väärin.`,
+  driveDataLoss: 'datan menetys ajon aikana',
+  noStatusYet: 'Autosta ei ole vielä tallentunut akun tietoja.',
+  totalsOngoing: 'Käynnissä oleva ajo ei ole mukana summissa.',
+  consumptionTruncated: 'Aikavälillä on enemmän dataa kuin yksi haku lukee: vanhimmat ajot puuttuvat.',
+  scatterTempTitle: 'Kulutus ja ulkolämpötila',
+  scatterTempAxis: 'Ulkolämpötila, °C',
+  scatterSpeedTitle: 'Kulutus ja keskinopeus',
+  scatterSpeedAxis: 'Keskinopeus, km/h',
+  scatterCursorHint: 'Valitse ajo osoittimella tai nuolinäppäimillä.',
+  scatterEmpty: 'Ei ajoja, joilla on tämä tieto.',
+  scatterCount: (points: number, drives: number) => `${String(points)}/${String(drives)} ajoa kaaviossa.`,
 } as const;

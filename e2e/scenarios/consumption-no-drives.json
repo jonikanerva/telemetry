@@ -1,0 +1,14 @@
+{
+  "now": "2026-11-27T12:00:00Z",
+  "vehicles": [1],
+  "signals": [
+    {
+      "vehicle_id": 1,
+      "field": 10,
+      "created_at": "2026-11-27T08:00:00Z",
+      "received_at": "2026-11-27T08:00:00Z",
+      "value_type": 9,
+      "int_value": 2
+    }
+  ]
+}

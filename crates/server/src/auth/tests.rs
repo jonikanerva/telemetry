@@ -196,7 +196,8 @@ impl App {
         );
         dir.write("assets/app.js", b"x");
         let static_files = StaticFiles::load(dir.path()).unwrap();
-        let app_state = AppState::new(Version::unknown(), state, crate::battery::unit_test_state());
+        let (battery, consumption) = crate::battery::unit_test_state();
+        let app_state = AppState::new(Version::unknown(), state, battery, consumption);
         // The production assembly (`app::build_with_api` with the routes of
         // the contract), with a counting route at the mount point of the
         // battery API, where slice S3 mounts `battery::router()`.
@@ -210,7 +211,9 @@ impl App {
             })
             .post(|| async { "changed" }),
         );
-        let api = crate::openapi::documented_router_with(slice);
+        // The consumption API is mounted as in production; its source is
+        // never reached without a session.
+        let api = crate::openapi::documented_router_with(slice.merge(crate::consumption::router()));
         let router = build_with_api(app_state, &static_files, Router::new(), api);
         Self {
             _dir: dir,

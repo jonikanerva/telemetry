@@ -34,6 +34,14 @@ export function formatNumber(value: number, fractionDigits = 1): string {
   return numberFormat(fractionDigits).format(value);
 }
 
+/** A number in the Finnish format with exactly `fractionDigits` decimals, for a table column. */
+export function formatFixed(value: number, fractionDigits: number): string {
+  return new Intl.NumberFormat(LOCALE, {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(value);
+}
+
 /** A signed number: a plus sign for a positive value, U+2212 for a negative one. */
 export function formatSigned(value: number, fractionDigits = 1): string {
   const text = formatNumber(Math.abs(value), fractionDigits);

@@ -209,6 +209,47 @@ pub struct SeriesView {
     pub excluded: ExcludedCounts,
 }
 
+/// Connection, newest data, and freshness (ADR 0013, decisions 2 and 3).
+/// The consumption view uses the same status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Status {
+    /// The connection state.
+    pub connection: Connection,
+    /// The newest `created_at` of a battery row.
+    pub latest_data_at: Timestamp,
+    /// The newest `received_at` of the newest row of each battery field.
+    pub latest_received_at: Timestamp,
+    /// The freshness.
+    pub freshness: Freshness,
+}
+
+/// The status of the tiles of a window, or `None` when no row of a
+/// battery field exists before the window end.
+#[must_use]
+pub fn status(
+    window: &Window,
+    tiles: &PerField<TileSnapshot>,
+    connectivity: Option<ConnectivityRow>,
+) -> Option<Status> {
+    let latest_rows = || {
+        Field::ALL
+            .into_iter()
+            .filter_map(|field| tiles.get(field).latest_row)
+    };
+    let latest_row = latest_rows().max_by_key(|row| row.created_at)?;
+    let latest_received_at = latest_rows()
+        .map(|row| row.received_at)
+        .max()
+        .unwrap_or(latest_row.received_at);
+    let connection = connection(connectivity);
+    Some(Status {
+        connection,
+        latest_data_at: latest_row.created_at,
+        latest_received_at,
+        freshness: freshness(window.to(), latest_received_at, connection),
+    })
+}
+
 /// Derives the view of a snapshot.
 ///
 /// # Errors
@@ -223,22 +264,9 @@ pub fn derive_view(snapshot: &Snapshot) -> Result<View, ContractViolation> {
         VehicleCount::One(_) => {}
     }
     let gaps = derive_gaps(&snapshot.events.losses)?;
-    let Some(latest_row) = Field::ALL
-        .into_iter()
-        .filter_map(|field| snapshot.tiles.get(field).latest_row)
-        .max_by_key(|row| row.created_at)
-    else {
+    let Some(status) = status(&window, &snapshot.tiles, snapshot.connectivity) else {
         return Ok(View::NoDataYet { window });
     };
-    let latest_received_at = Field::ALL
-        .into_iter()
-        .filter_map(|field| snapshot.tiles.get(field).latest_row)
-        .map(|row| row.received_at)
-        .max()
-        .unwrap_or(latest_row.received_at);
-
-    let connection = connection(snapshot.connectivity);
-    let freshness = freshness(window.to(), latest_received_at, connection);
 
     let mut tiles = PerField::<Reading>::default_for_units();
     for field in Field::ALL {
@@ -258,10 +286,10 @@ pub fn derive_view(snapshot: &Snapshot) -> Result<View, ContractViolation> {
     };
     Ok(View::Available(Box::new(Available {
         window,
-        connection,
-        latest_data_at: latest_row.created_at,
-        latest_received_at,
-        freshness,
+        connection: status.connection,
+        latest_data_at: status.latest_data_at,
+        latest_received_at: status.latest_received_at,
+        freshness: status.freshness,
         tiles,
         capacity_change,
         series,

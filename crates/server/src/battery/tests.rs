@@ -39,6 +39,15 @@ impl BatterySource for Unreachable {
     }
 }
 
+impl crate::consumption::ConsumptionSource for Unreachable {
+    fn consumption<'a>(
+        &'a self,
+        _request: &'a SourceRequest,
+    ) -> crate::consumption::ConsumptionFuture<'a> {
+        Box::pin(async { Err(SourceError::Internal("unreachable")) })
+    }
+}
+
 /// Raw rows of a test, turned into a snapshot by the reference rules.
 #[derive(Debug, Clone, Default)]
 struct Rows {
@@ -203,7 +212,13 @@ async fn send_with(
         sessions: SessionLimits::OWNER,
         throttle: ThrottleLimits::DEFAULT,
     });
-    let state = AppState::new(Version::unknown(), auth, State::with_source(source.clone()));
+    let (_, consumption) = super::unit_test_state();
+    let state = AppState::new(
+        Version::unknown(),
+        auth,
+        State::with_source(source.clone()),
+        consumption,
+    );
     let router = app::router(state, &files);
 
     let mut cookie = None;

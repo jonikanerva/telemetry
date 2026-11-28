@@ -10,7 +10,7 @@
 //! - [`problem`]: the public error contract (RFC 9457 problem details).
 //! - [`health`]: `GET /health`.
 //! - [`openapi`]: the documented routes and the `OpenAPI` export.
-//! - [`auth`] and [`battery`]: the API routes under `/api/v1`. Later
+//! - [`auth`], [`battery`], and [`consumption`]: the API routes under `/api/v1`. Later
 //!   slices fill them.
 //! - [`wire`]: wire types that several API modules share.
 //! - [`logging`]: JSON logs with an allowlist of fields.
@@ -32,6 +32,7 @@ pub mod auth;
 pub mod battery;
 pub mod cli;
 pub mod config;
+pub mod consumption;
 pub mod health;
 pub mod logging;
 pub mod openapi;

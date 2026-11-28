@@ -1,6 +1,7 @@
 //! Domain rules of the web application.
 //!
-//! [`battery`] holds the rules of the battery view (ADR 0013). Every
+//! [`battery`] holds the rules of the battery view (ADR 0013), and
+//! [`consumption`] the drives of the consumption view. Every
 //! function is pure: the caller passes the time and the stored rows in.
 //! The crate reads no clock, no environment, and no file.
 //!
@@ -9,3 +10,4 @@
 //! change of the sources does not change the ingest image.
 
 pub mod battery;
+pub mod consumption;

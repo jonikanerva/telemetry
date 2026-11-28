@@ -163,15 +163,16 @@ impl PostgresSource {
     }
 
     /// The bounds of a read around `reader`: the read slot, the clock, and
-    /// the deadline [`READ_DEADLINE`] of the whole read.
-    async fn read_with<F, R>(
+    /// the deadline [`READ_DEADLINE`] of the whole read. The battery and
+    /// the consumption reads share the read slots.
+    pub(crate) async fn read_with<T, F, R>(
         &self,
         request: &SourceRequest,
         reader: F,
-    ) -> Result<Snapshot, SourceError>
+    ) -> Result<T, SourceError>
     where
         F: FnOnce(Window) -> R,
-        R: Future<Output = Result<Snapshot, SourceError>>,
+        R: Future<Output = Result<T, SourceError>>,
     {
         let _permit = tokio::time::timeout(PERMIT_WAIT, self.permits.acquire())
             .await
@@ -186,19 +187,29 @@ impl PostgresSource {
     }
 
     async fn read_window(&self, window: Window) -> Result<Snapshot, SourceError> {
-        let mut conn = tokio::time::timeout(
+        let mut conn = self.connect().await?;
+        let result = read_snapshot(&mut conn, window).await;
+        close(conn, result.is_ok()).await;
+        result
+    }
+
+    /// Opens the one connection of a read, within [`CONNECT_TIMEOUT`].
+    pub(crate) async fn connect(&self) -> Result<PgConnection, SourceError> {
+        tokio::time::timeout(
             CONNECT_TIMEOUT,
             PgConnection::connect_with(self.options.options()),
         )
         .await
         .map_err(|_| SourceError::Unavailable("connect_timeout"))?
-        .map_err(|error| classify(Phase::Connect, &error))?;
-        let result = read_snapshot(&mut conn, window).await;
-        if result.is_ok() {
-            let _closed = tokio::time::timeout(CLOSE_TIMEOUT, conn.close()).await;
-        }
-        // On an error the drop closes the socket; the server rolls back.
-        result
+        .map_err(|error| classify(Phase::Connect, &error))
+    }
+}
+
+/// Closes the connection of a read. After a failed read the drop closes the
+/// socket, and the server rolls the transaction back.
+pub(crate) async fn close(conn: PgConnection, read_ok: bool) {
+    if read_ok {
+        let _closed = tokio::time::timeout(CLOSE_TIMEOUT, conn.close()).await;
     }
 }
 
@@ -265,7 +276,7 @@ pub fn classify(phase: Phase, error: &sqlx::Error) -> SourceError {
     }
 }
 
-fn statement(error: &sqlx::Error) -> SourceError {
+pub(crate) fn statement(error: &sqlx::Error) -> SourceError {
     classify(Phase::Statement, error)
 }
 
@@ -319,6 +330,41 @@ pub async fn read_snapshot_with(
         .await
         .map_err(|error| statement(&error))?;
 
+    let (vehicles, connectivity) = read_header(&mut tx, window).await?;
+    after_first().await;
+    let VehicleCount::One(vehicle_id) = vehicles else {
+        commit(tx).await?;
+        return Ok(Snapshot {
+            window,
+            vehicles,
+            tiles: PerField::default(),
+            series: SeriesPair::default(),
+            events: EventSnapshot::default(),
+            connectivity: None,
+        });
+    };
+
+    let (tiles, mut series) = read_tiles(&mut tx, vehicle_id, window).await?;
+    read_buckets(&mut tx, vehicle_id, window, &mut series).await?;
+    let events = read_events(&mut tx, window).await?;
+    commit(tx).await?;
+    Ok(Snapshot {
+        window,
+        vehicles,
+        tiles,
+        series,
+        events,
+        connectivity,
+    })
+}
+
+/// The vehicles and the newest CONNECTED or DISCONNECTED row of the
+/// vehicle (`connection::newest_connectivity`), in one statement. The
+/// consumption read uses it too.
+pub(crate) async fn read_header(
+    conn: &mut PgConnection,
+    window: Window,
+) -> Result<(VehicleCount, Option<ConnectivityRow>), SourceError> {
     // The vehicles and the newest CONNECTED or DISCONNECTED row of the
     // vehicle (`connection::newest_connectivity`), in one statement.
     let header = sqlx::query!(
@@ -340,25 +386,13 @@ pub async fn read_snapshot_with(
         "#,
         window.to().to_sqlx() as _,
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await
     .map_err(|error| statement(&error))?;
-    after_first().await;
     let vehicles = match header.vehicles.as_slice() {
         [] => VehicleCount::None,
         [id] => VehicleCount::One(*id),
         _ => VehicleCount::Many,
-    };
-    let VehicleCount::One(vehicle_id) = vehicles else {
-        commit(tx).await?;
-        return Ok(Snapshot {
-            window,
-            vehicles,
-            tiles: PerField::default(),
-            series: SeriesPair::default(),
-            events: EventSnapshot::default(),
-            connectivity: None,
-        });
     };
     let connectivity = match (header.connection_id, header.created_at, header.status) {
         (Some(id), Some(created_at), Some(status)) => Some(ConnectivityRow {
@@ -368,22 +402,10 @@ pub async fn read_snapshot_with(
         }),
         _ => None,
     };
-
-    let (tiles, mut series) = read_tiles(&mut tx, vehicle_id, window).await?;
-    read_buckets(&mut tx, vehicle_id, window, &mut series).await?;
-    let events = read_events(&mut tx, window).await?;
-    commit(tx).await?;
-    Ok(Snapshot {
-        window,
-        vehicles,
-        tiles,
-        series,
-        events,
-        connectivity,
-    })
+    Ok((vehicles, connectivity))
 }
 
-async fn commit(tx: sqlx::Transaction<'_, sqlx::Postgres>) -> Result<(), SourceError> {
+pub(crate) async fn commit(tx: sqlx::Transaction<'_, sqlx::Postgres>) -> Result<(), SourceError> {
     tx.commit().await.map_err(|error| statement(&error))
 }
 
@@ -391,7 +413,7 @@ async fn commit(tx: sqlx::Transaction<'_, sqlx::Postgres>) -> Result<(), SourceE
     clippy::too_many_lines,
     reason = "one checked query with four lookups; the SQL text is most of the lines"
 )]
-async fn read_tiles(
+pub(crate) async fn read_tiles(
     conn: &mut PgConnection,
     vehicle_id: i16,
     window: Window,
@@ -586,7 +608,7 @@ async fn read_buckets(
 /// The loss rows and the restart markers of the window
 /// (`gaps::select_events`), in one statement. Each part reads one row more
 /// than its limit, so the snapshot can say that the limit cut it.
-async fn read_events(
+pub(crate) async fn read_events(
     conn: &mut PgConnection,
     window: Window,
 ) -> Result<EventSnapshot, SourceError> {
@@ -865,7 +887,7 @@ mod tests {
         let started = tokio::time::Instant::now();
         let result = tokio::time::timeout(
             Duration::from_secs(60),
-            source.read_with(&request(), |_| std::future::pending()),
+            source.read_with::<Snapshot, _, _>(&request(), |_| std::future::pending()),
         )
         .await
         .expect("the read deadline ends the read");
@@ -905,7 +927,7 @@ mod tests {
             let mut released = released.clone();
             tokio::spawn(async move {
                 source
-                    .read_with(&request(), |_| async move {
+                    .read_with::<Snapshot, _, _>(&request(), |_| async move {
                         running.fetch_add(1, Ordering::SeqCst);
                         released.wait_for(|done| *done).await.ok();
                         Err(SourceError::Internal("released"))
@@ -919,7 +941,7 @@ mod tests {
         assert_eq!(running.load(Ordering::SeqCst), 2);
         let started = tokio::time::Instant::now();
         let third = source
-            .read_with(&request(), |_| async {
+            .read_with::<Snapshot, _, _>(&request(), |_| async {
                 Err(SourceError::Internal("third read started"))
             })
             .await;

@@ -87,7 +87,7 @@ pub fn problem(error: SourceError) -> Problem {
 /// The scenario cookie of the test server. The release build never reads
 /// it.
 #[cfg(feature = "test-server")]
-fn scenario(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn scenario(headers: &HeaderMap) -> Option<String> {
     super::fake::scenario_name(
         headers
             .get_all(axum::http::header::COOKIE)
@@ -97,6 +97,6 @@ fn scenario(headers: &HeaderMap) -> Option<String> {
 }
 
 #[cfg(not(feature = "test-server"))]
-const fn scenario(_headers: &HeaderMap) -> Option<String> {
+pub(crate) const fn scenario(_headers: &HeaderMap) -> Option<String> {
     None
 }

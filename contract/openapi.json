@@ -89,6 +89,89 @@
         }
       }
     },
+    "/api/v1/consumption": {
+      "get": {
+        "tags": [
+          "consumption"
+        ],
+        "summary": "Returns the drives of one range.",
+        "description": "The session guard (`crate::auth`) runs first: without a valid session\nthe answer is 401 `unauthenticated`, and no read starts. A database\nthat cannot be reached gives 503 `database_unavailable`, never an empty\nlist.",
+        "operationId": "getConsumption",
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "description": "The time range that ends now. Required.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RangeKey"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The drives of the range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsumptionView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query is not valid, or the request carries more than one session cookie (`invalid_request`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no valid session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the limit.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Stored data breaks an assumption (`data_contract_violation`), or an unexpected failure (`internal_error`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database is not available (`database_unavailable`), the server is busy (`service_busy`), or the request took too long (`timeout`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/session": {
       "get": {
         "tags": [
@@ -742,12 +825,292 @@
         ],
         "description": "The newest stored connectivity event of the vehicle, as it is.\n\nThe stored data cannot tell a sleeping car from a car without network:\nboth are `disconnected`. An ingest process that ends writes no\nDISCONNECTED event, so a `connected` event can be old; `freshness` then\nshows `overdue`."
       },
+      "ConsumptionRange": {
+        "type": "object",
+        "description": "The range of a response.",
+        "required": [
+          "key",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "The start, inclusive (server clock)."
+          },
+          "key": {
+            "$ref": "#/components/schemas/RangeKey",
+            "description": "The requested range."
+          },
+          "to": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "The end, exclusive (server clock). Equal to `generated_at`."
+          }
+        }
+      },
+      "ConsumptionTotals": {
+        "type": "object",
+        "description": "The totals of the ended drives of the range. `distance`,\n`energy_used`, and `consumption` cover the same drives: those with a\nconsumption value.",
+        "required": [
+          "drives",
+          "distance",
+          "energy_used",
+          "consumption",
+          "drives_without_consumption",
+          "drives_with_data_loss"
+        ],
+        "properties": {
+          "consumption": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The energy over the distance of the same drives."
+          },
+          "distance": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The distance of the drives with a consumption, or `null` without one."
+          },
+          "drives": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The ended drives.",
+            "maximum": 4294967295,
+            "minimum": 0
+          },
+          "drives_with_data_loss": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The drives with `data_loss`. They are in the sums.",
+            "maximum": 4294967295,
+            "minimum": 0
+          },
+          "drives_without_consumption": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The ended drives without a consumption value.",
+            "maximum": 4294967295,
+            "minimum": 0
+          },
+          "energy_used": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The energy of the same drives."
+          }
+        }
+      },
+      "ConsumptionUnit": {
+        "type": "string",
+        "description": "Watt-hours for each kilometre.",
+        "enum": [
+          "Wh/km"
+        ]
+      },
+      "ConsumptionUnits": {
+        "type": "object",
+        "description": "The units of the quantities. Each has one value.",
+        "required": [
+          "distance",
+          "energy",
+          "consumption",
+          "temperature",
+          "speed"
+        ],
+        "properties": {
+          "consumption": {
+            "$ref": "#/components/schemas/ConsumptionUnit",
+            "description": "The consumption."
+          },
+          "distance": {
+            "$ref": "#/components/schemas/DistanceUnit",
+            "description": "The distance: miles, as the vehicle sends the Odometer."
+          },
+          "energy": {
+            "$ref": "#/components/schemas/EnergyUnit",
+            "description": "The energy: kWh, as the vehicle sends `EnergyRemaining`."
+          },
+          "speed": {
+            "$ref": "#/components/schemas/SpeedUnit",
+            "description": "The mean speed."
+          },
+          "temperature": {
+            "$ref": "#/components/schemas/TemperatureUnit",
+            "description": "The temperature: °C, an assumption (Tesla states no unit)."
+          }
+        }
+      },
+      "ConsumptionView": {
+        "type": "object",
+        "description": "The body of a successful `GET /api/v1/consumption`.",
+        "required": [
+          "generated_at",
+          "range",
+          "status",
+          "gaps",
+          "units",
+          "drives",
+          "totals",
+          "truncated"
+        ],
+        "properties": {
+          "drives": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Drive"
+            },
+            "description": "The drives that start in the range, newest first. Empty when no\ndrive exists."
+          },
+          "gaps": {
+            "$ref": "#/components/schemas/Gaps",
+            "description": "The losses that the ingest process recorded in the range, as in the\nbattery view."
+          },
+          "generated_at": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "The time of the response (server clock). Equal to `range.to`."
+          },
+          "range": {
+            "$ref": "#/components/schemas/ConsumptionRange",
+            "description": "The requested range."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BatteryStatus",
+                "description": "Connection, newest data, and freshness, as in the battery view;\n`null` when no row of a battery field exists yet."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ConsumptionTotals",
+            "description": "The totals of the ended drives."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when a row limit left out the older drives of the range."
+          },
+          "units": {
+            "$ref": "#/components/schemas/ConsumptionUnits",
+            "description": "The unit of each quantity."
+          }
+        }
+      },
       "CountUnit": {
         "type": "string",
         "description": "What a gap count counts.",
         "enum": [
           "records",
           "messages"
+        ]
+      },
+      "DistanceUnit": {
+        "type": "string",
+        "description": "Miles.",
+        "enum": [
+          "mi"
+        ]
+      },
+      "Drive": {
+        "type": "object",
+        "description": "One drive: from the first R, N, or D after a P to the next P. A `null`\nvalue is unknown, never 0.",
+        "required": [
+          "start",
+          "end",
+          "duration_seconds",
+          "distance",
+          "energy_used",
+          "consumption",
+          "mean_outside_temp",
+          "mean_speed",
+          "data_loss"
+        ],
+        "properties": {
+          "consumption": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The consumption; only for a distance of at least 1 km."
+          },
+          "data_loss": {
+            "type": "boolean",
+            "description": "True when a recorded loss meets the time span of the drive, ends\nincluded: the values can be wrong, for example two drives merged by\na lost P. The ingest clock of the losses and the vehicle clock of\nthe drive differ, so the mark is approximate."
+          },
+          "distance": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The distance (the last minus the first Odometer in the drive)."
+          },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The duration in seconds.",
+            "maximum": 4294967295,
+            "minimum": 0
+          },
+          "end": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Instant",
+                "description": "The end, or `null` while the drive is ongoing. An ongoing drive has\nonly `start`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "energy_used": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The energy used (the first minus the last `EnergyRemaining` in the\ndrive). Negative when the battery gained energy."
+          },
+          "mean_outside_temp": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The mean of the `OutsideTemp` samples in the drive."
+          },
+          "mean_speed": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The distance divided by the duration."
+          },
+          "start": {
+            "$ref": "#/components/schemas/Instant",
+            "description": "The start."
+          }
+        }
+      },
+      "EnergyUnit": {
+        "type": "string",
+        "description": "Kilowatt-hours.",
+        "enum": [
+          "kWh"
         ]
       },
       "ExcludedRows": {
@@ -1188,6 +1551,20 @@
             "description": "The end of the session without another request: 7 days after the\nlast request, never later than `expires_at`."
           }
         }
+      },
+      "SpeedUnit": {
+        "type": "string",
+        "description": "Kilometres for each hour.",
+        "enum": [
+          "km/h"
+        ]
+      },
+      "TemperatureUnit": {
+        "type": "string",
+        "description": "Degrees Celsius.",
+        "enum": [
+          "°C"
+        ]
       },
       "Unit": {
         "type": "object",

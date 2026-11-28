@@ -1,0 +1,19 @@
+/* The consumption view (ConsumptionPage.tsx). The head, the notices, and
+   the range selector use the classes of battery.css. */
+.consumption-totals p {
+  margin: 0 0 var(--space-1);
+}
+
+.consumption-totals p:first-child {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.consumption-table-title {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 1.0625rem;
+}
+
+.consumption .table-scroll td {
+  font-variant-numeric: tabular-nums;
+}

@@ -4,8 +4,8 @@ import * as z from 'zod';
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client/index.js';
-import type { GetBatteryData, GetBatteryErrors, GetBatteryResponses, GetHealthData, GetHealthErrors, GetHealthResponses, GetSessionData, GetSessionErrors, GetSessionResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses } from './types.gen.js';
-import { zGetBatteryQuery, zGetBatteryResponse, zGetHealthResponse, zGetSessionResponse, zLoginBody, zLoginResponse, zLogoutResponse } from './zod.gen.js';
+import type { GetBatteryData, GetBatteryErrors, GetBatteryResponses, GetConsumptionData, GetConsumptionErrors, GetConsumptionResponses, GetHealthData, GetHealthErrors, GetHealthResponses, GetSessionData, GetSessionErrors, GetSessionResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses } from './types.gen.js';
+import { zGetBatteryQuery, zGetBatteryResponse, zGetConsumptionQuery, zGetConsumptionResponse, zGetHealthResponse, zGetSessionResponse, zLoginBody, zLoginResponse, zLogoutResponse } from './zod.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -40,6 +40,25 @@ export const getBattery = <ThrowOnError extends boolean = false>(options: Option
     }).parseAsync(data),
     responseTransformer: async (data) => await zGetBatteryResponse.parseAsync(data),
     url: '/api/v1/battery',
+    ...options
+});
+
+/**
+ * Returns the drives of one range.
+ *
+ * The session guard (`crate::auth`) runs first: without a valid session
+ * the answer is 401 `unauthenticated`, and no read starts. A database
+ * that cannot be reached gives 503 `database_unavailable`, never an empty
+ * list.
+ */
+export const getConsumption = <ThrowOnError extends boolean = false>(options: Options<GetConsumptionData, ThrowOnError>): RequestResult<GetConsumptionResponses, GetConsumptionErrors, ThrowOnError> => (options.client ?? client).get<GetConsumptionResponses, GetConsumptionErrors, ThrowOnError>({
+    requestValidator: async (data) => await z.object({
+        body: z.never().optional(),
+        path: z.never().optional(),
+        query: zGetConsumptionQuery
+    }).parseAsync(data),
+    responseTransformer: async (data) => await zGetConsumptionResponse.parseAsync(data),
+    url: '/api/v1/consumption',
     ...options
 });
 

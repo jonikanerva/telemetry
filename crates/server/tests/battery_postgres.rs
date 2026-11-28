@@ -1180,3 +1180,281 @@ async fn an_unreachable_database_is_unavailable_not_empty() {
     let error = source.snapshot(&request).await.unwrap_err();
     assert!(matches!(error, SourceError::Unavailable(_)), "{error:?}");
 }
+
+/// A Gear, Odometer, `EnergyRemaining`, `OutsideTemp`, or `VehicleSpeed`
+/// row of the consumption tests.
+fn row(field: i32, created_at: &str, value_type: i16, value: f64) -> Signal {
+    Signal {
+        field,
+        created_at: at(created_at),
+        value_type,
+        int_value: None,
+        float_value: None,
+        text_value: None,
+        bool_value: None,
+    }
+    .with_value(value)
+}
+
+impl Signal {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the test passes whole numbers for the integer types"
+    )]
+    fn with_value(mut self, value: f64) -> Self {
+        match self.value_type {
+            4 | 5 => self.float_value = Some(value),
+            1 => self.text_value = Some(value.to_string()),
+            6 | 10 => self.bool_value = Some(true),
+            _ => self.int_value = Some(value as i64),
+        }
+        self
+    }
+}
+
+/// The SQL of the consumption view selects the rows of the rules of
+/// `telemetry_web_domain::consumption`, as the web role, on boundary rows:
+/// a drive across the range start, invalid Gear readings, samples exactly
+/// at the drive ends and just after, a text value, a value row of another
+/// field, and an ongoing drive at the range end.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_consumption_read_selects_the_rows_of_the_drive_rules() {
+    use telemetry_web_domain::consumption::derive_view;
+    use telemetry_web_server::consumption::postgres::read_consumption;
+    // The window of the week that ends at NOW starts at 2026-11-20T12:00Z.
+    let rows = Rows {
+        vehicles: 1,
+        signals: vec![
+            // The newest reading before the range is D: the drive that
+            // ends at 12:10 in the range is left out.
+            row(10, "2026-11-20T11:50:00Z", 9, 5.0),
+            row(10, "2026-11-20T12:10:00Z", 9, 2.0),
+            row(5, "2026-11-20T12:05:00Z", 5, 1.0),
+            // Drive 1: D at 08:00, invalid readings, P at 08:30.
+            row(10, "2026-11-25T08:00:00Z", 9, 5.0),
+            row(10, "2026-11-25T08:10:00Z", 10, 0.0),
+            row(10, "2026-11-25T08:11:00Z", 9, 1.0),
+            row(10, "2026-11-25T08:12:00Z", 9, 6.0),
+            row(10, "2026-11-25T08:30:00Z", 9, 2.0),
+            // Values at the exact ends count; one after the end does not.
+            row(5, "2026-11-25T08:00:00Z", 5, 100.0),
+            row(5, "2026-11-25T08:30:00Z", 1, 112.5),
+            row(5, "2026-11-25T08:30:00.000001Z", 5, 999.0),
+            // The lookback: the newest sample within one hour before the
+            // start is the start value; an older one is not read.
+            row(158, "2026-11-25T07:50:00Z", 5, 61.0),
+            row(5, "2026-11-25T06:59:59Z", 5, 50.0),
+            row(158, "2026-11-25T08:00:30Z", 5, 60.0),
+            row(158, "2026-11-25T08:15:00Z", 10, 0.0),
+            row(158, "2026-11-25T08:30:00Z", 5, 56.0),
+            row(86, "2026-11-25T08:05:00Z", 5, -3.0),
+            row(86, "2026-11-25T08:10:00Z", 5, -1.0),
+            // A field that the view does not read.
+            row(4, "2026-11-25T08:20:00Z", 5, 80.0),
+            // An ongoing drive at the range end.
+            row(10, "2026-11-27T11:55:00Z", 9, 4.0),
+        ],
+        ..Rows::default()
+    };
+    with_rows(&rows, async move |mut conn: PgConnection, _rows: Rows| {
+        let window = Window::ending_at(RangeKey::Week, at(NOW)).unwrap();
+        let snapshot = read_consumption(&mut conn, window).await.unwrap();
+        assert!(!snapshot.gears.truncated);
+        assert_eq!(snapshot.gears.readings.len(), 4);
+        assert_eq!(snapshot.samples.samples.len(), 7);
+        let view = derive_view(&snapshot).unwrap();
+        let starts: Vec<_> = view.drives.iter().map(|d| d.start).collect();
+        assert_eq!(
+            starts,
+            [at("2026-11-27T11:55:00Z"), at("2026-11-25T08:00:00Z")]
+        );
+        let drive = view.drives[1];
+        assert_eq!(drive.end, Some(at("2026-11-25T08:30:00Z")));
+        assert_eq!(drive.distance_mi, Some(12.5));
+        assert_eq!(drive.energy_kwh, Some(5.0));
+        assert_eq!(drive.mean_outside_temp_c, Some(-2.0));
+        assert_eq!(view.drives[0].end, None);
+        assert_eq!(view.totals.drives, 1);
+    })
+    .await;
+}
+
+/// A recorded loss that meets a drive marks it, and the response has the
+/// status of the battery view, from the same statements.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_consumption_read_marks_a_drive_with_a_recorded_loss() {
+    use telemetry_web_domain::battery::Freshness;
+    use telemetry_web_domain::consumption::derive_view;
+    use telemetry_web_server::consumption::postgres::read_consumption;
+    let rows = Rows {
+        vehicles: 1,
+        signals: vec![
+            row(10, "2026-11-27T08:00:00Z", 9, 5.0),
+            row(10, "2026-11-27T08:30:00Z", 9, 2.0),
+            row(5, "2026-11-27T08:00:00Z", 5, 100.0),
+            row(5, "2026-11-27T08:30:00Z", 5, 110.0),
+            row(158, "2026-11-27T08:00:00Z", 5, 60.0),
+            row(158, "2026-11-27T08:30:00Z", 5, 57.0),
+        ],
+        connectivity: vec![ConnectivityRow {
+            connection_id: 0x77,
+            created_at: at("2026-11-27T07:59:00Z"),
+            status: 2,
+        }],
+        events: vec![EventRow {
+            run_id: 0x91,
+            occurred_at: at("2026-11-27T08:20:00Z"),
+            kind: EventKind::RecordsDropped,
+            reason: Some("queue_full".to_owned()),
+            dropped_count: Some(4),
+            first_received_at: Some(at("2026-11-27T08:10:00Z")),
+            last_received_at: Some(at("2026-11-27T08:11:00Z")),
+        }],
+    };
+    with_rows(&rows, async move |mut conn: PgConnection, _rows: Rows| {
+        let window = Window::ending_at(RangeKey::Day, at(NOW)).unwrap();
+        let view = derive_view(&read_consumption(&mut conn, window).await.unwrap()).unwrap();
+        assert_eq!(view.gaps.items.len(), 1);
+        assert!(view.drives[0].data_loss);
+        assert_eq!(view.drives[0].distance_mi, Some(10.0));
+        assert_eq!(view.totals.with_data_loss, 1);
+        let status = view.status.unwrap();
+        assert_eq!(status.latest_data_at, at("2026-11-27T08:30:00Z"));
+        assert_eq!(status.freshness, Freshness::NotExpected);
+    })
+    .await;
+}
+
+/// The production state today: one vehicle, a P reading and an invalid
+/// Gear reading, and no drive. The second statement gets empty arrays.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_consumption_read_without_a_drive_gives_no_drive() {
+    use telemetry_web_domain::consumption::derive_view;
+    use telemetry_web_server::consumption::postgres::read_consumption;
+    let rows = Rows {
+        vehicles: 1,
+        signals: vec![
+            row(10, "2026-11-27T08:00:00Z", 9, 2.0),
+            row(10, "2026-11-27T09:00:00Z", 10, 0.0),
+            row(5, "2026-11-27T08:00:00Z", 5, 1000.0),
+        ],
+        ..Rows::default()
+    };
+    with_rows(&rows, async move |mut conn: PgConnection, _rows: Rows| {
+        let window = Window::ending_at(RangeKey::Day, at(NOW)).unwrap();
+        let snapshot = read_consumption(&mut conn, window).await.unwrap();
+        assert_eq!(snapshot.gears.readings.len(), 1);
+        assert_eq!(snapshot.samples.samples, Vec::new());
+        let view = derive_view(&snapshot).unwrap();
+        assert_eq!(view.drives, Vec::new());
+        assert_eq!(view.totals.drives, 0);
+    })
+    .await;
+}
+
+/// No vehicle reads as no drive; two vehicles are a contract violation.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_consumption_read_of_no_vehicle_and_two_vehicles() {
+    use telemetry_web_domain::consumption::derive_view;
+    use telemetry_web_server::consumption::postgres::read_consumption;
+    for (vehicles, drives) in [(0, Some(0)), (2, None)] {
+        let rows = Rows {
+            vehicles,
+            ..Rows::default()
+        };
+        with_rows(&rows, async move |mut conn: PgConnection, _rows: Rows| {
+            let window = Window::ending_at(RangeKey::Day, at(NOW)).unwrap();
+            let snapshot = read_consumption(&mut conn, window).await.unwrap();
+            assert_eq!(
+                derive_view(&snapshot).ok().map(|view| view.drives.len()),
+                drives
+            );
+        })
+        .await;
+    }
+}
+
+/// Two drives less than one hour apart, with value rows at the P instant
+/// between them (the vehicle sends the fields of one payload with one
+/// `created_at`): D 08:00, P 08:30, D 08:40, P 09:00; Odometer 100, 105,
+/// 110, 120 mi and `EnergyRemaining` 60, 58.5, 57, 54 kWh at 08:00,
+/// 08:15, 08:30, 09:00. Eight distinct value rows.
+fn adjacent_drives() -> Rows {
+    let mut signals = vec![
+        row(10, "2026-11-27T08:00:00Z", 9, 5.0),
+        row(10, "2026-11-27T08:30:00Z", 9, 2.0),
+        row(10, "2026-11-27T08:40:00Z", 9, 5.0),
+        row(10, "2026-11-27T09:00:00Z", 9, 2.0),
+    ];
+    for (time, miles, kwh) in [
+        ("2026-11-27T08:00:00Z", 100.0, 60.0),
+        ("2026-11-27T08:15:00Z", 105.0, 58.5),
+        ("2026-11-27T08:30:00Z", 110.0, 57.0),
+        ("2026-11-27T09:00:00Z", 120.0, 54.0),
+    ] {
+        signals.push(row(5, time, 5, miles));
+        signals.push(row(158, time, 5, kwh));
+    }
+    Rows {
+        vehicles: 1,
+        signals,
+        ..Rows::default()
+    }
+}
+
+/// Each value row comes back once, also the rows at the shared P instant,
+/// and the P sample is the end value of one drive and the start value of
+/// the next.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_value_rows_of_adjacent_drives_come_back_once() {
+    use telemetry_web_domain::consumption::derive_view;
+    use telemetry_web_server::consumption::postgres::read_consumption_with;
+    with_rows(
+        &adjacent_drives(),
+        async move |mut conn: PgConnection, _rows: Rows| {
+            let window = Window::ending_at(RangeKey::Day, at(NOW)).unwrap();
+            // At a limit of exactly the eight distinct rows, nothing is cut.
+            let snapshot = read_consumption_with(&mut conn, window, 8).await.unwrap();
+            assert_eq!(snapshot.samples.samples.len(), 8);
+            assert_eq!(snapshot.samples.cut_at, None);
+            let view = derive_view(&snapshot).unwrap();
+            assert!(!view.truncated);
+            let values: Vec<_> = view
+                .drives
+                .iter()
+                .map(|d| (d.start, d.distance_mi, d.energy_kwh))
+                .collect();
+            assert_eq!(
+                values,
+                [
+                    (at("2026-11-27T08:40:00Z"), Some(10.0), Some(3.0)),
+                    (at("2026-11-27T08:00:00Z"), Some(10.0), Some(3.0)),
+                ]
+            );
+        },
+    )
+    .await;
+}
+
+/// A limit of seven cuts one of the eight distinct rows: the read says so,
+/// and the drives that can miss rows are left out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cut_of_a_distinct_row_at_a_shared_instant_is_truncated() {
+    use telemetry_web_domain::consumption::derive_view;
+    use telemetry_web_server::consumption::postgres::read_consumption_with;
+    with_rows(
+        &adjacent_drives(),
+        async move |mut conn: PgConnection, _rows: Rows| {
+            let window = Window::ending_at(RangeKey::Day, at(NOW)).unwrap();
+            let snapshot = read_consumption_with(&mut conn, window, 7).await.unwrap();
+            assert_eq!(snapshot.samples.cut_at, Some(at("2026-11-27T08:00:00Z")));
+            let view = derive_view(&snapshot).unwrap();
+            assert!(view.truncated);
+            // Both drives have a lookback start (07:00, 07:40) at or before
+            // the cut, so both can miss rows and are left out: no wrong
+            // value is shown.
+            assert_eq!(view.drives, Vec::new());
+        },
+    )
+    .await;
+}
