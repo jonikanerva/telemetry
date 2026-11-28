@@ -10,7 +10,7 @@
 // - A 401 is `unauthenticated`; the session-loss handler of the query
 //   client then opens the login page (auth/session-loss.ts).
 // - `no_data_yet` and `data` come only from a valid success body.
-import type { ApiError, BatteryView, ProblemCode } from 'telemetry-web-api-client';
+import type { ApiError, BatteryStatus, BatteryView, ProblemCode } from 'telemetry-web-api-client';
 import { ApiRequestError } from 'telemetry-web-api-client';
 
 import { formatClock, formatDateTimeNear } from '../format/format.js';
@@ -135,8 +135,13 @@ function unknownCode(_code: never): FailureReason {
  * sleeping car from a car without network, so both are one state.
  */
 export function statusLine(view: AvailableView): string {
-  const generatedAtMs = Date.parse(view.generated_at);
-  const connection = view.status.connection;
+  return statusText(view.status, view.generated_at);
+}
+
+/** The status line of a status and the `generated_at` of its response. The consumption view uses it too. */
+export function statusText(status: BatteryStatus, generatedAt: string): string {
+  const generatedAtMs = Date.parse(generatedAt);
+  const connection = status.connection;
   let fact: string;
   switch (connection.state) {
     case 'connected':
@@ -151,10 +156,10 @@ export function statusLine(view: AvailableView): string {
     default:
       fact = unknownConnection(connection);
   }
-  return `${fact}${freshnessText(view.status.freshness)} ${fi.latestData(formatDateTimeNear(Date.parse(view.status.latest_data_at), generatedAtMs))}`;
+  return `${fact}${freshnessText(status.freshness)} ${fi.latestData(formatDateTimeNear(Date.parse(status.latest_data_at), generatedAtMs))}`;
 }
 
-function freshnessText(freshness: AvailableView['status']['freshness']): string {
+function freshnessText(freshness: BatteryStatus['freshness']): string {
   switch (freshness) {
     case 'current':
       return '.';

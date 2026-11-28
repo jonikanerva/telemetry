@@ -16,10 +16,15 @@
 //!   the newest reading before the range is R, N, or D, the drive that
 //!   continues into the range is left out: it belongs to the earlier
 //!   range, and its values in this range would be too short.
-//! - **Values.** Odometer (miles, Tesla documents the unit), and
-//!   `EnergyRemaining` (kWh) need two samples inside the drive, start and
-//!   end included; the value is the last minus the first. One sample or
-//!   none is unknown, never 0. Negative energy stays negative.
+//! - **Values.** Odometer (miles, Tesla documents the unit) and
+//!   `EnergyRemaining` (kWh) are sent on change, at most every 30 s
+//!   (`config/telemetry_config.json`). So the start value is the newest
+//!   sample at or before the drive start, at most [`LOOKBACK`] before it.
+//!   Without such a sample, the start value is the first sample inside the
+//!   drive, and a later sample must exist. The end value is the newest
+//!   sample at or before the drive end. Without a start or an end value
+//!   the change is unknown, never 0. The distance is the end minus the start value; the energy is
+//!   the start minus the end value. Negative energy stays negative.
 //! - **Wh/km** exists when distance and energy exist and the distance is
 //!   at least [`MIN_DISTANCE_KM`]. The Odometer step is 0.1 mile, so a
 //!   shorter drive gives noise.
@@ -30,11 +35,21 @@
 //! - **Limits.** At most [`MAX_GEAR_ROWS`] Gear rows and
 //!   [`MAX_DRIVE_SAMPLES`] value rows, the newest first. A cut leaves out
 //!   the older drives and sets `truncated`.
+//! - **Status and losses.** The view has the status of the battery view
+//!   (`battery::status`) and its recorded losses (`battery::derive_gaps`).
+//!   A drive whose time span meets a loss, ends included, gets
+//!   `data_loss`. Its values stay visible and in the totals: a lost P can
+//!   merge two drives, and the mark says so. The losses use the ingest
+//!   clock and the drives the vehicle clock, so the mark is approximate.
 
 use jiff::{SignedDuration, Timestamp};
 
+use crate::battery::gaps::{EventSnapshot, Gap, Limited, derive_gaps};
 use crate::battery::value::{Extracted, RawValue, extract};
-use crate::battery::{ContractViolation, VehicleCount, Window};
+use crate::battery::{
+    ConnectivityRow, ContractViolation, PerField, Status, TileSnapshot, VehicleCount, Window,
+    status,
+};
 
 /// One mile in kilometres. Tesla sends the Odometer in miles.
 pub const MILE_IN_KM: f64 = 1.609_344;
@@ -48,6 +63,16 @@ pub const MAX_GEAR_ROWS: usize = 20_000;
 /// The most value rows of one read: a year of one hour of driving each
 /// day at the configured intervals is about 92,000 rows.
 pub const MAX_DRIVE_SAMPLES: usize = 200_000;
+
+/// How far before a drive start the start value can lie: the vehicle sends
+/// the current values within seconds of a wake-up.
+pub const LOOKBACK: SignedDuration = SignedDuration::from_hours(1);
+
+/// The earliest time of the start value of a drive that starts at `start`.
+#[must_use]
+pub fn lookback_start(start: Timestamp) -> Timestamp {
+    start.checked_sub(LOOKBACK).unwrap_or(Timestamp::MIN)
+}
 
 /// The `value_type` of `ShiftState` (`vehicle_data.proto`).
 pub const VALUE_TYPE_SHIFT_STATE: i16 = 9;
@@ -198,6 +223,24 @@ pub fn periods(input: &GearInput) -> Vec<Period> {
     periods
 }
 
+/// The time windows of the value rows of the ended drives, oldest first:
+/// from [`LOOKBACK`] before each start to its end. A window does not reach
+/// back before the end of the previous drive, whose window holds those
+/// rows already; only the instant of that end can be in two windows.
+#[must_use]
+pub fn sample_windows(periods: &[Period]) -> Vec<(Timestamp, Timestamp)> {
+    let mut windows: Vec<(Timestamp, Timestamp)> = Vec::new();
+    for period in periods {
+        let Some(end) = period.end else { continue };
+        let from = lookback_start(period.start);
+        let from = windows
+            .last()
+            .map_or(from, |(_, previous)| from.max(*previous));
+        windows.push((from, end));
+    }
+    windows
+}
+
 /// One usable value inside a drive.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DriveSample {
@@ -258,8 +301,15 @@ pub struct Snapshot {
     pub vehicles: VehicleCount,
     /// The Gear input.
     pub gears: GearInput,
-    /// The values inside the ended drives of [`periods`].
+    /// The values of the ended drives of [`periods`], from [`LOOKBACK`]
+    /// before each start to its end.
     pub samples: SampleInput,
+    /// The newest rows of the battery fields (the battery read).
+    pub tiles: PerField<TileSnapshot>,
+    /// The newest connectivity row (the battery read).
+    pub connectivity: Option<ConnectivityRow>,
+    /// The loss rows of the window (the battery read).
+    pub events: EventSnapshot,
 }
 
 /// One drive of the view.
@@ -274,7 +324,7 @@ pub struct Drive {
     pub duration: Option<SignedDuration>,
     /// The distance in miles, as the vehicle sends it.
     pub distance_mi: Option<f64>,
-    /// The energy used in kWh: the first minus the last `EnergyRemaining`.
+    /// The energy used in kWh: the start minus the end `EnergyRemaining`.
     pub energy_kwh: Option<f64>,
     /// The consumption in Wh/km.
     pub wh_per_km: Option<f64>,
@@ -282,6 +332,8 @@ pub struct Drive {
     pub mean_outside_temp_c: Option<f64>,
     /// The mean speed in km/h.
     pub mean_speed_kmh: Option<f64>,
+    /// True when a recorded loss meets the time span of the drive.
+    pub data_loss: bool,
 }
 
 /// The totals of the ended drives of the range. The sums cover the
@@ -299,6 +351,8 @@ pub struct Totals {
     pub wh_per_km: Option<f64>,
     /// The ended drives without a Wh/km value.
     pub without_consumption: u32,
+    /// The drives with a loss mark.
+    pub with_data_loss: u32,
 }
 
 /// The view of one request.
@@ -306,6 +360,10 @@ pub struct Totals {
 pub struct View {
     /// The window.
     pub window: Window,
+    /// The status of the battery view; `None` when no battery row exists.
+    pub status: Option<Status>,
+    /// The recorded losses of the window.
+    pub gaps: Limited<Gap>,
     /// The drives, newest first.
     pub drives: Vec<Drive>,
     /// The totals.
@@ -318,77 +376,147 @@ pub struct View {
 ///
 /// # Errors
 ///
-/// Returns [`ContractViolation::SecondVehicle`] for two vehicles and
-/// [`ContractViolation::CountTooLarge`] for a count above `u32`.
+/// Returns [`ContractViolation::SecondVehicle`] for two vehicles, the
+/// errors of `derive_gaps`, and [`ContractViolation::CountTooLarge`] for a
+/// count above `u32`.
 pub fn derive_view(snapshot: &Snapshot) -> Result<View, ContractViolation> {
     if snapshot.vehicles == VehicleCount::Many {
         return Err(ContractViolation::SecondVehicle);
     }
+    let gaps = derive_gaps(&snapshot.events.losses)?;
     let cut_at = snapshot.samples.cut_at;
+    let samples = Samples::new(&snapshot.samples.samples);
     let mut drives: Vec<Drive> = periods(&snapshot.gears)
         .into_iter()
-        .filter(|period| cut_at.is_none_or(|cut| period.start > cut))
-        .map(|period| drive(period, &snapshot.samples.samples))
+        .filter(|period| cut_at.is_none_or(|cut| lookback_start(period.start) > cut))
+        .map(|period| {
+            let mut drive = samples.drive(period);
+            drive.data_loss = meets_loss(period, snapshot.window.to(), &gaps.items);
+            drive
+        })
         .collect();
     drives.reverse();
     let totals = totals(&drives)?;
     Ok(View {
         window: snapshot.window,
+        status: status(&snapshot.window, &snapshot.tiles, snapshot.connectivity),
+        gaps,
         drives,
         totals,
         truncated: snapshot.gears.truncated || cut_at.is_some(),
     })
 }
 
-/// The values of one drive from the samples inside it.
+/// True when a loss meets the span of a drive, ends included. An ongoing
+/// drive spans to the window end `to`.
+#[must_use]
+pub fn meets_loss(period: Period, to: Timestamp, gaps: &[Gap]) -> bool {
+    let end = period.end.unwrap_or(to);
+    gaps.iter()
+        .any(|gap| gap.from <= end && gap.to >= period.start)
+}
+
+/// The samples of each value field, sorted by time, for lookups by binary
+/// search.
+struct Samples {
+    by_field: [Vec<(Timestamp, f64)>; 3],
+}
+
+impl Samples {
+    fn new(samples: &[DriveSample]) -> Self {
+        let mut by_field: [Vec<(Timestamp, f64)>; 3] = Default::default();
+        for sample in samples {
+            let index = match sample.field {
+                ValueField::Odometer => 0,
+                ValueField::EnergyRemaining => 1,
+                ValueField::OutsideTemp => 2,
+            };
+            by_field[index].push((sample.at, sample.value));
+        }
+        for values in &mut by_field {
+            values.sort_by_key(|(at, _)| *at);
+        }
+        Self { by_field }
+    }
+
+    const fn of(&self, field: ValueField) -> &[(Timestamp, f64)] {
+        match field {
+            ValueField::Odometer => self.by_field[0].as_slice(),
+            ValueField::EnergyRemaining => self.by_field[1].as_slice(),
+            ValueField::OutsideTemp => self.by_field[2].as_slice(),
+        }
+    }
+
+    /// The samples of `field` in `[from, to]`.
+    fn between(&self, field: ValueField, from: Timestamp, to: Timestamp) -> &[(Timestamp, f64)] {
+        let values = self.of(field);
+        let low = values.partition_point(|(at, _)| *at < from);
+        let high = values.partition_point(|(at, _)| *at <= to);
+        values.get(low..high).unwrap_or(&[])
+    }
+
+    /// The start and end values of `field` (the rule of the module).
+    fn change(&self, field: ValueField, start: Timestamp, end: Timestamp) -> Option<(f64, f64)> {
+        let from = lookback_start(start);
+        let last = self.between(field, from, end).last()?;
+        if let Some(first) = self.between(field, from, start).last() {
+            return Some((first.1, last.1));
+        }
+        // No sample before the start: the first sample inside the drive,
+        // and a later one must exist.
+        let first = self.between(field, start, end).first()?;
+        (first.0 != last.0).then_some((first.1, last.1))
+    }
+
+    /// The values of one drive.
+    fn drive(&self, period: Period) -> Drive {
+        let Some(end) = period.end else {
+            return Drive {
+                start: period.start,
+                end: None,
+                duration: None,
+                distance_mi: None,
+                energy_kwh: None,
+                wh_per_km: None,
+                mean_outside_temp_c: None,
+                mean_speed_kmh: None,
+                data_loss: false,
+            };
+        };
+        let distance_mi = self
+            .change(ValueField::Odometer, period.start, end)
+            .map(|(first, last)| last - first);
+        let energy_kwh = self
+            .change(ValueField::EnergyRemaining, period.start, end)
+            .map(|(first, last)| first - last);
+        let distance_km = distance_mi.map(|mi| mi * MILE_IN_KM);
+        let wh_per_km = match (energy_kwh, distance_km) {
+            (Some(kwh), Some(km)) if km >= MIN_DISTANCE_KM => Some(kwh * 1000.0 / km),
+            _ => None,
+        };
+        let temps = self.between(ValueField::OutsideTemp, period.start, end);
+        let mean_outside_temp_c = mean(temps.iter().map(|(_, value)| *value));
+        let duration = end.duration_since(period.start);
+        let hours = duration.as_secs_f64() / 3600.0;
+        let mean_speed_kmh = distance_km.filter(|_| hours > 0.0).map(|km| km / hours);
+        Drive {
+            start: period.start,
+            end: Some(end),
+            duration: Some(duration),
+            distance_mi,
+            energy_kwh,
+            wh_per_km,
+            mean_outside_temp_c,
+            mean_speed_kmh,
+            data_loss: false,
+        }
+    }
+}
+
+/// The values of one drive from the samples of its lookback and span.
 #[must_use]
 pub fn drive(period: Period, samples: &[DriveSample]) -> Drive {
-    let Some(end) = period.end else {
-        return Drive {
-            start: period.start,
-            end: None,
-            duration: None,
-            distance_mi: None,
-            energy_kwh: None,
-            wh_per_km: None,
-            mean_outside_temp_c: None,
-            mean_speed_kmh: None,
-        };
-    };
-    let inside = |field: ValueField| {
-        let mut values: Vec<&DriveSample> = samples
-            .iter()
-            .filter(|s| s.field == field && period.start <= s.at && s.at <= end)
-            .collect();
-        values.sort_by_key(|s| s.at);
-        values
-    };
-    let change = |field: ValueField| match inside(field).as_slice() {
-        [first, .., last] => Some((first.value, last.value)),
-        _ => None,
-    };
-    let distance_mi = change(ValueField::Odometer).map(|(first, last)| last - first);
-    let energy_kwh = change(ValueField::EnergyRemaining).map(|(first, last)| first - last);
-    let distance_km = distance_mi.map(|mi| mi * MILE_IN_KM);
-    let wh_per_km = match (energy_kwh, distance_km) {
-        (Some(kwh), Some(km)) if km >= MIN_DISTANCE_KM => Some(kwh * 1000.0 / km),
-        _ => None,
-    };
-    let temps = inside(ValueField::OutsideTemp);
-    let mean_outside_temp_c = mean(temps.iter().map(|s| s.value));
-    let duration = end.duration_since(period.start);
-    let hours = duration.as_secs_f64() / 3600.0;
-    let mean_speed_kmh = distance_km.filter(|_| hours > 0.0).map(|km| km / hours);
-    Drive {
-        start: period.start,
-        end: Some(end),
-        duration: Some(duration),
-        distance_mi,
-        energy_kwh,
-        wh_per_km,
-        mean_outside_temp_c,
-        mean_speed_kmh,
-    }
+    Samples::new(samples).drive(period)
 }
 
 fn mean(values: impl Iterator<Item = f64>) -> Option<f64> {
@@ -425,6 +553,7 @@ pub fn totals(drives: &[Drive]) -> Result<Totals, ContractViolation> {
         energy_kwh: any.then_some(kwh),
         wh_per_km: any.then(|| kwh * 1000.0 / (miles * MILE_IN_KM)),
         without_consumption: count(ended - counted)?,
+        with_data_loss: count(drives.iter().filter(|d| d.data_loss).count())?,
     })
 }
 

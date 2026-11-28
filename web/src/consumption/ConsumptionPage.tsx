@@ -15,7 +15,14 @@ import type { ScatterPoint } from '../chart/ScatterChart.js';
 import { formatDateTimeNear, formatNumber } from '../format/format.js';
 import { fi } from '../i18n/fi.js';
 import { consumptionQuery } from './consumption-query.js';
-import { driveCells, hasUnknownValues, refreshStatus, toConsumptionViewState, totalsText } from './view-state.js';
+import {
+  consumptionStatusLine,
+  driveCells,
+  hasUnknownValues,
+  refreshStatus,
+  toConsumptionViewState,
+  totalsText,
+} from './view-state.js';
 import type { ConsumptionViewState } from './view-state.js';
 
 export function ConsumptionPage({ range }: { readonly range: RangeKey }) {
@@ -59,11 +66,11 @@ function StateBody({ state }: { readonly state: ConsumptionViewState }) {
       return (
         <>
           <FailureNotice reason={state.reason} title={fi.staleUsableTitle} />
-          {state.view.drives.length === 0 ? <NoDrives /> : <DataBody view={state.view} />}
+          {state.view.drives.length === 0 ? <NoDrives view={state.view} /> : <DataBody view={state.view} />}
         </>
       );
     case 'no_drives':
-      return <NoDrives />;
+      return <NoDrives view={state.view} />;
     case 'data':
       return <DataBody view={state.view} />;
     default:
@@ -71,11 +78,22 @@ function StateBody({ state }: { readonly state: ConsumptionViewState }) {
   }
 }
 
-function NoDrives() {
+function NoDrives({ view }: { readonly view: ConsumptionView }) {
   return (
-    <div className="notice notice-info" data-testid="no-drives">
-      <p className="notice-title">{fi.noDrivesTitle}</p>
-    </div>
+    <>
+      <StatusLine view={view} />
+      <div className="notice notice-info" data-testid="no-drives">
+        <p className="notice-title">{fi.noDrivesTitle}</p>
+      </div>
+    </>
+  );
+}
+
+function StatusLine({ view }: { readonly view: ConsumptionView }) {
+  return (
+    <p className="status-line" data-testid="status-line" data-freshness={view.status?.freshness ?? 'none'}>
+      {consumptionStatusLine(view)}
+    </p>
   );
 }
 
@@ -109,6 +127,7 @@ function DataBody({ view }: { readonly view: ConsumptionView }) {
   const ended = view.drives.filter((drive) => drive.end !== null).length;
   return (
     <div className="consumption-body" data-testid="consumption-data" data-partial={hasUnknownValues(view)}>
+      <StatusLine view={view} />
       <div className="consumption-totals" data-testid="totals">
         {totalsText(view).map((sentence) => (
           <p key={sentence}>{sentence}</p>

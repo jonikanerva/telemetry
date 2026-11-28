@@ -412,9 +412,18 @@ describe('getConsumption', () => {
   const body = {
     generated_at: '2026-11-27T12:00:00Z',
     range: { key: '7d', from: '2026-11-20T12:00:00Z', to: '2026-11-27T12:00:00Z' },
+    status: null,
+    gaps: { items: [], truncated: false },
     units: { distance: 'mi', energy: 'kWh', consumption: 'Wh/km', temperature: '°C', speed: 'km/h' },
     drives: [],
-    totals: { drives: 0, distance: null, energy_used: null, consumption: null, drives_without_consumption: 0 },
+    totals: {
+      drives: 0,
+      distance: null,
+      energy_used: null,
+      consumption: null,
+      drives_without_consumption: 0,
+      drives_with_data_loss: 0,
+    },
     truncated: false,
   };
 

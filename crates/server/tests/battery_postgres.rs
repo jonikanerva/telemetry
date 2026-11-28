@@ -1240,7 +1240,11 @@ async fn the_consumption_read_selects_the_rows_of_the_drive_rules() {
             row(5, "2026-11-25T08:00:00Z", 5, 100.0),
             row(5, "2026-11-25T08:30:00Z", 1, 112.5),
             row(5, "2026-11-25T08:30:00.000001Z", 5, 999.0),
-            row(158, "2026-11-25T08:00:00Z", 5, 60.0),
+            // The lookback: the newest sample within one hour before the
+            // start is the start value; an older one is not read.
+            row(158, "2026-11-25T07:50:00Z", 5, 61.0),
+            row(5, "2026-11-25T06:59:59Z", 5, 50.0),
+            row(158, "2026-11-25T08:00:30Z", 5, 60.0),
             row(158, "2026-11-25T08:15:00Z", 10, 0.0),
             row(158, "2026-11-25T08:30:00Z", 5, 56.0),
             row(86, "2026-11-25T08:05:00Z", 5, -3.0),
@@ -1257,7 +1261,7 @@ async fn the_consumption_read_selects_the_rows_of_the_drive_rules() {
         let snapshot = read_consumption(&mut conn, window).await.unwrap();
         assert!(!snapshot.gears.truncated);
         assert_eq!(snapshot.gears.readings.len(), 4);
-        assert_eq!(snapshot.samples.samples.len(), 6);
+        assert_eq!(snapshot.samples.samples.len(), 7);
         let view = derive_view(&snapshot).unwrap();
         let starts: Vec<_> = view.drives.iter().map(|d| d.start).collect();
         assert_eq!(
@@ -1267,10 +1271,56 @@ async fn the_consumption_read_selects_the_rows_of_the_drive_rules() {
         let drive = view.drives[1];
         assert_eq!(drive.end, Some(at("2026-11-25T08:30:00Z")));
         assert_eq!(drive.distance_mi, Some(12.5));
-        assert_eq!(drive.energy_kwh, Some(4.0));
+        assert_eq!(drive.energy_kwh, Some(5.0));
         assert_eq!(drive.mean_outside_temp_c, Some(-2.0));
         assert_eq!(view.drives[0].end, None);
         assert_eq!(view.totals.drives, 1);
+    })
+    .await;
+}
+
+/// A recorded loss that meets a drive marks it, and the response has the
+/// status of the battery view, from the same statements.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_consumption_read_marks_a_drive_with_a_recorded_loss() {
+    use telemetry_web_domain::battery::Freshness;
+    use telemetry_web_domain::consumption::derive_view;
+    use telemetry_web_server::consumption::postgres::read_consumption;
+    let rows = Rows {
+        vehicles: 1,
+        signals: vec![
+            row(10, "2026-11-27T08:00:00Z", 9, 5.0),
+            row(10, "2026-11-27T08:30:00Z", 9, 2.0),
+            row(5, "2026-11-27T08:00:00Z", 5, 100.0),
+            row(5, "2026-11-27T08:30:00Z", 5, 110.0),
+            row(158, "2026-11-27T08:00:00Z", 5, 60.0),
+            row(158, "2026-11-27T08:30:00Z", 5, 57.0),
+        ],
+        connectivity: vec![ConnectivityRow {
+            connection_id: 0x77,
+            created_at: at("2026-11-27T07:59:00Z"),
+            status: 2,
+        }],
+        events: vec![EventRow {
+            run_id: 0x91,
+            occurred_at: at("2026-11-27T08:20:00Z"),
+            kind: EventKind::RecordsDropped,
+            reason: Some("queue_full".to_owned()),
+            dropped_count: Some(4),
+            first_received_at: Some(at("2026-11-27T08:10:00Z")),
+            last_received_at: Some(at("2026-11-27T08:11:00Z")),
+        }],
+    };
+    with_rows(&rows, async move |mut conn: PgConnection, _rows: Rows| {
+        let window = Window::ending_at(RangeKey::Day, at(NOW)).unwrap();
+        let view = derive_view(&read_consumption(&mut conn, window).await.unwrap()).unwrap();
+        assert_eq!(view.gaps.items.len(), 1);
+        assert!(view.drives[0].data_loss);
+        assert_eq!(view.drives[0].distance_mi, Some(10.0));
+        assert_eq!(view.totals.with_data_loss, 1);
+        let status = view.status.unwrap();
+        assert_eq!(status.latest_data_at, at("2026-11-27T08:30:00Z"));
+        assert_eq!(status.freshness, Freshness::NotExpected);
     })
     .await;
 }

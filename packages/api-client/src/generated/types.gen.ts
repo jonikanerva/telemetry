@@ -250,6 +250,10 @@ export type ConsumptionTotals = {
      */
     drives: number;
     /**
+     * The drives with `data_loss`. They are in the sums.
+     */
+    drives_with_data_loss: number;
+    /**
      * The ended drives without a consumption value.
      */
     drives_without_consumption: number;
@@ -300,6 +304,11 @@ export type ConsumptionView = {
      */
     drives: Array<Drive>;
     /**
+     * The losses that the ingest process recorded in the range, as in the
+     * battery view.
+     */
+    gaps: Gaps;
+    /**
      * The time of the response (server clock). Equal to `range.to`.
      */
     generated_at: Instant;
@@ -307,6 +316,7 @@ export type ConsumptionView = {
      * The requested range.
      */
     range: ConsumptionRange;
+    status: BatteryStatus | null;
     /**
      * The totals of the ended drives.
      */
@@ -340,6 +350,13 @@ export type Drive = {
      * The consumption; only for a distance of at least 1 km.
      */
     consumption: number | null;
+    /**
+     * True when a recorded loss meets the time span of the drive, ends
+     * included: the values can be wrong, for example two drives merged by
+     * a lost P. The ingest clock of the losses and the vehicle clock of
+     * the drive differ, so the mark is approximate.
+     */
+    data_loss: boolean;
     /**
      * The distance (the last minus the first Odometer in the drive).
      */

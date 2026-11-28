@@ -7,6 +7,8 @@ fn at(text: &str) -> Timestamp {
     text.parse().unwrap()
 }
 
+const NOW_TEXT: &str = "2026-11-27T12:00:00Z";
+
 fn window() -> Window {
     Window::ending_at(RangeKey::Week, at("2026-11-27T12:00:00Z")).unwrap()
 }
@@ -59,8 +61,21 @@ fn view(gears: GearInput, samples: Vec<DriveSample>) -> View {
             samples,
             cut_at: None,
         },
+        ..empty_snapshot()
     })
     .unwrap()
+}
+
+fn empty_snapshot() -> Snapshot {
+    Snapshot {
+        window: window(),
+        vehicles: VehicleCount::One(1),
+        gears: gear_input(None, vec![], MAX_GEAR_ROWS),
+        samples: SampleInput::default(),
+        tiles: PerField::default(),
+        connectivity: None,
+        events: EventSnapshot::default(),
+    }
 }
 
 fn close(a: f64, b: f64) -> bool {
@@ -387,6 +402,7 @@ fn a_cut_value_read_leaves_out_the_drives_that_can_miss_rows() {
         vehicles: VehicleCount::One(1),
         gears,
         samples,
+        ..empty_snapshot()
     })
     .unwrap();
     assert!(v.truncated);
@@ -421,10 +437,8 @@ fn a_value_row_that_is_not_usable_is_no_sample() {
 #[test]
 fn no_vehicle_gives_no_drives_and_two_vehicles_fail() {
     let empty = Snapshot {
-        window: window(),
         vehicles: VehicleCount::None,
-        gears: gear_input(None, vec![], MAX_GEAR_ROWS),
-        samples: SampleInput::default(),
+        ..empty_snapshot()
     };
     let v = derive_view(&empty).unwrap();
     assert_eq!(v.drives, Vec::new());
@@ -444,4 +458,141 @@ fn the_limits_cover_a_year_at_the_configured_intervals() {
     const _: () = assert!(ROWS_PER_YEAR < MAX_DRIVE_SAMPLES);
     const _: () = assert!(50 * 365 < MAX_GEAR_ROWS);
     assert_eq!(ROWS_PER_YEAR, 91_980);
+}
+
+#[test]
+fn the_start_value_is_the_newest_sample_at_or_before_the_start() {
+    // Odometer is sent on change: 100.0 at 09:40 (before the D at 10:00),
+    // 110.0 at 10:25, nothing after; the P is at 10:30. EnergyRemaining
+    // 70.0 at 08:59 is older than the lookback of one hour, so the start
+    // value is the first sample inside the drive, 69.0 at 10:01.
+    let v = view(
+        input(
+            Before::Nothing,
+            &[("2026-11-26T10:00:00Z", D), ("2026-11-26T10:30:00Z", P)],
+        ),
+        vec![
+            s(O, "2026-11-26T08:00:00Z", 90.0),
+            s(O, "2026-11-26T09:40:00Z", 100.0),
+            s(O, "2026-11-26T10:25:00Z", 110.0),
+            s(E, "2026-11-26T08:59:59Z", 70.0),
+            s(E, "2026-11-26T10:01:00Z", 69.0),
+            s(E, "2026-11-26T10:29:00Z", 66.0),
+            // Before the lookback and after the end: not used.
+            s(T, "2026-11-26T09:59:00Z", 20.0),
+        ],
+    );
+    let drive = v.drives[0];
+    assert_eq!(drive.distance_mi, Some(10.0));
+    assert_eq!(drive.energy_kwh, Some(3.0));
+    assert_eq!(drive.mean_outside_temp_c, None);
+}
+
+#[test]
+fn a_sample_before_the_start_and_no_change_is_zero_not_unknown() {
+    // The newest sample before the start is the end value too: no change.
+    let v = view(
+        input(
+            Before::Nothing,
+            &[("2026-11-26T10:00:00Z", D), ("2026-11-26T10:01:00Z", P)],
+        ),
+        vec![s(O, "2026-11-26T09:30:00Z", 500.0)],
+    );
+    assert_eq!(v.drives[0].distance_mi, Some(0.0));
+}
+
+fn loss(from: &str, to: &str) -> Gap {
+    use crate::battery::gaps::{CountUnit, GapCount, GapKind};
+    Gap {
+        kind: GapKind::QueueFull,
+        from: at(from),
+        to: at(to),
+        count: GapCount {
+            value: 1,
+            of: CountUnit::Records,
+        },
+    }
+}
+
+#[test]
+fn a_loss_marks_a_drive_when_it_meets_the_span_ends_included() {
+    let period = Period {
+        start: at("2026-11-26T10:00:00Z"),
+        end: Some(at("2026-11-26T10:30:00Z")),
+    };
+    let to = at(NOW_TEXT);
+    for (from, until, marked) in [
+        // Ends exactly at the start.
+        ("2026-11-26T09:00:00Z", "2026-11-26T10:00:00Z", true),
+        // Starts exactly at the end.
+        ("2026-11-26T10:30:00Z", "2026-11-26T11:00:00Z", true),
+        // Covers the drive.
+        ("2026-11-26T09:00:00Z", "2026-11-26T11:00:00Z", true),
+        // Inside the drive.
+        ("2026-11-26T10:10:00Z", "2026-11-26T10:11:00Z", true),
+        // Just before and just after.
+        ("2026-11-26T09:00:00Z", "2026-11-26T09:59:59.999999Z", false),
+        ("2026-11-26T10:30:00.000001Z", "2026-11-26T11:00:00Z", false),
+    ] {
+        assert_eq!(
+            meets_loss(period, to, &[loss(from, until)]),
+            marked,
+            "{from} {until}"
+        );
+    }
+    // An ongoing drive spans to the window end.
+    let ongoing = Period {
+        start: period.start,
+        end: None,
+    };
+    assert!(meets_loss(
+        ongoing,
+        to,
+        &[loss("2026-11-27T11:00:00Z", "2026-11-27T11:01:00Z")]
+    ));
+}
+
+#[test]
+fn a_marked_drive_keeps_its_values_and_the_totals_count_it() {
+    use crate::battery::gaps::{EventKind, EventRow};
+    let events = EventSnapshot {
+        losses: Limited {
+            items: vec![EventRow {
+                run_id: 1,
+                occurred_at: at("2026-11-26T10:20:00Z"),
+                kind: EventKind::RecordsDropped,
+                reason: Some("queue_full".to_owned()),
+                dropped_count: Some(3),
+                first_received_at: Some(at("2026-11-26T10:10:00Z")),
+                last_received_at: Some(at("2026-11-26T10:12:00Z")),
+            }],
+            truncated: false,
+        },
+        restarts: Limited::default(),
+    };
+    let v = derive_view(&Snapshot {
+        gears: input(
+            Before::Nothing,
+            &[("2026-11-26T10:00:00Z", D), ("2026-11-26T10:30:00Z", P)],
+        ),
+        samples: SampleInput {
+            samples: vec![
+                s(O, "2026-11-26T10:00:00Z", 10.0),
+                s(O, "2026-11-26T10:30:00Z", 20.0),
+                s(E, "2026-11-26T10:00:00Z", 60.0),
+                s(E, "2026-11-26T10:30:00Z", 57.0),
+            ],
+            cut_at: None,
+        },
+        events,
+        ..empty_snapshot()
+    })
+    .unwrap();
+    assert!(v.drives[0].data_loss);
+    assert_eq!(v.drives[0].distance_mi, Some(10.0));
+    assert_eq!(v.totals.with_data_loss, 1);
+    assert_eq!(v.totals.distance_mi, Some(10.0));
+    assert_eq!(v.gaps.items.len(), 1);
+    // No battery row: no status.
+    assert_eq!(v.status, None);
 }

@@ -9,7 +9,7 @@ use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
 use axum::http::{Request, StatusCode};
 use jiff::Timestamp;
 use serde_json::{Value, json};
-use telemetry_web_domain::battery::{RangeKey, VehicleCount, Window};
+use telemetry_web_domain::battery::{EventSnapshot, PerField, RangeKey, VehicleCount, Window};
 use telemetry_web_domain::consumption::{
     DriveSample, Gear, MAX_GEAR_ROWS, SampleInput, Snapshot, ValueField, gear_input,
 };
@@ -61,6 +61,9 @@ fn snapshot(key: RangeKey) -> Snapshot {
             ],
             cut_at: None,
         },
+        tiles: PerField::default(),
+        connectivity: None,
+        events: EventSnapshot::default(),
     }
 }
 
@@ -166,6 +169,9 @@ async fn the_drives_have_their_values_units_and_totals() {
                "temperature": "°C", "speed": "km/h"})
     );
     assert_eq!(body["truncated"], false);
+    // No battery row in the snapshot: no status, and no loss.
+    assert_eq!(body["status"], Value::Null);
+    assert_eq!(body["gaps"], json!({"items": [], "truncated": false}));
     let drives = body["drives"].as_array().unwrap();
     assert_eq!(drives.len(), 2);
     // Newest first: the ongoing drive has only its start.
@@ -173,7 +179,7 @@ async fn the_drives_have_their_values_units_and_totals() {
         drives[0],
         json!({"start": "2026-11-27T11:50:00Z", "end": null, "duration_seconds": null,
                "distance": null, "energy_used": null, "consumption": null,
-               "mean_outside_temp": null, "mean_speed": null})
+               "mean_outside_temp": null, "mean_speed": null, "data_loss": false})
     );
     assert_eq!(drives[1]["end"], "2026-11-27T10:30:00Z");
     assert_eq!(drives[1]["duration_seconds"], 1800);

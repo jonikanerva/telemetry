@@ -856,7 +856,8 @@
           "distance",
           "energy_used",
           "consumption",
-          "drives_without_consumption"
+          "drives_without_consumption",
+          "drives_with_data_loss"
         ],
         "properties": {
           "consumption": {
@@ -879,6 +880,13 @@
             "type": "integer",
             "format": "int32",
             "description": "The ended drives.",
+            "maximum": 4294967295,
+            "minimum": 0
+          },
+          "drives_with_data_loss": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The drives with `data_loss`. They are in the sums.",
             "maximum": 4294967295,
             "minimum": 0
           },
@@ -945,6 +953,8 @@
         "required": [
           "generated_at",
           "range",
+          "status",
+          "gaps",
           "units",
           "drives",
           "totals",
@@ -958,6 +968,10 @@
             },
             "description": "The drives that start in the range, newest first. Empty when no\ndrive exists."
           },
+          "gaps": {
+            "$ref": "#/components/schemas/Gaps",
+            "description": "The losses that the ingest process recorded in the range, as in the\nbattery view."
+          },
           "generated_at": {
             "$ref": "#/components/schemas/Instant",
             "description": "The time of the response (server clock). Equal to `range.to`."
@@ -965,6 +979,17 @@
           "range": {
             "$ref": "#/components/schemas/ConsumptionRange",
             "description": "The requested range."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BatteryStatus",
+                "description": "Connection, newest data, and freshness, as in the battery view;\n`null` when no row of a battery field exists yet."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "totals": {
             "$ref": "#/components/schemas/ConsumptionTotals",
@@ -1006,7 +1031,8 @@
           "energy_used",
           "consumption",
           "mean_outside_temp",
-          "mean_speed"
+          "mean_speed",
+          "data_loss"
         ],
         "properties": {
           "consumption": {
@@ -1016,6 +1042,10 @@
             ],
             "format": "double",
             "description": "The consumption; only for a distance of at least 1 km."
+          },
+          "data_loss": {
+            "type": "boolean",
+            "description": "True when a recorded loss meets the time span of the drive, ends\nincluded: the values can be wrong, for example two drives merged by\na lost P. The ingest clock of the losses and the vehicle clock of\nthe drive differ, so the mark is approximate."
           },
           "distance": {
             "type": [

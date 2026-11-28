@@ -39,6 +39,11 @@ test('data: the drives, the totals, and the charts', async ({ page, baseURL }) =
   // 100,6 km and 18,9 kWh; 18 900 Wh / 100,584 km = 187,9 Wh/km.
   await expect(page.getByTestId('totals')).toContainText('3 ajoa: 100,6 km, 18,9 kWh, 188 Wh/km.');
   await expect(page.getByTestId('totals')).toContainText('1 ajolla ei ole kulutusarvoa');
+  // The recorded loss on 25.11. marks that drive; the car is asleep.
+  await expect(page.getByTestId('totals')).toContainText('1 ajo on merkitty: datan menetys ajon aikana');
+  await expect(page.getByTestId('status-line')).toHaveText(
+    'Ei yhteyttä tänään klo 10.20 alkaen: auto nukkuu tai on verkon ulkopuolella. Uusin data tänään klo 10.15.',
+  );
 
   const rows = page.getByTestId('drives-table').locator('tbody tr');
   await expect(rows).toHaveCount(4);
@@ -47,6 +52,7 @@ test('data: the drives, the totals, and the charts', async ({ page, baseURL }) =
   await expect(rows.nth(0)).toContainText('48,3');
   await expect(rows.nth(0)).toContainText('174');
   await expect(rows.nth(1)).toContainText('ei tietoa');
+  await expect(rows.nth(2)).toContainText('25.11.2026 klo 17.00 (datan menetys ajon aikana)');
 
   const byTemp = page.getByRole('figure', { name: 'Kulutus ja ulkolämpötila' });
   await expect(byTemp.getByTestId('scatter-point')).toHaveCount(3);

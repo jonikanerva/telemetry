@@ -330,6 +330,41 @@ pub async fn read_snapshot_with(
         .await
         .map_err(|error| statement(&error))?;
 
+    let (vehicles, connectivity) = read_header(&mut tx, window).await?;
+    after_first().await;
+    let VehicleCount::One(vehicle_id) = vehicles else {
+        commit(tx).await?;
+        return Ok(Snapshot {
+            window,
+            vehicles,
+            tiles: PerField::default(),
+            series: SeriesPair::default(),
+            events: EventSnapshot::default(),
+            connectivity: None,
+        });
+    };
+
+    let (tiles, mut series) = read_tiles(&mut tx, vehicle_id, window).await?;
+    read_buckets(&mut tx, vehicle_id, window, &mut series).await?;
+    let events = read_events(&mut tx, window).await?;
+    commit(tx).await?;
+    Ok(Snapshot {
+        window,
+        vehicles,
+        tiles,
+        series,
+        events,
+        connectivity,
+    })
+}
+
+/// The vehicles and the newest CONNECTED or DISCONNECTED row of the
+/// vehicle (`connection::newest_connectivity`), in one statement. The
+/// consumption read uses it too.
+pub(crate) async fn read_header(
+    conn: &mut PgConnection,
+    window: Window,
+) -> Result<(VehicleCount, Option<ConnectivityRow>), SourceError> {
     // The vehicles and the newest CONNECTED or DISCONNECTED row of the
     // vehicle (`connection::newest_connectivity`), in one statement.
     let header = sqlx::query!(
@@ -351,25 +386,13 @@ pub async fn read_snapshot_with(
         "#,
         window.to().to_sqlx() as _,
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await
     .map_err(|error| statement(&error))?;
-    after_first().await;
     let vehicles = match header.vehicles.as_slice() {
         [] => VehicleCount::None,
         [id] => VehicleCount::One(*id),
         _ => VehicleCount::Many,
-    };
-    let VehicleCount::One(vehicle_id) = vehicles else {
-        commit(tx).await?;
-        return Ok(Snapshot {
-            window,
-            vehicles,
-            tiles: PerField::default(),
-            series: SeriesPair::default(),
-            events: EventSnapshot::default(),
-            connectivity: None,
-        });
     };
     let connectivity = match (header.connection_id, header.created_at, header.status) {
         (Some(id), Some(created_at), Some(status)) => Some(ConnectivityRow {
@@ -379,19 +402,7 @@ pub async fn read_snapshot_with(
         }),
         _ => None,
     };
-
-    let (tiles, mut series) = read_tiles(&mut tx, vehicle_id, window).await?;
-    read_buckets(&mut tx, vehicle_id, window, &mut series).await?;
-    let events = read_events(&mut tx, window).await?;
-    commit(tx).await?;
-    Ok(Snapshot {
-        window,
-        vehicles,
-        tiles,
-        series,
-        events,
-        connectivity,
-    })
+    Ok((vehicles, connectivity))
 }
 
 pub(crate) async fn commit(tx: sqlx::Transaction<'_, sqlx::Postgres>) -> Result<(), SourceError> {
@@ -402,7 +413,7 @@ pub(crate) async fn commit(tx: sqlx::Transaction<'_, sqlx::Postgres>) -> Result<
     clippy::too_many_lines,
     reason = "one checked query with four lookups; the SQL text is most of the lines"
 )]
-async fn read_tiles(
+pub(crate) async fn read_tiles(
     conn: &mut PgConnection,
     vehicle_id: i16,
     window: Window,
@@ -597,7 +608,7 @@ async fn read_buckets(
 /// The loss rows and the restart markers of the window
 /// (`gaps::select_events`), in one statement. Each part reads one row more
 /// than its limit, so the snapshot can say that the limit cut it.
-async fn read_events(
+pub(crate) async fn read_events(
     conn: &mut PgConnection,
     window: Window,
 ) -> Result<EventSnapshot, SourceError> {

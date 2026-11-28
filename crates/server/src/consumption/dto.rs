@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use telemetry_web_domain::consumption as domain;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::battery::dto::RangeKey;
-use crate::battery::map::range_key;
+use crate::battery::dto::{BatteryStatus, Gaps, RangeKey};
+use crate::battery::map::{self, range_key};
 use crate::wire::Instant;
 
 /// The query of `GET /api/v1/consumption`.
@@ -28,6 +28,13 @@ pub struct ConsumptionView {
     pub generated_at: Instant,
     /// The requested range.
     pub range: ConsumptionRange,
+    /// Connection, newest data, and freshness, as in the battery view;
+    /// `null` when no row of a battery field exists yet.
+    #[schema(required = true)]
+    pub status: Option<BatteryStatus>,
+    /// The losses that the ingest process recorded in the range, as in the
+    /// battery view.
+    pub gaps: Gaps,
     /// The unit of each quantity.
     pub units: ConsumptionUnits,
     /// The drives that start in the range, newest first. Empty when no
@@ -134,6 +141,11 @@ pub struct Drive {
     /// The distance divided by the duration.
     #[schema(required = true)]
     pub mean_speed: Option<f64>,
+    /// True when a recorded loss meets the time span of the drive, ends
+    /// included: the values can be wrong, for example two drives merged by
+    /// a lost P. The ingest clock of the losses and the vehicle clock of
+    /// the drive differ, so the mark is approximate.
+    pub data_loss: bool,
 }
 
 /// The totals of the ended drives of the range. `distance`,
@@ -156,6 +168,9 @@ pub struct ConsumptionTotals {
     /// The ended drives without a consumption value.
     #[schema(minimum = 0, maximum = 4_294_967_295_u64)]
     pub drives_without_consumption: u32,
+    /// The drives with `data_loss`. They are in the sums.
+    #[schema(minimum = 0, maximum = 4_294_967_295_u64)]
+    pub drives_with_data_loss: u32,
 }
 
 /// A time below one microsecond, which the wire cannot hold. Stored times
@@ -182,6 +197,13 @@ pub fn view(view: &domain::View) -> Result<ConsumptionView, MapError> {
             from: instant(window.from())?,
             to: instant(window.to())?,
         },
+        status: view
+            .status
+            .as_ref()
+            .map(map::status)
+            .transpose()
+            .map_err(|_| MapError)?,
+        gaps: map::gaps(&view.gaps).map_err(|_| MapError)?,
         units: ConsumptionUnits {
             distance: DistanceUnit::Mile,
             energy: EnergyUnit::KilowattHour,
@@ -196,6 +218,7 @@ pub fn view(view: &domain::View) -> Result<ConsumptionView, MapError> {
             energy_used: view.totals.energy_kwh,
             consumption: view.totals.wh_per_km,
             drives_without_consumption: view.totals.without_consumption,
+            drives_with_data_loss: view.totals.with_data_loss,
         },
         truncated: view.truncated,
     })
@@ -214,5 +237,6 @@ fn drive(drive: &domain::Drive) -> Result<Drive, MapError> {
         consumption: drive.wh_per_km,
         mean_outside_temp: drive.mean_outside_temp_c,
         mean_speed: drive.mean_speed_kmh,
+        data_loss: drive.data_loss,
     })
 }

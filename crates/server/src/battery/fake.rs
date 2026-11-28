@@ -426,21 +426,21 @@ fn consumption_snapshot(
 ) -> Result<telemetry_web_domain::consumption::Snapshot, &'static str> {
     use telemetry_web_domain::consumption::{
         GEAR_FIELD, MAX_DRIVE_SAMPLES, MAX_GEAR_ROWS, SampleInput, Snapshot, ValueField, gear,
-        gear_input, periods, sample, sample_input,
+        gear_input, periods, sample, sample_input, sample_windows,
     };
-    let window = Window::ending_at(request.key, scenario.now.timestamp()).map_err(|_| "bad_now")?;
-    check_rows(scenario)?;
-    let vehicles = match scenario.vehicles.as_slice() {
-        [] => VehicleCount::None,
-        [id] => VehicleCount::One(*id),
-        _ => VehicleCount::Many,
-    };
+    // The status rows and the losses: the battery snapshot of the scenario.
+    let battery = snapshot(scenario, request)?;
+    let window = battery.window;
+    let vehicles = battery.vehicles;
     let VehicleCount::One(vehicle_id) = vehicles else {
         return Ok(Snapshot {
             window,
             vehicles,
             gears: gear_input(None, Vec::new(), MAX_GEAR_ROWS),
             samples: SampleInput::default(),
+            tiles: battery.tiles,
+            connectivity: None,
+            events: battery.events,
         });
     };
     let of_vehicle = || {
@@ -464,17 +464,14 @@ fn consumption_snapshot(
         .collect();
     in_range.truncate(MAX_GEAR_ROWS + 1);
     let gears = gear_input(before, in_range, MAX_GEAR_ROWS);
-    let ended: Vec<_> = periods(&gears)
-        .into_iter()
-        .filter_map(|period| period.end.map(|end| (period.start, end)))
-        .collect();
+    let windows = sample_windows(&periods(&gears));
     let mut rows: Vec<_> = of_vehicle()
         .filter_map(|signal| {
             let field = ValueField::from_number(signal.field)?;
             let at = signal.created_at.timestamp();
-            ended
+            windows
                 .iter()
-                .any(|(start, end)| *start <= at && at <= *end)
+                .any(|(from, to)| *from <= at && at <= *to)
                 .then(|| (at, sample(field, at, &raw(signal))))
         })
         .collect();
@@ -485,6 +482,9 @@ fn consumption_snapshot(
         vehicles,
         gears,
         samples: sample_input(rows, MAX_DRIVE_SAMPLES),
+        tiles: battery.tiles,
+        connectivity: battery.connectivity,
+        events: battery.events,
     })
 }
 

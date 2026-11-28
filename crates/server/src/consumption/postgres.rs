@@ -7,8 +7,12 @@
 //!
 //! 1. the Gear readings of the range, newest first, at most
 //!    `MAX_GEAR_ROWS + 1`, and the newest reading before the range;
-//! 2. the Odometer, `EnergyRemaining`, and `OutsideTemp` rows inside the
-//!    ended drives, newest first, at most `MAX_DRIVE_SAMPLES + 1`.
+//! 2. the Odometer, `EnergyRemaining`, and `OutsideTemp` rows of the
+//!    windows of `sample_windows` (one hour before each start to its end),
+//!    newest first, at most `MAX_DRIVE_SAMPLES + 1`.
+//!
+//! Before these, the read runs the statements of the battery read for the
+//! vehicles, the connection, the newest battery rows, and the losses.
 //!
 //! The columns are the columns that `db/roles.sql` grants to the web
 //! role: `vehicle_id`, `field`, `created_at`, `value_type`, `int_value`,
@@ -16,14 +20,17 @@
 
 use jiff_sqlx::ToSqlx;
 use sqlx::{Connection, PgConnection};
-use telemetry_web_domain::battery::{RawValue, VehicleCount, Window};
+use telemetry_web_domain::battery::{EventSnapshot, PerField, RawValue, VehicleCount, Window};
 use telemetry_web_domain::consumption::{
     GEAR_FIELD, GearInput, MAX_DRIVE_SAMPLES, MAX_GEAR_ROWS, SampleInput, Snapshot, ValueField,
-    gear, gear_input, periods, sample, sample_input,
+    gear, gear_input, periods, sample, sample_input, sample_windows,
 };
 
 use super::{ConsumptionFuture, ConsumptionSource};
-use crate::battery::postgres::{PostgresSource, READ_TRANSACTION, close, commit, statement};
+use crate::battery::postgres::{
+    PostgresSource, READ_TRANSACTION, close, commit, read_events, read_header, read_tiles,
+    statement,
+};
 use crate::battery::source::{SourceError, SourceRequest};
 
 impl PostgresSource {
@@ -58,17 +65,9 @@ pub async fn read_consumption(
         .begin_with(READ_TRANSACTION)
         .await
         .map_err(|error| statement(&error))?;
-    let ids = sqlx::query_scalar!(
-        r#"SELECT ARRAY(SELECT id FROM vehicle ORDER BY id LIMIT 2) AS "vehicles!""#
-    )
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|error| statement(&error))?;
-    let vehicles = match ids.as_slice() {
-        [] => VehicleCount::None,
-        [id] => VehicleCount::One(*id),
-        _ => VehicleCount::Many,
-    };
+    // The vehicles, the connection, the newest battery rows, and the
+    // losses: the statements of the battery read.
+    let (vehicles, connectivity) = read_header(&mut tx, window).await?;
     let VehicleCount::One(vehicle_id) = vehicles else {
         commit(tx).await?;
         return Ok(Snapshot {
@@ -76,9 +75,13 @@ pub async fn read_consumption(
             vehicles,
             gears: gear_input(None, Vec::new(), MAX_GEAR_ROWS),
             samples: SampleInput::default(),
+            tiles: PerField::default(),
+            connectivity: None,
+            events: EventSnapshot::default(),
         });
     };
-
+    let (tiles, _series) = read_tiles(&mut tx, vehicle_id, window).await?;
+    let events = read_events(&mut tx, window).await?;
     let gears = read_gears(&mut tx, vehicle_id, window).await?;
     let samples = read_samples(&mut tx, vehicle_id, &gears).await?;
     commit(tx).await?;
@@ -87,6 +90,9 @@ pub async fn read_consumption(
         vehicles,
         gears,
         samples,
+        tiles,
+        connectivity,
+        events,
     })
 }
 
@@ -157,14 +163,14 @@ async fn read_samples(
     vehicle_id: i16,
     gears: &GearInput,
 ) -> Result<SampleInput, SourceError> {
-    let ended: Vec<_> = periods(gears)
-        .into_iter()
-        .filter_map(|period| period.end.map(|end| (period.start, end)))
-        .collect();
-    let starts: Vec<jiff_sqlx::Timestamp> = ended.iter().map(|(s, _)| s.to_sqlx()).collect();
-    let ends: Vec<jiff_sqlx::Timestamp> = ended.iter().map(|(_, e)| e.to_sqlx()).collect();
+    let windows = sample_windows(&periods(gears));
+    if windows.is_empty() {
+        return Ok(SampleInput::default());
+    }
+    let starts: Vec<jiff_sqlx::Timestamp> = windows.iter().map(|(s, _)| s.to_sqlx()).collect();
+    let ends: Vec<jiff_sqlx::Timestamp> = windows.iter().map(|(_, e)| e.to_sqlx()).collect();
     let fields: Vec<i32> = ValueField::ALL.iter().map(|f| f.number()).collect();
-    let rows = sqlx::query!(
+    let mut rows = sqlx::query!(
         r#"
         SELECT s.field AS "field!", s.created_at AS "at!: jiff_sqlx::Timestamp",
                s.value_type AS "value_type!", s.int_value, s.float_value, s.text_value
@@ -184,6 +190,9 @@ async fn read_samples(
     .fetch_all(&mut *conn)
     .await
     .map_err(|error| statement(&error))?;
+    // A row at the end of one drive can be in the next window too
+    // (`sample_windows`); the rows are ordered, so a copy is adjacent.
+    rows.dedup_by(|a, b| a.field == b.field && a.at.to_jiff() == b.at.to_jiff());
     let mut newest_first = Vec::with_capacity(rows.len());
     for row in &rows {
         let Some(field) = ValueField::from_number(row.field) else {

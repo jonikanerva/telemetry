@@ -84,12 +84,12 @@ fn available_view(available: &domain::Available) -> Result<dto::BatteryView, Map
     Ok(dto::BatteryView::Available {
         generated_at: instant(window.to())?,
         range: range(window)?,
-        status: Box::new(dto::BatteryStatus {
-            connection: connection(available.connection)?,
-            latest_data_at: instant(available.latest_data_at)?,
-            latest_received_at: instant(available.latest_received_at)?,
-            freshness: freshness(available.freshness),
-        }),
+        status: Box::new(status(&domain::Status {
+            connection: available.connection,
+            latest_data_at: available.latest_data_at,
+            latest_received_at: available.latest_received_at,
+            freshness: available.freshness,
+        })?),
         tiles: Box::new(dto::BatteryTiles {
             soc: reading(&available.tiles.soc)?,
             energy_remaining: reading(&available.tiles.energy_remaining)?,
@@ -111,6 +111,32 @@ fn available_view(available: &domain::Available) -> Result<dto::BatteryView, Map
             items: restarts,
             truncated: available.restarts.truncated,
         },
+    })
+}
+
+/// Maps a status. The consumption view uses it too.
+///
+/// # Errors
+///
+/// Returns [`MapError`] for a time below one microsecond.
+pub fn status(status: &domain::Status) -> Result<dto::BatteryStatus, MapError> {
+    Ok(dto::BatteryStatus {
+        connection: connection(status.connection)?,
+        latest_data_at: instant(status.latest_data_at)?,
+        latest_received_at: instant(status.latest_received_at)?,
+        freshness: freshness(status.freshness),
+    })
+}
+
+/// Maps a list of recorded losses. The consumption view uses it too.
+///
+/// # Errors
+///
+/// Returns [`MapError`] for a time below one microsecond.
+pub fn gaps(gaps: &domain::Limited<domain::Gap>) -> Result<dto::Gaps, MapError> {
+    Ok(dto::Gaps {
+        items: gaps.items.iter().map(gap).collect::<Result<Vec<_>, _>>()?,
+        truncated: gaps.truncated,
     })
 }
 

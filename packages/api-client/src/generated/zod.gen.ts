@@ -16,6 +16,7 @@ export const zConsumptionTotals = z.object({
     consumption: z.number().nullable(),
     distance: z.number().nullable(),
     drives: z.int().gte(0).lte(4294967295),
+    drives_with_data_loss: z.int().gte(0).lte(4294967295),
     drives_without_consumption: z.int().gte(0).lte(4294967295),
     energy_used: z.number().nullable()
 });
@@ -154,6 +155,7 @@ export const zBatteryStatus = z.object({
  */
 export const zDrive = z.object({
     consumption: z.number().nullable(),
+    data_loss: z.boolean(),
     distance: z.number().nullable(),
     duration_seconds: z.int().gte(0).lte(4294967295).nullable(),
     end: zInstant.nullable(),
@@ -308,8 +310,10 @@ export const zConsumptionUnits = z.object({
  */
 export const zConsumptionView = z.object({
     drives: z.array(zDrive),
+    gaps: zGaps,
     generated_at: zInstant,
     range: zConsumptionRange,
+    status: zBatteryStatus.nullable(),
     totals: zConsumptionTotals,
     truncated: z.boolean(),
     units: zConsumptionUnits
