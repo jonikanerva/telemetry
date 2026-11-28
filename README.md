@@ -12,7 +12,7 @@ stores it, and the web application that shows it.
 
 | Part                | State                                                             |
 | ------------------- | ----------------------------------------------------------------- |
-| Ingest service      | Deployed: the image of ADR 0001. The vehicle connects. The config selects 20 fields ([usage estimate](docs/telemetry-usage-estimate.md)). No record reaches the Railway log. |
+| Ingest service      | Deployed: the image of ADR 0001. The vehicle connects. `config/telemetry_config.json` selects 201 fields ([usage estimate](docs/telemetry-usage-estimate.md)); the vehicle streams the config that the owner sent last. No record reaches the Railway log. |
 | Rust ingest process | Live. `ingest/Dockerfile` builds the image of ADR 0001: `ingest` starts `fleet-telemetry`, receives the records over ZMQ, and writes them to PostgreSQL. On Railway an init is PID 1 and `ingest` is PID 2. A merge to `main` that changes a watch path releases it; [STACK.md](STACK.md) section 15 has the release steps and the post-release checks. |
 | Storage             | Live on the Neon branch `production` (PostgreSQL 18): schema `raw`, migrations, and writer in `crates/ingest` (ADR 0002). `ingest migrate` runs as the Railway pre-deploy command. |
 | Application and web | Live: the web server (`crates/server`), the SPA (`web/`) with the password login (ADR 0012) and the battery view (ADR 0013), the generated API client, and the image `webapp/Dockerfile` (ADR 0010). The Railway service `telemetry-web` serves the custom domain `tesla.calmdonut.com`. See [VISION.md](VISION.md) for the product direction. |
@@ -228,19 +228,70 @@ path.
 The vehicle accepts a config only when the Tesla application private key
 signs it. Tesla's
 [`tesla-http-proxy`](https://github.com/teslamotors/vehicle-command) signs
-the request.
+the request. The owner does every step on the owner's computer. The
+private key and the OAuth token stay there. Do not put a token, a key, or
+the VIN in a file of this repository, a PR, or an issue.
 
-1. Edit `config/telemetry_config.json`.
+Each signal that the vehicle sends counts against the Tesla usage of the
+application, together with Home Assistant. When usage exceeds the billing
+limit, Tesla removes the config from the vehicle, does not restore it, and
+suspends the API also for Home Assistant (ADR 0018).
+
+### Before the first send of a larger config
+
+1. Open the usage page of the Tesla developer dashboard
+   (`/dashboard/usage`). Read the usage of the current and the last month.
+   The usage is Home Assistant plus the config that the vehicle streams
+   now.
+2. Add a payment method: "Manage Payment" on the same page. The default
+   billing limit is 0, and Tesla allows a higher limit only with a payment
+   method.
+3. Set the billing limit: "Update Limit". Set it far above the highest
+   modelled month of [the usage estimate](docs/telemetry-usage-estimate.md)
+   plus Home Assistant (about 10.4 USD of usage). Tesla does not say
+   whether the limit counts the usage before or after the monthly
+   discount of 10 USD. A limit of 20 USD is safe in both readings. Two
+   days after the send, read on the dashboard how the usage compares with
+   the limit. If the limit counts the usage after the discount, lower it to
+   about 11 USD, so that the paid part stays near the agreed overage of
+   about 10 EUR (ADR 0018).
+
+### Send the config
+
+1. Get a new Tesla OAuth access token. It expires in about 8 hours.
 2. Start `tesla-http-proxy` locally with the application private key.
-3. Send `POST /api/1/vehicles/fleet_telemetry_config` through the proxy with
-   the VIN and the config.
-4. Read `GET /api/1/vehicles/{vin}/fleet_telemetry_config` until `synced` is
-   `true`. The vehicle syncs when it is next awake.
-5. Read `GET /api/1/vehicles/{vin}/fleet_telemetry_errors` if no data
-   arrives.
+3. Send `POST /api/1/vehicles/fleet_telemetry_config` through the proxy
+   with the VIN and `config/telemetry_config.json` of the merged `main`.
+   The car does not need to be awake.
+4. Wake the car once with the Tesla phone app, for example by opening the
+   app. The vehicle adopts the config when it next connects. Do not use
+   the API `wake_up` endpoint: Tesla bills each wake.
+5. Read `GET /api/1/vehicles/{vin}/fleet_telemetry_config` until `synced`
+   is `true`.
+6. Read `GET /api/1/vehicles/{vin}/fleet_telemetry_errors`. The list must
+   be empty.
+7. Check that rows with new field numbers arrive in `raw.vehicle_signal`.
 
-Each signal that the vehicle sends counts against the Tesla usage credit.
-Tesla removes the config when usage exceeds the billing limit.
+### Roll back
+
+Send the previous config from Git with the same steps, for example
+`git show <commit>:config/telemetry_config.json`. Do not use
+`DELETE /api/1/vehicles/{vin}/fleet_telemetry_config`: it stops all
+collection.
+
+### Checks after the send
+
+- After two days: read the usage on the dashboard. The usage since the
+  send must stay near the planning month of the usage estimate
+  (3.41 USD for a full month). If it grows much faster, roll back and
+  report it.
+- After one week: compare the awake hours of the week before and the week
+  after the send (the connect and disconnect times in
+  `raw.connectivity_event`). The car must sleep as before (`VISION.md`,
+  "Success Definition"). If it sleeps less, roll back and report it.
+- After the first full month: compare the dashboard usage with the
+  planning month of the usage estimate, and read the bill. Report a
+  difference to the lead, so that the estimate gets the measured value.
 
 ## Verification
 
