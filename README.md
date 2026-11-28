@@ -6,7 +6,7 @@ it into a history of drives, charging sessions, and parked periods.
 The vehicle streams its data with Tesla
 [Fleet Telemetry](https://github.com/teslamotors/fleet-telemetry). This
 repository contains the ingest service that receives the stream and
-stores it, and the scaffold of the web application that will show it.
+stores it, and the web application that shows it.
 
 ## Status
 
@@ -15,7 +15,7 @@ stores it, and the scaffold of the web application that will show it.
 | Ingest service      | Deployed: the image of ADR 0001. The vehicle connects. The config selects 20 fields ([usage estimate](docs/telemetry-usage-estimate.md)). No record reaches the Railway log. |
 | Rust ingest process | Live. `ingest/Dockerfile` builds the image of ADR 0001: `ingest` starts `fleet-telemetry`, receives the records over ZMQ, and writes them to PostgreSQL. On Railway an init is PID 1 and `ingest` is PID 2. A merge to `main` that changes a watch path releases it; [STACK.md](STACK.md) section 15 has the release steps and the post-release checks. |
 | Storage             | Live on the Neon branch `production` (PostgreSQL 18): schema `raw`, migrations, and writer in `crates/ingest` (ADR 0002). `ingest migrate` runs as the Railway pre-deploy command. |
-| Application and web | Scaffold: the web server (`crates/server`), the SPA shell (`web/`), the generated API client, and the image `webapp/Dockerfile` (ADR 0010). No login and no data view yet. The Railway service `telemetry-web` has no public domain. See [VISION.md](VISION.md) for the product direction. |
+| Application and web | Live: the web server (`crates/server`), the SPA (`web/`) with the password login (ADR 0012) and the battery view (ADR 0013), the generated API client, and the image `webapp/Dockerfile` (ADR 0010). The Railway service `telemetry-web` serves the custom domain `tesla.calmdonut.com`. See [VISION.md](VISION.md) for the product direction. |
 
 ## How it works
 

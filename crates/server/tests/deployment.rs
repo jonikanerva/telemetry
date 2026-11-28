@@ -62,6 +62,9 @@ mod railway {
     /// The port of the server and of the healthcheck (`PORT`).
     pub const PORT: u16 = 8080;
     pub const DRAINING_SECONDS: u64 = 15;
+    /// The custom domain of the service: its only public address. The
+    /// Railway edge ends TLS.
+    pub const CUSTOM_DOMAIN: &str = "tesla.calmdonut.com";
     /// The public origin of the CSRF rule (`WEB_PUBLIC_ORIGIN`, ADR 0012).
     pub const PUBLIC_ORIGIN: &str = "https://tesla.calmdonut.com";
     /// The database variables that hold a secret, with the value cell of
@@ -351,7 +354,7 @@ fn the_settings_table_of_stack_md_holds_the_same_values() {
         ("Restart policy", "Always".to_owned()),
         ("`NO_CACHE`", format!("`{}`", railway::NO_CACHE)),
         ("TCP proxy", "None".to_owned()),
-        ("Custom domain", "None".to_owned()),
+        ("Custom domain", format!("`{}`", railway::CUSTOM_DOMAIN)),
         (
             "`WEB_PUBLIC_ORIGIN`",
             format!("`{}`", railway::PUBLIC_ORIGIN),
@@ -379,11 +382,17 @@ fn the_settings_table_of_stack_md_holds_the_same_values() {
     }
 }
 
-/// The server accepts the documented public origin at its start, and the
-/// hash row names the variable that the server reads.
+/// The server accepts the documented public origin at its start, the
+/// origin is the custom domain, and the hash row names the variable that
+/// the server reads.
 #[test]
 fn the_public_origin_and_the_hash_variable_agree_with_the_code() {
     assert!(PublicOrigin::parse(railway::PUBLIC_ORIGIN).is_ok());
+    // The origin of the CSRF rule is the custom domain over HTTPS.
+    assert_eq!(
+        railway::PUBLIC_ORIGIN,
+        format!("https://{}", railway::CUSTOM_DOMAIN)
+    );
     assert_eq!(ORIGIN_VARIABLE, "WEB_PUBLIC_ORIGIN");
     assert_eq!(HASH_VARIABLE, "WEB_PASSWORD_HASH");
     let hash = stack_row(&format!("`{HASH_VARIABLE}`"));

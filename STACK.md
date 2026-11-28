@@ -607,7 +607,7 @@ approval.
 | Rule / scope | Consequence | Compensating evidence | ADR | Reassessment |
 | ------------ | ----------- | --------------------- | --- | ------------ |
 | §3: no scanner for the `apt-get` packages of the built image, the Rust toolchain, the mise tools, and the static C code of `/fleet-telemetry` | A known vulnerability there is found only by a manual comparison. | The manual comparisons of ADR 0005, decision 6. Before a change enables the `kafka` dispatcher, compare the OpenSSL and libcurl records one by one. | ADR 0005 | The built image can be downloaded; a scanner covers these surfaces; another dispatcher or another libzmq address; or by 2027-01-25. |
-| §3: reviewed ignore files of the image scan | An ignored advisory that later gets a Debian fix or a KEV listing stays hidden until its entry expires. | A recorded decision and an expiry for each entry; the deployment-fact checks; the build-log check of §15; manual KEV comparison. | ADR 0005 | Expiry: Go entries 2027-02-24, Debian 13 entries 2027-01-25. Earlier with a new upstream release, a base image change, a broken deployment fact, or a KEV listing. Before the service `telemetry-web` gets a public domain or a TCP proxy: the glibc and gcc-14 entries of `docs/security/osv-scanner-web-debian.toml`. |
+| §3: reviewed ignore files of the image scan | An ignored advisory that later gets a Debian fix or a KEV listing stays hidden until its entry expires. | A recorded decision and an expiry for each entry; the deployment-fact checks; the build-log check of §15; manual KEV comparison. | ADR 0005 | Expiry: Go entries 2027-02-24, Debian 13 entries 2027-01-25. Earlier with a new upstream release, a base image change, a broken deployment fact, or a KEV listing. Due now, because the service `telemetry-web` has a public domain: the glibc and gcc-14 entries of `docs/security/osv-scanner-web-debian.toml` (W4 of `docs/security/image-advisories.md` no longer holds). |
 | §3: no scan of the builder image `rust:<version>-slim-trixie` | A compiler or linker vulnerability that changes the binary is not found by a scanner. | The tag is pinned (`<channel of rust-toolchain.toml>-slim-<Debian codename of the final stage>`; no check holds this form); `deps` prints the newest tag; `image-check` runs the binary; manual KEV comparison. | ADR 0005 | A scanner of the built image in CI; a build-stage advisory in CISA KEV; a change of the builder image. |
 | §3: no scan of the test image `postgres:18.7-trixie` (CI and the local test server) | A vulnerability in that image is not found by a scanner. | It runs only on the CI runner and in the local test server, with test data, no secret, and on loopback (the local server publishes only on `127.0.0.1`). | ADR 0005, ADR 0017 | The image is used outside the tests. |
 | §3, §14: Gitleaks 8.30.1 contains the brotli decoder of CVE-2026-111497 (CISA KEV) | A scan into archives, or another Gitleaks version, can run the decoder on fork input: a denial of service of the scan. | The scan reads no archive content (depth 0); `scripts/gitleaks-guard.sh` in `checks` fails on the literal archive depth flag in any tracked file (also a binary one), on a `git grep` error, and on a version other than 8.30.1; ADR 0011 lists the known limits. | ADR 0011 | A Gitleaks release with brotli 1.2.7 or later; any Gitleaks version change; a need to scan archives; or by 2027-01-25. |
@@ -680,7 +680,7 @@ PostgreSQL image".
 | Ingest server | `tesla/fleet-telemetry:v0.10.1` | Upstream binary, Go 1.27.4, dynamically linked against the glibc and libstdc++ of the base image. Triage: `docs/security/image-advisories.md`. |
 | Ingest base image | `debian:trixie-slim` | Debian 13. The build runs `apt-get upgrade`, so the packages depend on the build date. |
 | Ingest builder image | `rust:1.100.0-slim-trixie` | Rust 1.100.0 (`--profile minimal`) with gcc and libc6-dev. Only the `ingest` binary leaves the stage (§13). |
-| Railway web service | Hobby plan, project `calmdonut`, service `telemetry-web` | Builds `webapp/Dockerfile` from `main` (ADR 0010). No TCP proxy and no domain in this phase. Created by the lead before the first web release (ADR 0004, grant 2). |
+| Railway web service | Hobby plan, project `calmdonut`, service `telemetry-web` | Builds `webapp/Dockerfile` from `main` (ADR 0010). Public address: the custom domain `tesla.calmdonut.com`; the Railway edge ends TLS with a Let's Encrypt certificate. No TCP proxy. Created by the lead before the first web release (ADR 0004, grant 2). |
 | Web base image | `debian:trixie-slim` | The same image as the ingest base; the build runs `apt-get upgrade`. The final stage installs no package. |
 | Web builder images | `node:24.22.3-trixie-slim` (SPA) and `rust:1.100.0-slim-trixie` (server) | Only `web/dist` and the server binary leave the stages (§13). |
 | Node.js | 24.22.3 (LTS), `mise.toml` and the web builder image | Build-time only; not a production runtime. |
@@ -689,6 +689,7 @@ PostgreSQL image".
 | Railway TCP proxy | `zephyr.proxy.rlwy.net:57438` to container port 4443 | The vehicle's signed config names host `telemetry.calmdonut.com` and port 57438. |
 | Railway container | Kernel `6.12.12+bpo-cloud-amd64`; `tcp_retries2` 15; Yama `ptrace_scope` 0; open files 1048576 soft and hard | Listeners `0.0.0.0:4443`, `0.0.0.0:8080`, `127.0.0.1:4444`, `127.0.0.1:5284`, `127.0.0.1:9090`. `railway ssh` (UID 0) cannot read `/proc/<pid>/environ` of UID 10001. Read again after a platform change. |
 | DNS | Cloudflare, `telemetry` CNAME, DNS only | A proxied record breaks the vehicle mTLS connection. |
+| DNS of the web service | Cloudflare, `tesla` CNAME to the Railway target and the Railway verification record, DNS only | A proxied record lets Cloudflare read the battery data and the session cookie (`VISION.md`, forbidden data flows). |
 | Ingest TLS certificate | Cloudflare Origin CA, ECC, valid until 22 November 2041 | Variables `TLS_CERT` and `TLS_KEY`. The Origin CA ECC root expires 15 August 2029. |
 | Vehicle telemetry client | 1.3.0, vehicle firmware 2026.39.100 | From Tesla `fleet_status`. |
 | Tesla Fleet API | Region `na` | The owner's account is in the NA region. |
@@ -805,8 +806,9 @@ build step.
 - The web watch paths and the ingest watch paths overlap only in the
   Cargo files, `/.cargo/**`, `/rust-toolchain.toml`, and `/.dockerignore`.
   A change of one of these releases both services.
-- The service has no TCP proxy and no Railway domain. The custom domain
-  `tesla.calmdonut.com` comes with the login: a public URL without access
+- The service has no TCP proxy and no `up.railway.app` domain. Its only
+  public address is the custom domain `tesla.calmdonut.com`, behind the
+  password login (ADR 0003, ADR 0012). A public URL without access
   control is a sign of drift (`VISION.md`).
 - Release steps, post-release checks, and recovery:
   [`docs/web-release.md`](docs/web-release.md). The build-log check of
@@ -835,7 +837,7 @@ and checks that this table holds the same values.
 | `NO_CACHE`              | `1` | Variable `NO_CACHE` | Each build runs the `apt-get` step without the layer cache, so the image gets the Debian security fixes of the build date. |
 | `DATABASE_URL`          | Secret: a URL of the role `telemetry_web`; never in a document | Variable `DATABASE_URL` | The battery API reads the database (§5). The release build does not start without it. |
 | TCP proxy               | None | Service settings | No TCP port for the internet. |
-| Custom domain           | None | Service settings | No public URL before the login exists (`VISION.md`, drift signs); `tesla.calmdonut.com` comes with the login. |
+| Custom domain           | `tesla.calmdonut.com` | Service settings (the Railway edge ends TLS) | The only public address; the password login protects the data (ADR 0003, ADR 0012). |
 | `WEB_PUBLIC_ORIGIN`     | `https://tesla.calmdonut.com` | Variable `WEB_PUBLIC_ORIGIN` | The origin of the CSRF rule (ADR 0012); the server stops at the start without it. |
 | `WEB_PASSWORD_HASH`     | The Argon2id PHC string of the owner password; a secret | Variable `WEB_PASSWORD_HASH`, set by the owner | The login checks the password against it (ADR 0003, ADR 0012); the server stops at the start without a valid hash. |
 
