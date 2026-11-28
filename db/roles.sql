@@ -70,10 +70,13 @@
 --    remain. Then it grants USAGE on the schema and SELECT on the columns
 --    of `web_columns` only. Each grant is a column privilege, never a
 --    table privilege, so a column that a later migration adds stays
---    unreadable. The web role reads no location: it gets nothing on
---    `vehicle_signal.latitude`, `longitude`, `json_value`, `bool_value`,
---    and `is_resend`, on `connectivity_event.network_interface` and
---    `received_at`, or on `ingest_event.id`. It
+--    unreadable. The web role reads no latitude or longitude: it gets
+--    nothing on `vehicle_signal.latitude`, `longitude`, `json_value`,
+--    `bool_value`, and `is_resend`, on `connectivity_event.network_interface`
+--    and `received_at`, or on `ingest_event.id`. The grants are by column,
+--    not by field: the role can read the values of the granted columns for
+--    every field, also `GpsHeading`, `GpsAccuracyMeters`, `MilesToArrival`,
+--    `MinutesToArrival`, and `VehicleName` (STACK.md section 5). It
 --    gets nothing on `vehicle.vin`, on `unprocessed_record` (its payload
 --    bytes hold the VIN), on `vehicle_alert`, `vehicle_error`,
 --    `_sqlx_migrations`, or on a sequence. Each grant is made only when

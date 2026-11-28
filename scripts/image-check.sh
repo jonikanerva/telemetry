@@ -14,9 +14,11 @@
 #     drops to user 10001 with setpriv: ingest runs as user and
 #     group 10001, with no supplementary groups, no capabilities (CapInh,
 #     CapPrm, CapEff, CapBnd, and CapAmb are 0), and NoNewPrivs 1. Its
-#     environment holds DATABASE_URL but no TLS variable and no
-#     MIGRATION_DATABASE_URL. The soft open-file limit equals the hard
-#     limit. The ingest binary links only glibc and libgcc_s.
+#     environment holds DATABASE_URL but no TLS variable, no
+#     MIGRATION_DATABASE_URL, no variable cert or key, and no TLS key. The
+#     container gets variables named cert and key, as a Railway service
+#     variable could set them (issue #31). The soft open-file limit equals
+#     the hard limit. The ingest binary links only glibc and libgcc_s.
 #  2. fleet-telemetry is a child of PID 1 with an empty environment and the
 #     same credentials as ingest, and it holds no listening socket of
 #     ingest.
@@ -177,6 +179,13 @@ check_ingest_environment() {
   if printf '%s\n' "$environ" | grep -qE '^(TLS_CERT|TLS_KEY|MIGRATION_DATABASE_URL)='; then
     fail "the environment of ingest holds a TLS variable or the migrator URL"
   fi
+  # Issue #31: the container got cert and key (positive control), but
+  # ingest has neither name and no TLS key.
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$name" | grep -qx 'key=image-check-inherited-key' ||
+    fail "the container has no variable key"
+  if printf '%s\n' "$environ" | grep -qE -e '^(cert|key)=' -e 'PRIVATE KEY'; then
+    fail "the environment of ingest holds a variable cert or key, or the TLS key"
+  fi
   in_container awk '/^Max open files/ { print "open files: soft " $4 ", hard " $5; exit ($4 != $5) }' "/proc/$1/limits" ||
     fail "the soft open-file limit is not the hard limit"
 }
@@ -249,6 +258,7 @@ start_container() {
     -e DATABASE_URL="postgresql://telemetry_ingest:image-check-password@127.0.0.1:1/neondb" \
     -e MIGRATION_DATABASE_URL="postgresql://telemetry_migrator:image-check-migrator@127.0.0.1:1/neondb" \
     -e TLS_CERT -e TLS_KEY \
+    -e cert=image-check-inherited-cert -e key=image-check-inherited-key \
     "$tag" >/dev/null
   unset TLS_CERT TLS_KEY
 }
