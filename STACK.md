@@ -172,14 +172,14 @@ reads the Rust version from `rust-toolchain.toml`
 
 | Task     | Content |
 | -------- | ------- |
-| `setup`  | The pinned tools of `mise.toml`, the Rust toolchain, the locked crates, `pnpm install --frozen-lockfile`, and the Playwright browsers chromium, firefox, and webkit (in CI with `--with-deps`). Outside CI also `scripts/test-postgres.sh setup`: it checks Apple `container` (version 1 or later) and its service, and pulls the test image for `linux/arm64`. It never installs the tool or starts the service. |
+| `setup`  | The pinned tools of `mise.toml`, the Rust toolchain, the locked crates, `pnpm install --frozen-lockfile`, and the Playwright browser chromium (in CI with `--with-deps`). Outside CI also `scripts/test-postgres.sh setup`: it checks Apple `container` (version 1 or later) and its service, and pulls the test image for `linux/arm64`. It never installs the tool or starts the service. |
 | `format` | `cargo fmt --all` and Prettier in write mode over the TypeScript packages and their config files. |
 | `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings` for the host (linux/amd64 in CI), Clippy of `telemetry-web-server` with the feature `test-server`, type-aware Oxlint with `--deny-warnings`, and `tsc` of TypeScript 7 for `web`, `packages/api-client`, and `e2e`. |
 | `build`  | `cargo build --workspace --release --locked`, `vite build` of the SPA into `web/dist` with gzip copies, and the bundle-size check (`scripts/bundle-size.sh`). The build uses the committed client; it does not export or generate it. |
 | `contract` | Writes `contract/openapi.json` (`telemetry-web-server export-openapi`) and generates `packages/api-client/src/generated/` from it with Hey API. Run it after a change of an HTTP type or route, and commit both. |
 | `contract-check` | `scripts/contract-check.sh`: exports and generates in a scratch directory and compares the complete trees with `diff -r` (also added and deleted files). It never writes the working tree. |
 | `test`   | `scripts/test-postgres.sh local -- mise run test-db`: a new local test server (below), then task `test-db`. |
-| `test-db` | Hidden. `cargo nextest run --workspace --locked --no-fail-fast` without the tests that need Neon (below), the server tests with the feature `test-server`, `cargo test --doc --workspace --locked` (task `doctest`), and task `test-web`: Vitest, then the Playwright journeys in chromium, firefox, and webkit against the debug test server (`telemetry-web-server serve-test`) with the real router, middleware, and built SPA, in one worker (the session store and the login throttle of the test server are global, ADR 0012). |
+| `test-db` | Hidden. `cargo nextest run --workspace --locked --no-fail-fast` without the tests that need Neon (below), the server tests with the feature `test-server`, `cargo test --doc --workspace --locked` (task `doctest`), and task `test-web`: Vitest, then the Playwright journeys in chromium with a desktop viewport against the debug test server (`telemetry-web-server serve-test`) with the real router, middleware, and built SPA, in one worker (the session store and the login throttle of the test server are global, ADR 0012). |
 | `test-neon` | The tests that need Neon (below), against the Neon branch `test` (`NEON_TEST_DATABASE_URL`). Not part of `verify`. Run it after a change of `crates/ingest/src/storage/`, `db/`, `migrations/`, or a TLS crate in `Cargo.lock`, and before an ingest release (ADR 0017). |
 | `verify` | The static checks of task `checks` (Rust and Prettier format checks, `lint`, `contract-check`, `cargo deny --locked check`, `pnpm audit --prod=false`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, `.bin/`, or `node_modules/` path), then `build`, then `sqlx-check` and `test` on one local test server. |
 | `ci`     | The CI job `ci`: `checks`, the SQLx check, `build`, and `test-db` against the server that `scripts/test-postgres.sh ci` starts on the runner. It does not replace `verify`. |
@@ -248,6 +248,9 @@ Scope and gaps of `verify`:
   the feature `test-server`, which the release image does not build.
   `pnpm audit` sends the package names and versions of `pnpm-lock.yaml` to
   the audit endpoint of the npm registry; it sends no product data.
+- Supported browser: Chrome on a desktop viewport (ADR 0010). No engine
+  evidence for a phone browser (every iOS browser uses WebKit). Reassess
+  when the owner starts to use the product on a phone.
 - Prettier formats the TypeScript packages and their config files, not the
   Markdown documents.
 
@@ -366,7 +369,7 @@ other rows name the slice that can measure them.
 | Battery API, cold Neon | ≤ 8 s total | Not measured: the shared test compute did not suspend during experiment E3 (ADR 0013) | Post-release check on Railway (`docs/web-release.md`, "Battery API read time") |
 | Resident memory | steady ≤ 128 MiB, peak ≤ 256 MiB | Not measured | Railway metrics after the release |
 | Concurrency | Argon2 ≤ 1 | Not applicable in S1 | Owned by S2 |
-| Lab experience | LCP ≤ 2.5 s, CLS ≤ 0.1 (Chromium, mobile viewport, 4× CPU slowdown); no field data | Not measured | Owned by S4 |
+| Lab experience | LCP ≤ 2.5 s, CLS ≤ 0.1 (Chromium, desktop viewport, 4× CPU slowdown); no field data | Not measured | Owned by S4 |
 | Web use of Neon | ≤ 10 CU-hours each month | Not measured: each request wakes the compute only for its read; no background polling | Neon usage after the first week of web use (ADR 0013, reassessment) |
 
 ---
@@ -460,7 +463,7 @@ at the pin.
 | @tanstack/react-query | 5.108.4 | `telemetry-web-spa` | Server state and cache | MIT |
 | zod | 4.6.7 | `telemetry-web-api-client` | Executed validation of responses and problem bodies | MIT |
 | @hey-api/openapi-ts | 0.99.0 | `telemetry-web-api-client` (dev) | Generation of the SDK, types, and Zod schemas | MIT |
-| @playwright/test | 1.65.1 | root, `telemetry-web-e2e` | Browser journeys; ships Chromium build 1255, Firefox 159.0 build 1572, and WebKit build 2388 (`browsers.json` of `playwright-core`) | Apache-2.0 |
+| @playwright/test | 1.65.1 | root, `telemetry-web-e2e` | Browser journeys; ships Chromium build 1255 (`browsers.json` of `playwright-core`) | Apache-2.0 |
 | @axe-core/playwright | 4.14.1 | `telemetry-web-e2e` | Accessibility checks in the journeys | MPL-2.0 (test only; the image holds no file of it) |
 | @types/react, @types/react-dom, @types/node | 19.3.3, 19.3.0, 24.19.4 | dev | Types; `@types/node` follows the Node 24 runtime | MIT |
 
@@ -614,7 +617,6 @@ approval.
 | §1: `exactOptionalPropertyTypes` off for `packages/api-client/src/generated/` | The copied client runtime of Hey API is not checked with that one flag. | Nothing edits the directory; `contract-check`; every other strict flag stays on; the facade and the SPA keep the flag and read the generated code only as declarations. | ADR 0010 | A Hey API release whose runtime passes the flag. |
 | §3: no scan of the web builder images `node:<version>-trixie-slim` and `rust:<version>-slim-trixie` | A vulnerability in Node, npm, pnpm, or a builder Debian package that changes the SPA files or the server binary is not found by a scanner. | The tags equal the pins of `mise.toml` and `rust-toolchain.toml` (`crates/server/tests/deployment.rs`); `deps` prints the newest tags; `pnpm audit` and the source scan cover the npm packages of the build; `vuln` allows only the binary and `web/dist` out of the builder stages; `image-check` runs the built image; manual KEV comparison. | ADR 0010 | A scanner of the built image in CI; a builder-stage advisory in CISA KEV; a change of a builder image. |
 | §14: build and test of the web image before merge | The Railway build, settings, and healthcheck of `telemetry-web` are unverified before the merge. | A green `image-check` job of the PR head (`image-check-web.sh`); the post-release checks and the recovery of `docs/web-release.md`. | ADR 0008, ADR 0010 | Railway documents its Dockerfile build, or the Railway builder can run before the merge. |
-| §3, §14: Firefox journeys of `e2e/` hide `ariaLabelledByElements` | In the project `firefox`, `e2e/support.ts` deletes the property from `Element.prototype` in the main world, because Firefox build 1572 crashes when two worlds read it (Mozilla bug 2090055). axe in Firefox does not check a reference that a script sets only through the property. Chromium and WebKit are unchanged. | `e2e/firefox-aria-reflection.spec.ts`: the regression test, the axe challenge test, the context test of `newBrowserContext`, the axe equivalence test in Chromium and WebKit, the source check of `web/src` and `packages/api-client/src`, and the removal guard. Each slice that adds a page or a state with an axe check adds the page or state to the equivalence test. The lint rules for `e2e/**` keep the fixture in front of every page: only `e2e/support.ts` and `e2e/playwright.config.ts` import values from Playwright, and only `e2e/support.ts` opens a context; ADR 0015 lists their known limits. | ADR 0015 | A stable Playwright release with Firefox build 1575 or later is older than 1440 minutes, or by 2027-02-28. The removal guard fails when the pinned Playwright ships such a build. |
 | Web profile §15: one image for server and SPA | The ingest service is a second image (Tesla's upstream server). | The application still ships as one image. | ADR 0009 | Permanent while the upstream server is used. |
 
 ---

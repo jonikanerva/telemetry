@@ -31,7 +31,7 @@ jobs:
     # A pinned image version, not ubuntu-latest, so that the platform
     # changes only with a change of this file.
     runs-on: ubuntu-26.04
-    # The job also installs three browsers and their system packages.
+    # The job also installs Chromium and its system packages.
     timeout-minutes: 60
     env:
       # The configuration is the checked-out repository; the run has no

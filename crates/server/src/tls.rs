@@ -1,9 +1,9 @@
 //! TLS of the test server (feature `test-server`).
 //!
-//! The command `serve-test` serves HTTPS, because the Playwright browser
-//! `webkit` does not keep a `Secure` cookie with the `__Host-` prefix over
-//! `http://localhost` (experiment E4). The login session cookie needs that prefix in all
-//! three browser engines of the Playwright tests. The command `serve`
+//! The command `serve-test` serves HTTPS, so that the Playwright journeys
+//! reach the server over HTTPS, as the browser reaches production through
+//! the Railway proxy. Chromium also keeps the `__Host-` session cookie over
+//! `http://localhost`, so the cookie alone does not need TLS. The command `serve`
 //! serves plain HTTP behind the Railway proxy and has no TLS: the release
 //! build does not enable the feature, so it does not compile this module,
 //! rustls, or tokio-rustls.

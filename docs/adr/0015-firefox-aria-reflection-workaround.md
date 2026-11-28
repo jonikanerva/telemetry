@@ -1,6 +1,8 @@
 # ADR 0015: Firefox ARIA reflection workaround in the browser journeys
 
-- Status: Accepted, 28 November 2026. A scoped exception under
+- Status: Superseded, 28 November 2026: the owner decided that the
+  journeys run in chromium only (ADR 0010, Status), so the workaround and
+  its tests are removed. Before: Accepted, 28 November 2026. A scoped exception under
   `DOCTRINE.md` "Exceptions". Decided by the lead within delegated
   authority, with approval by an independent reviewer (qa-enforcer) in PR
   #51: <https://github.com/jonikanerva/telemetry/pull/51#pullrequestreview-6093024203>,
