@@ -132,16 +132,24 @@ run = "cargo test --doc --workspace --locked"
 description = "Run the static checks that verify and ci share"
 hide = true
 run = [
+  { task = "local-checks" },
+  "cargo deny --locked check",
+  # The JS dependencies, also the development tools (STACK.md §3, §14).
+  "pnpm audit --prod=false",
+  "gitleaks git --redact --no-banner .",
+]
+
+[tasks.local-checks]
+description = "Run the static checks that need no network and no container"
+hide = true
+# `checks` and `light` use this task.
+run = [
   "cargo fmt --all --check",
   "pnpm run format:check",
   { task = "lint" },
   { task = "contract-check" },
-  "cargo deny --locked check",
-  # The JS dependencies, also the development tools (STACK.md §3, §14).
-  "pnpm audit --prod=false",
   "cargo shear",
   "scripts/gitleaks-guard.sh",
-  "gitleaks git --redact --no-banner .",
   "jq empty ingest/server_config.json config/telemetry_config.json contract/openapi.json",
   "sh -n ingest/entrypoint.sh",
   "sh -n scripts/sqlx-metadata.sh",
@@ -149,12 +157,29 @@ run = [
   "sh -n scripts/test-postgres-test.sh",
   # The clean-up rules of the test server script, with stub programs.
   "sh scripts/test-postgres-test.sh",
+  "sh -n scripts/ci-select.sh",
+  "sh -n scripts/ci-select-test.sh",
+  # The job selection of the CI workflow, with sample change lists.
+  "sh scripts/ci-select-test.sh",
   "sh -n scripts/image-check.sh",
   "sh -n scripts/image-check-web.sh",
   "sh -n scripts/contract-check.sh",
   "sh -n scripts/bundle-size.sh",
   "sh -n e2e/tls-cert.sh",
   "! git ls-files | grep -E '(^|/)(\\.env|secrets/|\\.bin/|node_modules/)'",
+]
+
+[tasks.light]
+description = "Run the fast checks and the tests without a database, the network, or a browser"
+# The checks of the development loop (STACK.md §3). The test filter leaves
+# out the test binaries that need a database. TEST_DATABASE_URL is removed
+# from the environment, so a database test that is not on the list fails.
+run = [
+  { task = "local-checks" },
+  "env -u TEST_DATABASE_URL cargo nextest run --workspace --locked --no-fail-fast -E 'not (binary_id(ingest::storage) or binary_id(telemetry-web-server::battery_postgres))'",
+  "env -u TEST_DATABASE_URL cargo nextest run -p telemetry-web-server --locked --no-fail-fast --features test-server -E 'not binary_id(telemetry-web-server::battery_postgres)'",
+  { task = "doctest" },
+  "pnpm run test:unit",
 ]
 
 [tasks.sqlx-check]
