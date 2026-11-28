@@ -61,6 +61,19 @@ pub async fn read_consumption(
     conn: &mut PgConnection,
     window: Window,
 ) -> Result<Snapshot, SourceError> {
+    read_consumption_with(conn, window, MAX_DRIVE_SAMPLES).await
+}
+
+/// [`read_consumption`] with another limit of the value rows (the tests).
+///
+/// # Errors
+///
+/// Returns the classified [`SourceError`].
+pub async fn read_consumption_with(
+    conn: &mut PgConnection,
+    window: Window,
+    max_samples: usize,
+) -> Result<Snapshot, SourceError> {
     let mut tx = conn
         .begin_with(READ_TRANSACTION)
         .await
@@ -83,7 +96,7 @@ pub async fn read_consumption(
     let (tiles, _series) = read_tiles(&mut tx, vehicle_id, window).await?;
     let events = read_events(&mut tx, window).await?;
     let gears = read_gears(&mut tx, vehicle_id, window).await?;
-    let samples = read_samples(&mut tx, vehicle_id, &gears).await?;
+    let samples = read_samples(&mut tx, vehicle_id, &gears, max_samples).await?;
     commit(tx).await?;
     Ok(Snapshot {
         window,
@@ -162,6 +175,7 @@ async fn read_samples(
     conn: &mut PgConnection,
     vehicle_id: i16,
     gears: &GearInput,
+    max_samples: usize,
 ) -> Result<SampleInput, SourceError> {
     let windows = sample_windows(&periods(gears));
     if windows.is_empty() {
@@ -170,7 +184,9 @@ async fn read_samples(
     let starts: Vec<jiff_sqlx::Timestamp> = windows.iter().map(|(s, _)| s.to_sqlx()).collect();
     let ends: Vec<jiff_sqlx::Timestamp> = windows.iter().map(|(_, e)| e.to_sqlx()).collect();
     let fields: Vec<i32> = ValueField::ALL.iter().map(|f| f.number()).collect();
-    let mut rows = sqlx::query!(
+    // The windows share no instant (`sample_windows`), so each row comes
+    // once and the limit counts distinct rows.
+    let rows = sqlx::query!(
         r#"
         SELECT s.field AS "field!", s.created_at AS "at!: jiff_sqlx::Timestamp",
                s.value_type AS "value_type!", s.int_value, s.float_value, s.text_value
@@ -185,14 +201,11 @@ async fn read_samples(
         starts as _,
         ends as _,
         &fields,
-        limit(MAX_DRIVE_SAMPLES),
+        limit(max_samples),
     )
     .fetch_all(&mut *conn)
     .await
     .map_err(|error| statement(&error))?;
-    // A row at the end of one drive can be in the next window too
-    // (`sample_windows`); the rows are ordered, so a copy is adjacent.
-    rows.dedup_by(|a, b| a.field == b.field && a.at.to_jiff() == b.at.to_jiff());
     let mut newest_first = Vec::with_capacity(rows.len());
     for row in &rows {
         let Some(field) = ValueField::from_number(row.field) else {
@@ -208,5 +221,5 @@ async fn read_samples(
         };
         newest_first.push((at, sample(field, at, &raw)));
     }
-    Ok(sample_input(newest_first, MAX_DRIVE_SAMPLES))
+    Ok(sample_input(newest_first, max_samples))
 }

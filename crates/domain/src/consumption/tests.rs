@@ -596,3 +596,36 @@ fn a_marked_drive_keeps_its_values_and_the_totals_count_it() {
     // No battery row: no status.
     assert_eq!(v.status, None);
 }
+
+#[test]
+fn the_sample_windows_share_no_instant() {
+    // P at 08:30 ends one drive; the next starts at 08:40, so its lookback
+    // reaches back past 08:30. The second window starts just after 08:30.
+    let gears = input(
+        Before::Nothing,
+        &[
+            ("2026-11-27T08:00:00Z", D),
+            ("2026-11-27T08:30:00Z", P),
+            ("2026-11-27T08:40:00Z", D),
+            ("2026-11-27T09:00:00Z", P),
+            // Exactly one hour later: the lookback starts at the end of
+            // the previous drive.
+            ("2026-11-27T10:00:00Z", D),
+            ("2026-11-27T10:10:00Z", P),
+        ],
+    );
+    assert_eq!(
+        sample_windows(&periods(&gears)),
+        [
+            (at("2026-11-27T07:00:00Z"), at("2026-11-27T08:30:00Z")),
+            (
+                at("2026-11-27T08:30:00.000001Z"),
+                at("2026-11-27T09:00:00Z")
+            ),
+            (
+                at("2026-11-27T09:00:00.000001Z"),
+                at("2026-11-27T10:10:00Z")
+            ),
+        ]
+    );
+}

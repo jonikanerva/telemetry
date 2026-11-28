@@ -1373,3 +1373,88 @@ async fn the_consumption_read_of_no_vehicle_and_two_vehicles() {
         .await;
     }
 }
+
+/// Two drives less than one hour apart, with value rows at the P instant
+/// between them (the vehicle sends the fields of one payload with one
+/// `created_at`): D 08:00, P 08:30, D 08:40, P 09:00; Odometer 100, 105,
+/// 110, 120 mi and `EnergyRemaining` 60, 58.5, 57, 54 kWh at 08:00,
+/// 08:15, 08:30, 09:00. Eight distinct value rows.
+fn adjacent_drives() -> Rows {
+    let mut signals = vec![
+        row(10, "2026-11-27T08:00:00Z", 9, 5.0),
+        row(10, "2026-11-27T08:30:00Z", 9, 2.0),
+        row(10, "2026-11-27T08:40:00Z", 9, 5.0),
+        row(10, "2026-11-27T09:00:00Z", 9, 2.0),
+    ];
+    for (time, miles, kwh) in [
+        ("2026-11-27T08:00:00Z", 100.0, 60.0),
+        ("2026-11-27T08:15:00Z", 105.0, 58.5),
+        ("2026-11-27T08:30:00Z", 110.0, 57.0),
+        ("2026-11-27T09:00:00Z", 120.0, 54.0),
+    ] {
+        signals.push(row(5, time, 5, miles));
+        signals.push(row(158, time, 5, kwh));
+    }
+    Rows {
+        vehicles: 1,
+        signals,
+        ..Rows::default()
+    }
+}
+
+/// Each value row comes back once, also the rows at the shared P instant,
+/// and the P sample is the end value of one drive and the start value of
+/// the next.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_value_rows_of_adjacent_drives_come_back_once() {
+    use telemetry_web_domain::consumption::derive_view;
+    use telemetry_web_server::consumption::postgres::read_consumption_with;
+    with_rows(
+        &adjacent_drives(),
+        async move |mut conn: PgConnection, _rows: Rows| {
+            let window = Window::ending_at(RangeKey::Day, at(NOW)).unwrap();
+            // At a limit of exactly the eight distinct rows, nothing is cut.
+            let snapshot = read_consumption_with(&mut conn, window, 8).await.unwrap();
+            assert_eq!(snapshot.samples.samples.len(), 8);
+            assert_eq!(snapshot.samples.cut_at, None);
+            let view = derive_view(&snapshot).unwrap();
+            assert!(!view.truncated);
+            let values: Vec<_> = view
+                .drives
+                .iter()
+                .map(|d| (d.start, d.distance_mi, d.energy_kwh))
+                .collect();
+            assert_eq!(
+                values,
+                [
+                    (at("2026-11-27T08:40:00Z"), Some(10.0), Some(3.0)),
+                    (at("2026-11-27T08:00:00Z"), Some(10.0), Some(3.0)),
+                ]
+            );
+        },
+    )
+    .await;
+}
+
+/// A limit of seven cuts one of the eight distinct rows: the read says so,
+/// and the drives that can miss rows are left out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cut_of_a_distinct_row_at_a_shared_instant_is_truncated() {
+    use telemetry_web_domain::consumption::derive_view;
+    use telemetry_web_server::consumption::postgres::read_consumption_with;
+    with_rows(
+        &adjacent_drives(),
+        async move |mut conn: PgConnection, _rows: Rows| {
+            let window = Window::ending_at(RangeKey::Day, at(NOW)).unwrap();
+            let snapshot = read_consumption_with(&mut conn, window, 7).await.unwrap();
+            assert_eq!(snapshot.samples.cut_at, Some(at("2026-11-27T08:00:00Z")));
+            let view = derive_view(&snapshot).unwrap();
+            assert!(view.truncated);
+            // Both drives have a lookback start (07:00, 07:40) at or before
+            // the cut, so both can miss rows and are left out: no wrong
+            // value is shown.
+            assert_eq!(view.drives, Vec::new());
+        },
+    )
+    .await;
+}

@@ -224,18 +224,25 @@ pub fn periods(input: &GearInput) -> Vec<Period> {
 }
 
 /// The time windows of the value rows of the ended drives, oldest first:
-/// from [`LOOKBACK`] before each start to its end. A window does not reach
-/// back before the end of the previous drive, whose window holds those
-/// rows already; only the instant of that end can be in two windows.
+/// from [`LOOKBACK`] before each start to its end, ends included. The
+/// windows share no instant, so no row matches two windows: a window
+/// starts at the earliest one microsecond (the precision of PostgreSQL)
+/// after the end of the previous one. The rows before that are in the
+/// previous window, and the domain uses all rows for each drive, so one
+/// sample can still be the end value of one drive and the start value of
+/// the next.
 #[must_use]
 pub fn sample_windows(periods: &[Period]) -> Vec<(Timestamp, Timestamp)> {
     let mut windows: Vec<(Timestamp, Timestamp)> = Vec::new();
     for period in periods {
         let Some(end) = period.end else { continue };
         let from = lookback_start(period.start);
-        let from = windows
-            .last()
-            .map_or(from, |(_, previous)| from.max(*previous));
+        let from = windows.last().map_or(from, |(_, previous)| {
+            let after = previous
+                .checked_add(SignedDuration::from_micros(1))
+                .unwrap_or(*previous);
+            from.max(after)
+        });
         windows.push((from, end));
     }
     windows
