@@ -54,13 +54,15 @@ pub fn fake_child() -> PathBuf {
         )
 }
 
-/// A loopback port that is free now.
-pub fn free_port() -> u16 {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// `N` loopback ports that are free now and differ from each other.
+///
+/// All listeners stay open until each port is read, so the operating
+/// system cannot give one port twice. After the return, another process
+/// can still take a port before the child binds it.
+pub fn free_ports<const N: usize>() -> [u16; N] {
+    let listeners: [TcpListener; N] =
+        std::array::from_fn(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap());
+    listeners.map(|listener| listener.local_addr().unwrap().port())
 }
 
 /// The ports of the child.
@@ -93,11 +95,12 @@ impl Ingest {
     /// Starts `ingest run` with the fake child, the database URL, and the
     /// extra variables, and waits until both ports listen.
     pub fn start(database_url: &str, extra: &[(&str, String)]) -> Self {
+        let [upstream, zmq, metrics, control] = free_ports::<4>();
         let ports = ChildPorts {
-            upstream: free_port(),
-            zmq: free_port(),
-            metrics: free_port(),
-            control: free_port(),
+            upstream,
+            zmq,
+            metrics,
+            control,
         };
         let config = std::env::temp_dir().join(format!(
             "ingest-fake-{}-{}.json",
