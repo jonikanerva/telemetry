@@ -10,9 +10,11 @@
 //!   binary. [`fake_child`] finds it there.
 //! - Each run gets its own free loopback ports and its own configuration
 //!   file for the child, so tests can run in parallel.
-//! - A failed wait prints only the names of the log events, never the log
-//!   text: a test with a database URL must not print the URL, also when
-//!   the process would leak it.
+//! - A failed wait prints the log lines and the standard error of the
+//!   process ([`Ingest::report`]). A test with a database URL must not
+//!   print the URL, also when the process would leak it: the report
+//!   withholds each line that holds the URL or its password
+//!   ([`withhold`]).
 //! - Drop kills the process; the fake child ends when its parent ends.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -87,6 +89,8 @@ pub struct Ingest {
     pub health_port: u16,
     pub gate_port: u16,
     config: PathBuf,
+    /// The values that a report must not print ([`withhold`]).
+    secrets: Vec<String>,
 }
 
 static RUNS: AtomicU64 = AtomicU64::new(0);
@@ -153,6 +157,7 @@ impl Ingest {
             health_port: 0,
             gate_port: 0,
             config,
+            secrets: secrets_of(database_url),
         };
         ingest.health_port = ingest.port_of("listening");
         ingest.gate_port = ingest.port_of("gate_listening");
@@ -164,8 +169,7 @@ impl Ingest {
         u16::try_from(event["port"].as_u64().unwrap()).unwrap()
     }
 
-    /// The names of the log events so far. A failure message shows only
-    /// these names.
+    /// The names of the log events so far.
     pub fn messages(&self) -> Vec<&str> {
         self.events
             .iter()
@@ -202,7 +206,7 @@ impl Ingest {
         loop {
             let remaining = WAIT.saturating_sub(started.elapsed());
             let Ok(line) = self.lines.recv_timeout(remaining) else {
-                panic!("no event {what}; events so far: {:?}", self.messages());
+                panic!("no event {what} within {WAIT:?}\n{}", self.report());
             };
             let event = self.take(line);
             if wanted(&event) {
@@ -262,7 +266,11 @@ impl Ingest {
     pub fn wait_for_health(&self, status: u16) {
         let started = Instant::now();
         while self.health() != status {
-            assert!(started.elapsed() < WAIT, "/health did not answer {status}");
+            assert!(
+                started.elapsed() < WAIT,
+                "/health did not answer {status} within {WAIT:?}\n{}",
+                self.report()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -287,7 +295,11 @@ impl Ingest {
             if let Some(vehicle) = self.vehicle() {
                 return vehicle;
             }
-            assert!(started.elapsed() < WAIT, "the gate did not open");
+            assert!(
+                started.elapsed() < WAIT,
+                "the gate did not open within {WAIT:?}\n{}",
+                self.report()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -321,7 +333,11 @@ impl Ingest {
             if let Some(status) = self.child.try_wait().unwrap() {
                 break status;
             }
-            assert!(started.elapsed() < WAIT * 2, "the process did not stop");
+            assert!(
+                started.elapsed() < WAIT * 2,
+                "the process did not stop\n{}",
+                self.report()
+            );
             std::thread::sleep(Duration::from_millis(20));
         };
         loop {
@@ -330,7 +346,9 @@ impl Ingest {
                     self.take(line);
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
-                Err(RecvTimeoutError::Timeout) => panic!("standard output did not close"),
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("standard output did not close\n{}", self.report())
+                }
             }
         }
         let stderr: Vec<String> = self.stderr.try_iter().collect();
@@ -340,6 +358,21 @@ impl Ingest {
             stderr.len()
         );
         status
+    }
+
+    /// The diagnosis of a failed wait: the log lines so far, the lines
+    /// that arrived but were not read yet, and the standard error so far.
+    /// Each line that holds a secret is withheld ([`withhold`]). The fake
+    /// child sends only synthetic values.
+    pub fn report(&self) -> String {
+        let pending: Vec<String> = self.lines.try_iter().collect();
+        let stderr: Vec<String> = self.stderr.try_iter().collect();
+        format!(
+            "log lines of ingest ({} events):\n{}standard error of ingest:\n{}",
+            self.events.len(),
+            withhold(self.raw.iter().chain(&pending), &self.secrets),
+            withhold(&stderr, &self.secrets)
+        )
     }
 
     /// Checks the complete log output: no line holds one of `secrets`
@@ -394,6 +427,64 @@ pub fn line_holds(line: &str, secret: &str) -> bool {
         }
         None => line.contains(secret),
     }
+}
+
+/// The secrets of a database URL for [`withhold`]: the URL and its
+/// password. A password shorter than 6 characters is left out, because it
+/// can match ordinary text and so withhold most lines; the full URL stays.
+fn secrets_of(database_url: &str) -> Vec<String> {
+    let mut secrets = vec![database_url.to_owned()];
+    let password = database_url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split_once('@'))
+        .and_then(|(credentials, _)| credentials.split_once(':'))
+        .map(|(_, password)| password);
+    if let Some(password) = password.filter(|password| password.len() >= 6) {
+        secrets.push(password.to_owned());
+    }
+    secrets
+}
+
+/// The lines, one on each line, with each line that holds one of
+/// `secrets` replaced by a marker. The marker does not name the secret.
+pub fn withhold<'a>(lines: impl IntoIterator<Item = &'a String>, secrets: &[String]) -> String {
+    let mut text = String::new();
+    for line in lines {
+        if secrets.iter().any(|secret| line.contains(secret.as_str())) {
+            text.push_str("[line withheld: it holds a secret of the database URL]\n");
+        } else {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    text
+}
+
+#[test]
+fn a_report_withholds_each_line_with_the_database_url_or_its_password() {
+    let url = "postgresql://telemetry_ingest:hunter2@127.0.0.1:1/neondb";
+    let secrets = secrets_of(url);
+    assert_eq!(secrets, [url, "hunter2"]);
+    let lines = [
+        r#"{"message":"listening","port":8080}"#.to_owned(),
+        format!(r#"{{"message":"x","url":"{url}"}}"#),
+        r#"{"message":"x","detail":"password hunter2 rejected"}"#.to_owned(),
+        "a plain line".to_owned(),
+    ];
+    let report = withhold(&lines, &secrets);
+    assert_eq!(
+        report,
+        "{\"message\":\"listening\",\"port\":8080}\n\
+         [line withheld: it holds a secret of the database URL]\n\
+         [line withheld: it holds a secret of the database URL]\n\
+         a plain line\n"
+    );
+    assert!(!report.contains("hunter2"));
+    // A short password is not a secret of its own, so it does not
+    // withhold lines that hold the same letters by chance.
+    assert_eq!(secrets_of("postgresql://u:p@db.invalid/neondb").len(), 1);
+    // A URL without a password has only the URL as a secret.
+    assert_eq!(secrets_of("postgresql://u@db.invalid/neondb").len(), 1);
 }
 
 #[test]

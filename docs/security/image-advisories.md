@@ -764,7 +764,8 @@ the ingest image. The web image has other facts, and the entries of
   no `setenv`, `putenv`, `unsetenv`, or `clearenv` (checked with W5).
 - **W5. Imported glibc functions (checked).** The server does not import
   the glibc entry points of the faulty code: no `regcomp`, `regexec`, or
-  GNU `re_*` function; no `glob` or `wordexp`; no `iconv` function; no
+  GNU `re_*` function; no `rpmatch`, which compiles a regular expression
+  inside glibc; no `glob` or `wordexp`; no `iconv` function; no
   wide `scanf` function; no `gettext` function, `bindtextdomain`,
   `bind_textdomain_codeset`, or `textdomain`; and no `setlocale`,
   `newlocale`, or `uselocale`. It also imports no function that changes
@@ -794,7 +795,7 @@ use the advisory data of 28 November 2026: no group has a fix in Debian 13
 | [DEBIAN-CVE-2026-115456](https://osv.dev/vulnerability/DEBIAN-CVE-2026-115456) | libstdc++ (gcc-14) | `std::from_chars` | no (W3) | no: not loaded | not affected |
 | [DEBIAN-CVE-2026-125709](https://osv.dev/vulnerability/DEBIAN-CVE-2026-125709) | libstdc++ (gcc-14) | file stream write | no (W3) | no: not loaded | not affected |
 | [DEBIAN-CVE-2026-84243](https://osv.dev/vulnerability/DEBIAN-CVE-2026-84243) | glibc | gettext with the `LANGUAGE` variable | yes | no: the locale stays `C`, so gettext does not read `LANGUAGE`; an HTTP request cannot set the environment (W4, limits below) | not affected |
-| [DEBIAN-CVE-2026-100290](https://osv.dev/vulnerability/DEBIAN-CVE-2026-100290) | glibc | `regcomp`, `regexec` | yes | no: not imported (W5) | not affected |
+| [DEBIAN-CVE-2026-100290](https://osv.dev/vulnerability/DEBIAN-CVE-2026-100290) | glibc | `regcomp`, `regexec`, and `rpmatch`, which calls them | yes | no: not imported (W5) | not affected |
 | [DEBIAN-CVE-2026-115819](https://osv.dev/vulnerability/DEBIAN-CVE-2026-115819) | glibc | wide `scanf` family | yes | no: not imported (W5) | not affected |
 | [DEBIAN-CVE-2026-121757](https://osv.dev/vulnerability/DEBIAN-CVE-2026-121757) | glibc | iconv CP949 decoder | yes | no: not imported (W5); the attacker must choose the encoding | not affected |
 | [DEBIAN-CVE-2026-121758](https://osv.dev/vulnerability/DEBIAN-CVE-2026-121758) | glibc | iconv ISO-2022-CN-EXT decoder | yes | no: not imported (W5); the attacker must choose the encoding | not affected |

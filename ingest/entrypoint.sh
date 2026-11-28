@@ -5,7 +5,10 @@
 #
 # 1. Copy TLS_CERT and TLS_KEY to shell variables that are not exported,
 #    and remove TLS_CERT, TLS_KEY, and MIGRATION_DATABASE_URL from the
-#    environment. ingest run needs only DATABASE_URL. From here on, no
+#    environment. ingest run needs only DATABASE_URL. The unset of cert
+#    and key comes first: a variable with one of these names in the
+#    container environment stays exported, and the copy would then export
+#    the TLS value (issue #31). From here on, no
 #    program that the script starts gets the key or the migrator URL in its
 #    environment.
 # 2. Write the TLS certificate and the TLS key to files. Railway has no
@@ -47,13 +50,14 @@
 # deployment stops. The migrated line of the first release showed the
 # first outcome (docs/ingest-release.md, section 2).
 #
-# The vuln task of mise.toml compares the lines of this file with a strict
-# allowlist. Change the allowlist in the same change as this file.
+# The vuln task of mise.toml pins the git blob ID of this file. Update the
+# pin in the same change as this file.
 set -eu
 
 : "${TLS_CERT:?Set TLS_CERT to the full certificate chain in PEM format}"
 : "${TLS_KEY:?Set TLS_KEY to the private key in PEM format}"
 
+unset cert key
 cert="$TLS_CERT"
 key="$TLS_KEY"
 unset TLS_CERT TLS_KEY MIGRATION_DATABASE_URL
