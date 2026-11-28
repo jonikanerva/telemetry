@@ -276,14 +276,91 @@ therefore expected to be below the model, but no discount is measured.
 
 ## Measure the usage
 
-- Tesla's developer dashboard (`/dashboard/usage`) shows the billed usage
-  of the whole application, Home Assistant included. Only the owner can
-  read it.
-- The stored rows in `raw.vehicle_signal` give the signal count of this
-  product. A procedure that counts them does not exist yet (issue #41).
-- Do not use the Prometheus signal counter of the server: in v0.10.1,
-  `trackSignalUsage` runs only for messages that exceed the server rate
-  limit.
+Tesla's developer dashboard (`/dashboard/usage`) shows the billed usage
+of the whole application, Home Assistant included. Only the owner can
+read it. The owner read the Home Assistant share as about 1 to 2 EUR each
+month.
+
+`scripts/usage-measurement.sql` measures the usage of this product from
+the stored records. Its statements give:
+
+1. Signals and their cost for each UTC day.
+2. Signals for each day and field number, the largest fields first.
+3. The signals of the month to date and a projection to the full month.
+   The projection is empty until 3 days of the month have signals.
+4. Connections for each day: the count, the open connections, and the
+   median and shortest length. Many short connections show as a high
+   count with a short median. A connection is a connect event and the
+   next disconnect event of the same connection ID, so a reused ID does
+   not join two connections.
+5. Connected time for each day. Overlapping connections count once. An
+   open connection does not count.
+6. The share of signals that the car marked as a resend.
+7. The records in `raw.unprocessed_record` by reason.
+8. The signals with the invalid marker, by field. A field that sends
+   only the marker is a candidate to drop from the config.
+9. The messages that the ingest process lost before the database
+   (`records_dropped` and `zmq_shortfall`, not `gate_full`).
+10. The size of `raw.vehicle_signal` against the 1 GB of Neon.
+11. The estimated storage growth for each day.
+
+The statements read only. They return counts, days, field numbers,
+kinds, and sizes, and no VIN, no location, and no signal value. A
+database test runs every statement of the file
+(`crates/ingest/tests/storage/usage.rs`).
+
+Privacy rule: a row for one day shows when the car was awake or driven,
+so it shows when the owner was away. A public record (an issue, a PR,
+or a document of this repository) gets only totals of the whole
+measured period: signals, cost, connected hours, the number of
+connections, the totals for each field, and sizes. It never gets a
+value of a single day or a time of day. The rows of each day go to the
+owner in the private report of the lead.
+
+How to run:
+
+- The lead runs the statements on the branch `production` with the
+  owner role through the Neon tools. Each run is one read-only
+  transaction: `BEGIN TRANSACTION READ ONLY`, one statement, then
+  `ROLLBACK`. A wrong paste then cannot write.
+- The repository has no SQL client (`psql` is not a project tool). The
+  Neon SQL Editor of the branch `production` also works, with the same
+  read-only transaction.
+- The role `telemetry_ingest` can also run every statement: it has
+  SELECT on each table of `raw`, and the size function needs no other
+  privilege (tested). The web role cannot read every column that the
+  statements use.
+- Days are UTC days of `received_at`. The file states the reason.
+
+Compare with the dashboard:
+
+- One row of `raw.vehicle_signal` is one datum of a `V` record. Tesla
+  bills one signal for each datum (`Record.SignalsCount()`, "Billing
+  rules"). Statement 1 has the cost before the monthly discount.
+- The rows can be fewer than the billed signals. The storage keeps an
+  exact copy of a stored signal once, also a resend (ADR 0002,
+  "Idempotency"); Tesla does not document whether it bills the copy. A
+  datum with an unknown value variant, a datum with a conflicting value,
+  and each datum of a record that does not decode have no row; statement
+  7 counts these records. Statement 9 counts the messages that the
+  ingest process lost; each lost `V` message held one or more billed
+  signals.
+- Alerts are billed signals, one for each alert, but they are rows of
+  `raw.vehicle_alert`. The config has no `alert_types`, so the vehicle
+  sends none.
+- Connectivity events and error records are not signals.
+- The dashboard also counts Home Assistant. Subtract its share before
+  the comparison.
+- When the config changed during the month, the projection of statement
+  3 mixes two rates. Use the days of statement 1 after the change.
+
+Record the totals of each measurement in issue #41, under the privacy
+rule above. Put the measured totals in this document with the date of
+the measurement.
+
+Do not use the Prometheus signal counter of the server: in v0.10.1,
+`trackSignalUsage` runs only for messages that exceed the server rate
+limit.
 
 ## Limits of this estimate
 
