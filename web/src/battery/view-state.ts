@@ -1,4 +1,4 @@
-// The typed view state of the battery view (design §7, profile §2.4).
+// The typed view state of the battery view (profile §2.4).
 //
 // Rules:
 // - A failed request is never an empty result. Without earlier data it is

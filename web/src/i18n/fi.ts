@@ -71,6 +71,7 @@ export const fi = {
     `Pienin ${min}, suurin ${max}, viimeisin ${latest} (${when}).`,
   chartGapCount: (count: number) =>
     count === 1 ? '1 aukko valitulla välillä.' : `${String(count)} aukkoa valitulla välillä.`,
+  chartGapCountAtLeast: (count: number) => `Vähintään ${String(count)} aukkoa valitulla välillä.`,
   chartNoGaps: 'Ei aukkoja valitulla välillä.',
   chartExcluded: (invalid: number, notNumeric: number) =>
     `Hylätyt rivit: ${String(invalid)} ${invalid === 1 ? 'auton virhemerkintä' : 'auton virhemerkintää'}, ${String(notNumeric)} ${notNumeric === 1 ? 'rivi ei ollut kelvollinen luku' : 'riviä ei ollut kelvollinen luku'}.`,

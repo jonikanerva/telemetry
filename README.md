@@ -261,7 +261,7 @@ no database URL. `mise run setup` checks the tool and pulls the image.
 `mise run verify` is the single local gate. [STACK.md](STACK.md) section 3
 lists the tasks and what each one checks. `mise run setup` also installs
 Node.js and pnpm (pinned in `mise.toml`), the npm packages, and the
-Playwright browsers.
+Playwright browser (Chromium).
 
 After a change of an HTTP type or route, export the contract and generate
 the client again, and commit both:

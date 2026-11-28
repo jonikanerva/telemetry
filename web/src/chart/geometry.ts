@@ -1,7 +1,7 @@
 // The geometry of a time-series chart: scales, ticks, line paths, and gap
 // areas. Pure functions with no DOM, so the rules have unit tests.
 //
-// Rules (contract `Series`, ADR 0013 §5):
+// Rules (contract `Series` of `contract/openapi.json`):
 // - Each segment of the server is its own line. A line never crosses a
 //   gap. A time without samples (the car asleep) does not split a line.
 // - The carry-in point (the newest value before the range) joins the

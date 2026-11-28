@@ -51,6 +51,8 @@ export type TimeSeriesChartProps = {
   readonly subtitle: string;
   readonly series: Series;
   readonly gaps: readonly Gap[];
+  /** True when the API holds more gaps than `gaps` (`gaps.truncated`). */
+  readonly gapsTruncated: boolean;
   /** Ingest clock: the starts of the ingest process, drawn as ticks. */
   readonly restarts: readonly string[];
   readonly fromMs: number;
@@ -151,7 +153,13 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   };
 
   const showMarkers = points.length <= MARKER_LIMIT;
-  const summary = chartSummary(series, points, gaps.length, unit, generatedAtMs);
+  const summary = chartSummary(
+    series,
+    points,
+    { count: gaps.length, truncated: props.gapsTruncated },
+    unit,
+    generatedAtMs,
+  );
   const bucketNote = fi.chartBucketNote(formatDuration(bucketSeconds * 1000));
   const noData = points.length === 0;
 
@@ -401,7 +409,7 @@ function LegendSwatch({ kind }: { readonly kind: string }) {
 export function chartSummary(
   series: Series,
   points: readonly Point[],
-  gapCount: number,
+  gapCount: { readonly count: number; readonly truncated: boolean },
   unit: Series['unit'],
   generatedAtMs: number,
 ): string[] {
@@ -429,7 +437,12 @@ export function chartSummary(
       ),
     );
   }
-  sentences.push(gapCount === 0 ? fi.chartNoGaps : fi.chartGapCount(gapCount));
+  // A truncated list gives a lower bound, never a total.
+  if (gapCount.truncated) {
+    sentences.push(fi.chartGapCountAtLeast(gapCount.count));
+  } else {
+    sentences.push(gapCount.count === 0 ? fi.chartNoGaps : fi.chartGapCount(gapCount.count));
+  }
   if (series.excluded.invalid_marker > 0 || series.excluded.not_numeric > 0) {
     sentences.push(fi.chartExcluded(series.excluded.invalid_marker, series.excluded.not_numeric));
   }

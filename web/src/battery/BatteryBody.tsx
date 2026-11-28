@@ -37,6 +37,7 @@ export function DataBody({ view, range }: { readonly view: AvailableView; readon
           subtitle={fi.chartSocSubtitle}
           series={view.charts.soc}
           gaps={gaps}
+          gapsTruncated={view.gaps.truncated}
           restarts={restarts}
           fromMs={fromMs}
           toMs={toMs}
@@ -51,6 +52,7 @@ export function DataBody({ view, range }: { readonly view: AvailableView; readon
           subtitle={capacityText(capacity.change, capacity.reading.unit.symbol)}
           series={view.charts.nominal_full_pack_energy}
           gaps={gaps}
+          gapsTruncated={view.gaps.truncated}
           restarts={restarts}
           fromMs={fromMs}
           toMs={toMs}
