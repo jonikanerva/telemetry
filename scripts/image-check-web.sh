@@ -215,7 +215,7 @@ imports="$(nm -D --undefined-only "$work/server" | awk '{ print $2 }' | sed 's/@
 for symbol in $imports; do
   case "$symbol" in
     regcomp | regexec | re_comp | re_exec | re_compile_* | re_search* | re_match* | \
-      re_set_registers | glob | glob64 | __glob64* | wordexp | iconv | iconv_open | \
+      re_set_registers | rpmatch | glob | glob64 | __glob64* | wordexp | iconv | iconv_open | \
       iconv_close | setlocale | newlocale | uselocale | *gettext | bindtextdomain | \
       bind_textdomain_codeset | textdomain | *wscanf | setenv | putenv | unsetenv | clearenv)
       fail "the server imports $symbol: repeat the glibc decision of docs/security/image-advisories.md (W4, W5)" ;;
