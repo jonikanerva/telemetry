@@ -7,10 +7,10 @@
 # finding.
 #
 # The entries have the IDs and the expiry dates of the ingest file; the web
-# image does not extend an expiry. The glibc and gcc-14 entries apply only
-# while the service telemetry-web has no public domain and no TCP proxy
-# (W4). Before the service gets a public domain, repeat that decision in
-# this file.
+# image does not extend an expiry. The service telemetry-web has a public
+# domain (W4). The glibc and gcc-14 entries rest on the faulty function, not
+# on the network exposure: the server does not load libstdc++ (W3) and does
+# not import the faulty glibc functions (W5).
 #
 # The scan reads the FROM image, not the image that Railway builds. The
 # Dockerfile runs `apt-get upgrade`, so an advisory with a fix in
@@ -57,74 +57,74 @@ reason = "Web image, group on disk only: accepted, not affected. No fix in Debia
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-95619"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group gcc-14: accepted, not affected. No fix in Debian 13 on 2026-11-28. The fault is in libstdc++, which the server does not load; it loads only libgcc_s of gcc-14 (W3). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-102010"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group gcc-14: accepted, not affected. No fix in Debian 13 on 2026-11-28. The fault is in libstdc++, which the server does not load; it loads only libgcc_s of gcc-14 (W3). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-114690"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group gcc-14: accepted, not affected. No fix in Debian 13 on 2026-11-28. The fault is in libstdc++, which the server does not load; it loads only libgcc_s of gcc-14 (W3). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-114691"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group gcc-14: accepted, not affected. No fix in Debian 13 on 2026-11-28. The fault is in libstdc++, which the server does not load; it loads only libgcc_s of gcc-14 (W3). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-115455"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group gcc-14: accepted, not affected. No fix in Debian 13 on 2026-11-28. The fault is in libstdc++, which the server does not load; it loads only libgcc_s of gcc-14 (W3). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-115456"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group gcc-14: accepted, not affected. No fix in Debian 13 on 2026-11-28. The fault is in libstdc++, which the server does not load; it loads only libgcc_s of gcc-14 (W3). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-125709"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group gcc-14: accepted, not affected. No fix in Debian 13 on 2026-11-28. The fault is in libstdc++, which the server does not load; it loads only libgcc_s of gcc-14 (W3). See docs/security/image-advisories.md#web-image"
 
 
 # --- glibc ---
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-84243"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group glibc: accepted, not affected. No fix in Debian 13 on 2026-11-28. The server loads glibc. The fault needs control of the LANGUAGE variable; no HTTP input sets the process environment (W4). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-100290"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group glibc: accepted, not affected. No fix in Debian 13 on 2026-11-28. The server loads glibc. The fault is in regcomp and regexec, which the server does not import (W5). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-115819"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group glibc: accepted, not affected. No fix in Debian 13 on 2026-11-28. The server loads glibc. The fault is in the wide scanf functions, which the server does not import (W5). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-121757"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group glibc: accepted, not affected. No fix in Debian 13 on 2026-11-28. The server loads glibc. The fault is in an iconv converter, and the server does not import iconv (W5). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-121758"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group glibc: accepted, not affected. No fix in Debian 13 on 2026-11-28. The server loads glibc. The fault is in an iconv converter, and the server does not import iconv (W5). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-124024"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group glibc: accepted, not affected. No fix in Debian 13 on 2026-11-28. The server loads glibc. The fault is in an iconv converter, and the server does not import iconv (W5). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-126765"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc and gcc-14: accepted while W4 holds. No fix in Debian 13 on 2026-11-26. The server loads this library, and the service has no public domain and no TCP proxy (W4). Reassess this entry before the service gets a public domain. See docs/security/image-advisories.md#web-image"
+reason = "Web image, group glibc: accepted, not affected. No fix in Debian 13 on 2026-11-28. The server loads glibc. The fault is in glob, which the server does not import (W5). See docs/security/image-advisories.md#web-image"
 
 
 # --- libzstd ---
