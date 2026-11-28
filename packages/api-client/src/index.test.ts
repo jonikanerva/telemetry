@@ -366,3 +366,44 @@ describe('runtime configuration', () => {
     expect(zodConfig().jitless).toBe(true);
   });
 });
+
+describe('getBattery', () => {
+  const noDataYet = {
+    state: 'no_data_yet',
+    generated_at: '2026-11-27T12:00:00Z',
+    range: { key: '7d', from: '2026-11-20T12:00:00Z', to: '2026-11-27T12:00:00Z', bucket_seconds: 600 },
+  };
+
+  it('sends the range as a query parameter and returns a valid body', async () => {
+    const { client, requests } = clientWith(() => Promise.resolve(json(200, noDataYet)));
+    expect(await client.getBattery('7d')).toEqual({ ok: true, data: noDataYet });
+    expect(requests[0]?.url).toBe(`${BASE_URL}/api/v1/battery?range=7d`);
+    expect(requests[0]?.credentials).toBe('same-origin');
+  });
+
+  it('rejects an unknown state as an invalid response, never as data', async () => {
+    const { client } = clientWith(() => Promise.resolve(json(200, { ...noDataYet, state: 'empty' })));
+    expect(await client.getBattery('7d')).toEqual({ ok: false, error: { kind: 'invalid_response', status: 200 } });
+  });
+
+  it('rejects an available body without its series', async () => {
+    const { client } = clientWith(() => Promise.resolve(json(200, { ...noDataYet, state: 'available' })));
+    expect(await client.getBattery('7d')).toEqual({ ok: false, error: { kind: 'invalid_response', status: 200 } });
+  });
+
+  it('rejects an empty 2xx body as an invalid response', async () => {
+    const { client } = clientWith(() =>
+      Promise.resolve(new Response(null, { status: 200, headers: { 'Content-Length': '0' } })),
+    );
+    expect(await client.getBattery('7d')).toEqual({ ok: false, error: { kind: 'invalid_response', status: 200 } });
+  });
+
+  it('returns a 503 problem as a problem', async () => {
+    const { client } = clientWith(() =>
+      Promise.resolve(problem(503, 'database_unavailable', { retry_after_seconds: 30 })),
+    );
+    const result = await client.getBattery('24h');
+    expect(result.ok).toBe(false);
+    expect(result.ok ? null : result.error.kind).toBe('problem');
+  });
+});
