@@ -94,7 +94,7 @@ reason = "Web image, group gcc-14: accepted, not affected. No fix in Debian 13 o
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-84243"
 effectiveUntil = 2027-01-25
-reason = "Web image, group glibc: accepted, not affected. No fix in Debian 13 on 2026-11-28. The server loads glibc. The fault needs control of the LANGUAGE variable; no HTTP input sets the process environment (W4). See docs/security/image-advisories.md#web-image"
+reason = "Web image, group glibc: accepted, not affected. No fix in Debian 13 on 2026-11-28. The server loads glibc. The locale stays C, so gettext does not read LANGUAGE, and no HTTP request sets the environment (W4, W5). See docs/security/image-advisories.md#web-image"
 
 [[IgnoredVulns]]
 id = "DEBIAN-CVE-2026-100290"

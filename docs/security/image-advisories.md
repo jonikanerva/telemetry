@@ -49,9 +49,10 @@ libraries that the server process loads (glibc, libstdc++, libgcc).
 Vulnerabilities catalog (version 2026.11.25, 1805 entries; 0 matches).
 Compared: the 152 CVE IDs of the two image scans, CVE-2025-69277
 (libsodium, which the binary does not contain), and 119 CVE IDs that OSV
-lists for the static C libraries (see "Static C libraries"). The 67 CVE
-IDs of `osv-scanner-web-debian.toml` are not in the catalog version
-2026.11.27 (1808 entries; compared on 28 November 2026).
+lists for the static C libraries (see "Static C libraries"). Repeated on
+28 November 2026 with the catalog version 2026.11.27 (1808 entries): the
+97 CVE IDs of the 102 entries of the three ignore files (with the OSV
+aliases), and the 119 CVE IDs of the static C libraries; 0 matches.
 
 **Needs action.** None.
 
@@ -747,15 +748,27 @@ the ingest image. The web image has other facts, and the entries of
   address: the custom domain `tesla.calmdonut.com`. The Railway edge ends
   TLS and forwards HTTP to the container. The service has no TCP proxy.
   The server parses each request with hyper (Rust); no Debian library
-  parses request bytes. Without a session, only the login page, the
-  static files, `/health`, and the session endpoints answer. The server
-  also connects to Neon: glibc `getaddrinfo` resolves the database host
-  name. The process environment comes from the image `ENV` lines and the
-  Railway service variables; no HTTP input sets it.
+  parses request bytes. Without a session (`crates/server/src/app.rs`,
+  the session guard of `crates/server/src/auth/mod.rs`): `GET /health`;
+  `GET /robots.txt`; the files under `/assets/`; `index.html` (the SPA
+  with the login page) for each other `GET` or `HEAD` path; `GET`,
+  `POST`, and `DELETE` of `/api/v1/session`; a 401 problem for
+  `/api/v1/battery`; a 404 problem for each other `/api` path; and a 405
+  problem for each other method. The server also connects to Neon: glibc
+  `getaddrinfo` resolves the database host name. The process environment
+  comes from the image `ENV` lines and the Railway service variables. An
+  HTTP request cannot set a process environment variable: the server
+  spawns no process (no `std::process::Command` in `crates/server/src`);
+  `std::env::set_var` is `unsafe` in edition 2024 and the workspace
+  forbids unsafe code (`unsafe_code = "forbid"`); and the binary imports
+  no `setenv`, `putenv`, `unsetenv`, or `clearenv` (checked with W5).
 - **W5. Imported glibc functions (checked).** The server does not import
-  the glibc functions of the faulty code: no `regcomp` or `regexec`, no
-  `glob` or `wordexp`, no `iconv` function, no wide `scanf` function, no
-  `gettext` function, and no `setlocale`.
+  the glibc entry points of the faulty code: no `regcomp`, `regexec`, or
+  GNU `re_*` function; no `glob` or `wordexp`; no `iconv` function; no
+  wide `scanf` function; no `gettext` function, `bindtextdomain`,
+  `bind_textdomain_codeset`, or `textdomain`; and no `setlocale`,
+  `newlocale`, or `uselocale`. It also imports no function that changes
+  the environment (W4).
 
 Decisions for the web image, by group of the "Debian 13 base" section:
 
@@ -780,23 +793,42 @@ use the advisory data of 28 November 2026: no group has a fix in Debian 13
 | [DEBIAN-CVE-2026-115455](https://osv.dev/vulnerability/DEBIAN-CVE-2026-115455) | libstdc++ (gcc-14) | `bitset` extraction from a wide stream | no (W3) | no: not loaded | not affected |
 | [DEBIAN-CVE-2026-115456](https://osv.dev/vulnerability/DEBIAN-CVE-2026-115456) | libstdc++ (gcc-14) | `std::from_chars` | no (W3) | no: not loaded | not affected |
 | [DEBIAN-CVE-2026-125709](https://osv.dev/vulnerability/DEBIAN-CVE-2026-125709) | libstdc++ (gcc-14) | file stream write | no (W3) | no: not loaded | not affected |
-| [DEBIAN-CVE-2026-84243](https://osv.dev/vulnerability/DEBIAN-CVE-2026-84243) | glibc | gettext with the `LANGUAGE` variable | yes | no: the attacker must set the process environment (W4) | not affected |
+| [DEBIAN-CVE-2026-84243](https://osv.dev/vulnerability/DEBIAN-CVE-2026-84243) | glibc | gettext with the `LANGUAGE` variable | yes | no: the locale stays `C`, so gettext does not read `LANGUAGE`; an HTTP request cannot set the environment (W4, limits below) | not affected |
 | [DEBIAN-CVE-2026-100290](https://osv.dev/vulnerability/DEBIAN-CVE-2026-100290) | glibc | `regcomp`, `regexec` | yes | no: not imported (W5) | not affected |
 | [DEBIAN-CVE-2026-115819](https://osv.dev/vulnerability/DEBIAN-CVE-2026-115819) | glibc | wide `scanf` family | yes | no: not imported (W5) | not affected |
-| [DEBIAN-CVE-2026-121757](https://osv.dev/vulnerability/DEBIAN-CVE-2026-121757) | glibc | iconv CP949 decoder | yes | no: not imported (W5) | not affected |
-| [DEBIAN-CVE-2026-121758](https://osv.dev/vulnerability/DEBIAN-CVE-2026-121758) | glibc | iconv ISO-2022-CN-EXT decoder | yes | no: not imported (W5) | not affected |
-| [DEBIAN-CVE-2026-124024](https://osv.dev/vulnerability/DEBIAN-CVE-2026-124024) | glibc | iconv UCS-4 to IBM1390 or IBM1399 | yes | no: not imported (W5) | not affected |
+| [DEBIAN-CVE-2026-121757](https://osv.dev/vulnerability/DEBIAN-CVE-2026-121757) | glibc | iconv CP949 decoder | yes | no: not imported (W5); the attacker must choose the encoding | not affected |
+| [DEBIAN-CVE-2026-121758](https://osv.dev/vulnerability/DEBIAN-CVE-2026-121758) | glibc | iconv ISO-2022-CN-EXT decoder | yes | no: not imported (W5); the attacker must choose the encoding | not affected |
+| [DEBIAN-CVE-2026-124024](https://osv.dev/vulnerability/DEBIAN-CVE-2026-124024) | glibc | iconv UCS-4 to IBM1390 or IBM1399 | yes | no: not imported (W5); the attacker must choose the encoding | not affected |
 | [DEBIAN-CVE-2026-126765](https://osv.dev/vulnerability/DEBIAN-CVE-2026-126765) | glibc | `glob` | yes | no: not imported (W5) | not affected |
 
 Limits of the glibc decisions:
 
-- W5 checks the direct imports of the binary only. glibc calls some of
-  these functions inside itself: for example, `strerror` uses gettext,
-  and the multibyte functions use the iconv converters of the locale.
-  Assumption, not verified in the glibc source: the server never calls
-  `setlocale`, so the locale stays `C`; in the `C` locale, gettext
-  returns the message text without a catalog, and no CP949,
-  ISO-2022-CN-EXT, or IBM1390 converter is loaded.
+- W5 checks the direct imports of the binary only. glibc calls gettext
+  inside itself: `strerror_r` returns `_(err)`
+  ([`string/_strerror.c#L34`](https://github.com/bminor/glibc/blob/glibc-2.41/string/_strerror.c#L34)). In glibc 2.41
+  (Debian 13 has 2.41-12+deb13u*), this call never reads `LANGUAGE` and
+  never loads a catalog while the locale is `C`:
+  - A process starts with the global locale `C` for each category
+    ([`locale/global-locale.c#L39-L64`](https://github.com/bminor/glibc/blob/glibc-2.41/locale/global-locale.c#L39-L64)).
+    Only `setlocale` and `uselocale` change it, and the server imports
+    neither (W5). `LANG`, `LANGUAGE`, and `LC_*` do not change the locale
+    of a process that does not call `setlocale`.
+  - gettext takes the locale name from the current locale, not from the
+    environment
+    ([`intl/dcigettext.c#L1509`](https://github.com/bminor/glibc/blob/glibc-2.41/intl/dcigettext.c#L1509),
+    [`locale/localename.c#L23-L26`](https://github.com/bminor/glibc/blob/glibc-2.41/locale/localename.c#L23-L26)). For
+    `C`, it returns before it reads `LANGUAGE`
+    ([`intl/dcigettext.c#L1542-L1547`](https://github.com/bminor/glibc/blob/glibc-2.41/intl/dcigettext.c#L1542-L1547)),
+    and it returns the message text without a catalog
+    ([`intl/dcigettext.c#L665-L670`](https://github.com/bminor/glibc/blob/glibc-2.41/intl/dcigettext.c#L665-L670)).
+  - The service has no variable `LANG`, `LANGUAGE`, or `LC_*` (the names
+    of its Railway variables, 28 November 2026), and the image sets none.
+- Open point for the iconv entries, not verified in the glibc source: no
+  glibc function that the server imports opens the CP949,
+  ISO-2022-CN-EXT, or IBM1390 converter. The decision does not rest on
+  it: each advisory needs an attacker who chooses the encoding (or the
+  `//IGNORE` target), and the server names no encoding (no `iconv_open`,
+  no `setlocale`).
 - The 7 glibc advisories are not in the DNS resolver. A forged DNS answer
   to `getaddrinfo` does not reach them.
 
@@ -804,8 +836,10 @@ Limits of the glibc decisions:
 groups, with the reason of its web decision and the expiry of the
 ingest entry (2027-01-25). The web image does not extend an expiry.
 
-Reassessment: when W3 or W5 breaks (the CI job `image-check` fails),
-repeat the decision for the library or the function.
+Reassessment (ADR 0010, decision 9): when Debian publishes a fix (a
+rebuild installs it), when CISA KEV lists a CVE, when W3 or W5 breaks
+(the CI job `image-check` fails), when the base image or the linking of
+the server changes, or at the expiry date.
 
 ## Ignore files and deployment facts
 

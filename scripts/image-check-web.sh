@@ -16,8 +16,9 @@
 #     effective capabilities. The script prints the supplementary groups,
 #     the bounding and ambient capabilities, and NoNewPrivs, but does not
 #     check them: the image has no setpriv step, so Docker sets them.
-#     The server binary links only glibc and libgcc_s, and imports none
-#     of the faulty glibc functions of the ignore file (W3 and W5 of
+#     The server binary links only glibc and libgcc_s, imports none of
+#     the faulty glibc functions of the ignore file, and imports no
+#     function that changes the environment (W3, W4, and W5 of
 #     docs/security/image-advisories.md, "Web image").
 #  2. /health answers 200 with the JSON status ok, the version of
 #     RAILWAY_GIT_COMMIT_SHA, and Cache-Control no-store, without a
@@ -213,10 +214,11 @@ imports="$(nm -D --undefined-only "$work/server" | awk '{ print $2 }' | sed 's/@
 [ -n "$imports" ] || fail "nm lists no import of the server"
 for symbol in $imports; do
   case "$symbol" in
-    regcomp | regexec | glob | glob64 | wordexp | iconv | iconv_open | iconv_close | \
-      setlocale | newlocale | uselocale | *gettext | bindtextdomain | textdomain | \
-      *wscanf | __isoc*wscanf)
-      fail "the server imports $symbol: repeat the glibc decision of docs/security/image-advisories.md (W5)" ;;
+    regcomp | regexec | re_comp | re_exec | re_compile_* | re_search* | re_match* | \
+      re_set_registers | glob | glob64 | __glob64* | wordexp | iconv | iconv_open | \
+      iconv_close | setlocale | newlocale | uselocale | *gettext | bindtextdomain | \
+      bind_textdomain_codeset | textdomain | *wscanf | setenv | putenv | unsetenv | clearenv)
+      fail "the server imports $symbol: repeat the glibc decision of docs/security/image-advisories.md (W4, W5)" ;;
   esac
 done
 echo "telemetry-web-server imports none of the faulty glibc functions (W5)"
