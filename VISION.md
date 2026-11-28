@@ -22,9 +22,13 @@ A live dashboard while the car is awake is optional.
   plan), Neon (Free plan), and Cloudflare (Free plan). The domain is
   `calmdonut.com`.
 - The owner's Home Assistant uses the same Tesla developer application. Both
-  share one Tesla usage credit of 10 USD per month and one billing limit.
+  share one monthly Tesla usage discount of 10 USD, one payment method, and
+  one billing limit. The owner pays the usage above the discount, up to an
+  agreed overage of about 10 EUR each month (ADR 0018).
 - Tesla removes the telemetry configuration from the vehicle when usage
-  exceeds the billing limit. Tesla does not restore the configuration.
+  exceeds the billing limit, also with a payment method on file. Tesla does
+  not restore the configuration. The owner keeps the billing limit far
+  above the expected usage.
 - The vehicle sends data only when it is awake and online.
 
 ## Core Principles
@@ -40,8 +44,10 @@ A live dashboard while the car is awake is optional.
   the value and unit that the vehicle sent. Convert units for display.
 - **Private by default.** The data shows where the owner is and when the
   owner is away. Nothing is public.
-- **Stay in the free tiers.** The product adds no paid service. Field
-  selection and write patterns respect the Tesla, Neon, and Railway limits.
+- **Stay inside the agreed budget.** The product adds no paid service
+  except Tesla usage inside the agreed overage. Neon and Railway stay in
+  their current plans without extra cost. Field selection and write
+  patterns respect the Tesla, Neon, and Railway limits.
 - **Low operations.** The owner does not maintain the product weekly.
   Certificates, configuration, and retention work without routine manual steps.
 
@@ -71,7 +77,7 @@ is the energy of each interval times the price of that interval, plus the
 fixed parts from configuration: transfer, taxes, and margin. At other
 places the cost is unknown. The view shows an unknown cost as unknown,
 never as zero. The product does not use the Tesla charging history,
-because it spends the shared Tesla credit.
+because it spends the shared Tesla usage.
 
 Drive route: at first the drive view
 has no background map. The view draws the route as a line on an empty
@@ -93,13 +99,15 @@ A failed request must not look like an empty result.
   approval.
 
 Signs of drift: a feature that needs the `vehicle_cmds` scope, a second user,
-a public URL without access control, or a monthly cost.
+a public URL without access control, or a monthly cost beyond the agreed
+Tesla overage.
 
 ## Decision Filter
 
 - Does the change protect or improve the completeness of the history?
 - Does the change keep location data private?
-- Does the change stay inside the free tiers and the shared Tesla credit?
+- Does the change stay inside the agreed Tesla budget and the Neon and
+  Railway plans?
 - Does the change answer a question about battery, consumption, charging, or
   driving that the owner wants to follow over time?
 - Does the change add routine manual work for the owner?
@@ -111,14 +119,15 @@ a public URL without access control, or a monthly cost.
   Principles). Each gap is visible as a gap.
 - The owner can see battery, consumption, and charging trends over months.
 - The views can be up to 15 minutes behind the vehicle.
-- The monthly Tesla, Neon, and Railway usage stays inside the free allowances.
+- The monthly Tesla usage stays inside the discount plus the agreed
+  overage. The Neon and Railway usage stays inside their allowances.
 - The car sleeps as it did before telemetry was enabled.
 
 ## Persistence and Privacy Posture
 
 | Data or capability               | Purpose                               | Storage or recipient                  | Retention or expiry                           |
 | -------------------------------- | ------------------------------------- | ------------------------------------- | --------------------------------------------- |
-| Raw signals, including location  | Source for periods and charts         | Neon Postgres                         | No deletion until the derived periods exist; the owner sets the period in the web phase |
+| Raw signals: location, charge, energy, driving, charging, and climate values; lock, door, window, seat, Sentry Mode, guest mode, and valet mode states; the number of paired keys; navigation time and distance to the destination (not the destination); the software version; the vehicle name; the `LocatedAtHome`, `LocatedAtWork`, `LocatedAtFavorite`, and `HomelinkNearby` flags; the `HomelinkDeviceCount` | Source for periods and charts         | Neon Postgres                         | No deletion until the derived periods exist; the owner sets the period in the web phase |
 | Drives, charges, parked periods  | Long-term history                     | Neon Postgres                         | No expiry                                     |
 | Vehicle identification number    | Identifies the data source            | Neon Postgres                         | No expiry                                     |
 | Tesla application private key    | Signs the vehicle telemetry config    | Owner's computer only                 | Kept while the product is in use              |
@@ -171,9 +180,10 @@ Owner decisions:
   self-hosted map file (Protomaps, PMTiles) or a hosted tile service based
   on OpenStreetMap.
 - Retention period for raw signals. The owner decides it in the web
-  phase, with the measured growth. If the first week of data shows that
-  the 1 GB of Neon fills before the web phase, the lead reports it to the
-  owner at once.
+  phase, with the measured growth. At the planning rate of the 201-field
+  vehicle config, the 1 GB of Neon fills in about 17 months (ADR 0018),
+  so the decision is due before then. If the measured growth is faster,
+  the lead reports it to the owner at once.
 
 Delegated technical choices, recorded as ADRs when significant:
 

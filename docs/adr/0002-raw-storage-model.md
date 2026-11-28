@@ -6,7 +6,8 @@
   types of the wire numbers, keys of unknown length, the topic as bytes,
   data errors through the batch split, the privileges through default
   privileges, and the measured size. Partly superseded by ADR 0017: the
-  location of the tests in "Test databases".
+  location of the tests in "Test databases". Partly superseded by ADR
+  0018: the signal counts and the owner limit of "Expected size".
 - Scope: the PostgreSQL schema for raw records, the database roles, and the
   migration step. ADR 0001 owns the path to the database.
 
@@ -305,6 +306,25 @@ tuple layout):
 | **Total**                                             | **about 110** |
 
 A location row is 8 B larger. A short text value is about the same size.
+
+> Superseded in part by ADR 0018 (28 November 2026). The vehicle config
+> has 201 fields, and the bound of 3 USD (450,000 signals) no longer
+> applies. ADR 0018 bounds the lead at 8 USD (1,200,000 signals, about
+> 134 MB) in the highest modelled month. The signal counts of
+> `docs/telemetry-usage-estimate.md` give these sizes at 111.7 B for each
+> row:
+>
+> | Case                          | Signals each month | Storage each month | Time to 1 GB     |
+> | ----------------------------- | -----------------: | -----------------: | ---------------- |
+> | Planning month                | 499,765            | about 56 MB        | about 17 months  |
+> | Road-trip month               | 878,488            | about 98 MB        | about 10 months  |
+> | Awake all month               | 796,022            | about 89 MB        | about 11 months  |
+> | Extreme month                 | 1,152,430          | about 129 MB       | about 8 months   |
+> | Noise case of the extreme month | 1,408,990        | about 157 MB       | about 6 months   |
+>
+> The time to 1 GB does not count the data already stored. The raw-signal
+> retention period (`VISION.md`, "Open Questions") is due before the
+> database fills.
 
 The signal counts come from the usage estimate of the tuned vehicle config
 ([`docs/telemetry-usage-estimate.md`](../telemetry-usage-estimate.md)).
