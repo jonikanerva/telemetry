@@ -180,23 +180,15 @@ test.describe('Chromium and WebKit', () => {
   const cases: readonly Case[] = [
     {
       name: 'protected start page',
-      labelledBy: false,
+      labelledBy: true,
       open: async (page, baseURL) => {
         await startPage(page, baseURL);
-        await expect(page.getByText('Palvelu toimii.')).toBeVisible();
-      },
-    },
-    {
-      name: 'start page, unavailable state',
-      labelledBy: false,
-      open: async (page, baseURL) => {
-        await startPage(page, baseURL, { status: 502, contentType: 'text/html', body: '<html>Bad Gateway</html>' });
-        await expect(page.getByText('Tietoja ei saatu')).toBeVisible();
+        await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
       },
     },
     {
       name: 'start page, reload banner',
-      labelledBy: false,
+      labelledBy: true,
       open: async (page, baseURL) => {
         await startPage(page, baseURL, {
           status: 200,
@@ -217,7 +209,7 @@ test.describe('Chromium and WebKit', () => {
     },
     {
       name: 'login page',
-      labelledBy: false,
+      labelledBy: true,
       open: async (page) => {
         await page.goto('/login');
         await expect(page.getByRole('heading', { level: 1, name: 'Kirjaudu sisään' })).toBeVisible();
@@ -225,7 +217,7 @@ test.describe('Chromium and WebKit', () => {
     },
     {
       name: 'login page, wrong password',
-      labelledBy: false,
+      labelledBy: true,
       open: async (page) => {
         await page.goto('/login');
         await submitPassword(page, 'wrong password, test only');
@@ -234,7 +226,7 @@ test.describe('Chromium and WebKit', () => {
     },
     {
       name: 'login page, throttled',
-      labelledBy: false,
+      labelledBy: true,
       open: async (page) => {
         await page.goto('/login');
         for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -247,7 +239,7 @@ test.describe('Chromium and WebKit', () => {
     },
     {
       name: 'login page, server unavailable',
-      labelledBy: false,
+      labelledBy: true,
       open: async (page) => {
         await page.goto('/login');
         await page.route('**/api/v1/session', (route) =>
@@ -261,10 +253,10 @@ test.describe('Chromium and WebKit', () => {
     },
     {
       name: 'logout failure view',
-      labelledBy: false,
+      labelledBy: true,
       open: async (page, baseURL) => {
         await startPage(page, baseURL);
-        await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+        await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
         await page.route('**/api/v1/session', (route) =>
           route.request().method() === 'DELETE' ? route.abort('failed') : route.fallback(),
         );

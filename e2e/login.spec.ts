@@ -64,13 +64,11 @@ test('login, protected page, logout, and the back button shows no data', async (
   await expect(page).toHaveURL(/\/login\?redirect=%2F$/);
   await expect(page.getByRole('heading', { level: 1, name: 'Kirjaudu sisään' })).toBeVisible();
   // The protected data never appeared.
-  await expect(page.getByText('Palvelu toimii.')).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toHaveCount(0);
 
   await submitPassword(page, TEST_PASSWORD);
-  await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByRole('heading', { level: 1, name: 'Telemetria' })).toBeVisible();
-  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
-  await expect(page.getByText(/Istunto päättyy viimeistään/)).toBeVisible();
+  await expect(page).toHaveURL(/\/battery\?range=7d$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
 
   const cookie = await sessionCookie(context);
   expect(cookie).toBeDefined();
@@ -91,8 +89,7 @@ test('login, protected page, logout, and the back button shows no data', async (
   // again: the login page, not the earlier data.
   await page.goBack();
   await expect(page.getByRole('heading', { level: 1, name: 'Kirjaudu sisään' })).toBeVisible();
-  await expect(page.getByText('Palvelu toimii.')).toHaveCount(0);
-  await expect(page.getByText(/Istunto päättyy viimeistään/)).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toHaveCount(0);
 
   expect(await cspViolations(page)).toEqual([]);
   expect(foreign).toEqual([]);
@@ -124,7 +121,7 @@ test('a logout that does not reach the server says so, hides the data, and can b
   await recordCspViolations(page);
   await loginByApi(page, baseURL ?? '');
   await page.goto('/');
-  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
 
   // The DELETE never reaches the server.
   await page.route('**/api/v1/session', (route) =>
@@ -137,8 +134,7 @@ test('a logout that does not reach the server says so, hides the data, and can b
     'Palvelin ei vahvistanut uloskirjautumista. Istunto voi olla yhä voimassa tällä laitteella.',
   );
   // No protected data and no logout button of the header in this state.
-  await expect(page.getByText('Palvelu toimii.')).toHaveCount(0);
-  await expect(page.getByText(/Istunto päättyy viimeistään/)).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Kirjaudu ulos' })).toHaveCount(0);
   // The page tells the truth: the server session is still valid.
   expect(await serverSessionStatus(page.request)).toBe(200);
@@ -163,7 +159,7 @@ test('a logout that does not reach the server says so, hides the data, and can b
 test('Back after a logout in another tab and a full page load shows no data', async ({ page, context, baseURL }) => {
   await loginByApi(page, baseURL ?? '');
   await page.goto('/');
-  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
   // A full page load of another document, so Back is a cross-document
   // navigation. This test proves the result of that Back when the browser
   // loads the page again: the route check asks the server. It does not
@@ -185,8 +181,7 @@ test('Back after a logout in another tab and a full page load shows no data', as
 
   await page.goBack();
   await expect(page.getByRole('heading', { level: 1, name: 'Kirjaudu sisään' })).toBeVisible();
-  await expect(page.getByText('Palvelu toimii.')).toHaveCount(0);
-  await expect(page.getByText(/Istunto päättyy viimeistään/)).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toHaveCount(0);
 });
 
 test('/logout opened directly claims no failure and goes to the page of the session state', async ({
@@ -201,8 +196,8 @@ test('/logout opened directly claims no failure and goes to the page of the sess
   // With a session: the application, and the session stays.
   await loginByApi(page, baseURL ?? '');
   await page.goto('/logout');
-  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
+  await expect(page).toHaveURL(/\/battery\?range=7d$/);
   await expect(page.getByText('Uloskirjautuminen ei onnistunut')).toHaveCount(0);
   expect(await serverSessionStatus(page.request)).toBe(200);
 });
@@ -251,13 +246,13 @@ test('the server unavailable state keeps the input', async ({ page }) => {
 test('an expired session leads to the login page and back to the page', async ({ page, context, baseURL }) => {
   await loginByApi(page, baseURL ?? '');
   await page.goto('/');
-  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
 
   // Seven days without a request end the session (idle limit).
   await advanceClock(page.request, SEVEN_DAYS);
   await page.reload();
-  await expect(page).toHaveURL(/\/login\?redirect=%2F$/);
-  await expect(page.getByText('Palvelu toimii.')).toHaveCount(0);
+  await expect(page).toHaveURL(/\/login\?redirect=%2Fbattery%3Frange%3D7d$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toHaveCount(0);
   // A 401 changes no cookie (ADR 0012): the dead cookie stays, and the
   // server refuses it.
   const dead = await sessionCookie(context);
@@ -265,8 +260,8 @@ test('an expired session leads to the login page and back to the page', async ({
   expect(await serverSessionStatus(page.request)).toBe(401);
 
   await submitPassword(page, TEST_PASSWORD);
-  await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+  await expect(page).toHaveURL(/\/battery\?range=7d$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
   // The login replaced the dead cookie with a new one.
   const fresh = await sessionCookie(context);
   expect(fresh?.value).not.toBe(dead?.value);
@@ -275,7 +270,7 @@ test('an expired session leads to the login page and back to the page', async ({
 test('a login with a hostile redirect stays on this origin', async ({ page, baseURL }) => {
   await page.goto('/login?redirect=%2F%2Fevil.example%2Fpath');
   await submitPassword(page, TEST_PASSWORD);
-  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
   expect(new URL(page.url()).origin).toBe(new URL(baseURL ?? '').origin);
 });
 
@@ -377,7 +372,7 @@ test('the keyboard alone logs in and logs out', async ({ page, browserName }) =>
   await expect(field).toBeFocused();
   await page.keyboard.type(TEST_PASSWORD);
   await page.keyboard.press('Enter');
-  await expect(page.getByText('Palvelu toimii.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
 
   const logout = page.getByRole('button', { name: 'Kirjaudu ulos' });
   // The logout button is in the header, before the content. After the
