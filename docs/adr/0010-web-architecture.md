@@ -6,6 +6,10 @@
   (qa-enforcer) in PR #46: <https://github.com/jonikanerva/telemetry/pull/46#pullrequestreview-6092253490>.
   Decision 9, the JSON-only formatter as an exception: superseded in part
   by ADR 0016 (28 November 2026); decision 8 stays as a rule.
+  Owner decision, 28 November 2026: the product supports Chrome on a
+  desktop viewport only, and the Playwright journeys run in chromium only.
+  This supersedes the three-engine statements of decision 5 and of "Result
+  of experiment E4"; the test server keeps HTTPS, as production has.
 - Scope: the layout, the boundaries, the HTTP contract, the serving, and
   the image of the web application. Not in scope: the login and the
   sessions (the session ADR of the login slice), the derivation of the
@@ -86,7 +90,8 @@
    a self-signed certificate for `localhost` that `e2e/tls-cert.sh` makes
    for each run. Reason: experiment E4 showed that WebKit drops a
    `__Host-` `Secure` cookie over `http://localhost`, and the session
-   cookie of the login needs that prefix in all three engines. rustls and
+   cookie of the login needs that prefix in all three engines (superseded:
+   chromium only, see Status). rustls and
    tokio-rustls are optional dependencies of the feature, so the release
    binary has no TLS code; `serve` stays plain HTTP behind the Railway
    proxy. Alternatives: a session cookie without the `__Host-` prefix or

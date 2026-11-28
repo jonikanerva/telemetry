@@ -2,7 +2,6 @@
 // battery view), the reload banner, the content security policy, and the
 // problem response of an unknown API path. The start page needs a
 // session (ADR 0012), so these tests log in through the API first.
-import process from 'node:process';
 
 import type { Page } from '@playwright/test';
 
@@ -70,15 +69,11 @@ test('a missing asset gives a 404, not index.html', async ({ request }) => {
   expect(response.headers()['content-type']).toMatch(/^application\/problem\+json/);
 });
 
-test('the keyboard reaches the controls with a visible focus', async ({ page, browserName }) => {
+test('the keyboard reaches the controls with a visible focus', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { level: 1, name: 'Akku' })).toBeVisible();
 
-  // WebKit on macOS moves the focus with Tab only between text fields, as
-  // Safari does by default; Option+Tab moves it to every element.
-  const tab = browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab';
-
-  await page.keyboard.press(tab);
+  await page.keyboard.press('Tab');
   const skipLink = page.getByRole('link', { name: 'Siirry sisältöön' });
   await expect(skipLink).toBeFocused();
   await expect(skipLink).toBeInViewport();
@@ -91,7 +86,7 @@ test('the keyboard reaches the controls with a visible focus', async ({ page, br
     if (await refresh.evaluate((element) => element === document.activeElement)) {
       break;
     }
-    await page.keyboard.press(tab);
+    await page.keyboard.press('Tab');
   }
   await expect(refresh).toBeFocused();
   await expectVisibleFocus(page);

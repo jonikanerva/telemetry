@@ -5,21 +5,12 @@
 // Each test starts from a known server state (resetAuth). The expected
 // texts come from the Finnish user interface (web/src/i18n/fi.ts); the
 // expected server behaviour comes from ADR 0012.
-import process from 'node:process';
 
 import AxeBuilder from '@axe-core/playwright';
 import type { APIRequestContext, BrowserContext, Page } from '@playwright/test';
 
 import { SESSION_COOKIE, TEST_PASSWORD, advanceClock, authStats, loginByApi, resetAuth } from './auth-support.js';
-import {
-  WCAG_AA_TAGS,
-  cspViolations,
-  expect,
-  newRequestContext,
-  recordCspViolations,
-  recordForeignRequests,
-  test,
-} from './support.js';
+import { WCAG_AA_TAGS, cspViolations, expect, recordCspViolations, recordForeignRequests, test } from './support.js';
 
 const SEVEN_DAYS = 7 * 86_400;
 
@@ -100,7 +91,7 @@ test('a stolen copy of the cookie stops working after logout', async ({ page, co
   const cookie = await sessionCookie(context);
   expect(cookie).toBeDefined();
   const copy = `${SESSION_COOKIE}=${cookie?.value ?? ''}`;
-  const thief = await newRequestContext(playwright.request, {
+  const thief = await playwright.request.newContext({
     baseURL: baseURL ?? '',
     ignoreHTTPSErrors: true,
     extraHTTPHeaders: { cookie: copy },
@@ -277,12 +268,7 @@ test('a login with a hostile redirect stays on this origin', async ({ page, base
 test.describe('requests from another origin', () => {
   const attacker = 'https://attacker.test';
 
-  test('a cross-site request starts no password check and keeps the session (server 403 in firefox and webkit; chromium blocks it before the server)', async ({
-    page,
-    context,
-    baseURL,
-    browserName,
-  }) => {
+  test('a cross-site request starts no password check and keeps the session', async ({ page, context, baseURL }) => {
     // The victim has a session.
     await loginByApi(page, baseURL ?? '');
     const victim = await sessionCookie(context);
@@ -320,18 +306,15 @@ test.describe('requests from another origin', () => {
     );
     await settled;
 
-    // Firefox and WebKit send the request, and the origin rule refuses it.
     // Chromium failed the request with net::ERR_FAILED before it reached
     // the server in the local runs (probably its block of requests from a
-    // public site to localhost); a Chromium that sends it gets the same
-    // refusal. In every engine, no password check starts and the session
-    // stays.
+    // public site to localhost), so this test does not show the origin rule
+    // of the server; the unit tests of crates/server/src/auth/origin.rs do.
+    // A Chromium that sends the request gets the refusal of the origin rule.
+    // In both cases, no password check starts and the session stays.
     const after = await authStats(page.request);
     expect(after.verifications).toBe(before.verifications);
     expect(after.refused_origin - before.refused_origin).toBeLessThanOrEqual(1);
-    if (browserName !== 'chromium') {
-      expect(after.refused_origin - before.refused_origin).toBe(1);
-    }
     expect((await sessionCookie(context))?.value).toBe(victim?.value);
     expect(await serverSessionStatus(page.request)).toBe(200);
   });
@@ -358,16 +341,13 @@ test('the login page has no axe violation, no CSP violation, and no foreign requ
   await expect(page.getByLabel('Salasana', { exact: true })).toHaveAttribute('autocomplete', 'current-password');
 });
 
-test('the keyboard alone logs in and logs out', async ({ page, browserName }) => {
-  // WebKit on macOS moves the focus with Tab only between text fields, as
-  // Safari does by default; Option+Tab moves it to every element.
-  const tab = browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab';
+test('the keyboard alone logs in and logs out', async ({ page }) => {
   await page.goto('/login');
   await expect(page.getByRole('heading', { level: 1, name: 'Kirjaudu sisään' })).toBeVisible();
 
   const field = passwordField(page);
   for (let presses = 0; presses < 10 && !(await isFocused(field)); presses += 1) {
-    await page.keyboard.press(tab);
+    await page.keyboard.press('Tab');
   }
   await expect(field).toBeFocused();
   await page.keyboard.type(TEST_PASSWORD);
@@ -376,10 +356,9 @@ test('the keyboard alone logs in and logs out', async ({ page, browserName }) =>
 
   const logout = page.getByRole('button', { name: 'Kirjaudu ulos' });
   // The logout button is in the header, before the content. After the
-  // login, the focus starts after the form, so move backwards: Firefox
-  // does not wrap a forward Tab from the end to the start of the page.
+  // login, the focus starts after the form, so move backwards.
   for (let presses = 0; presses < 10 && !(await isFocused(logout)); presses += 1) {
-    await page.keyboard.press(`Shift+${tab}`);
+    await page.keyboard.press('Shift+Tab');
   }
   await expect(logout).toBeFocused();
   await expectVisibleFocus(page);

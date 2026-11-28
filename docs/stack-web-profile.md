@@ -451,7 +451,7 @@ may use other libraries; their presence does not require rewriting them.
 - **Design authority:** WCAG 2.2 AA and native HTML semantics. Semantic elements first; ARIA only where needed.
 - **Thresholds:** visible keyboard focus on interactive elements. The axe check of each page covers text contrast and target size; other contrast and target checks are optional.
 - **Inputs:** full keyboard operability, sensible DOM/focus order, accessible names, and announced validation/error states.
-- **Browser evidence:** Playwright journeys against the release service, one axe check for each page, and keyboard-only operation. Declare supported browsers and viewports.
+- **Browser evidence:** Playwright journeys against the release service, one axe check for each page, and keyboard-only operation. Declare supported browsers and viewports; `STACK.md` §3 declares them.
 - **View states:** test each state of `VISION.md` once for each view in Vitest, through the view model. Playwright covers one journey for each view: the data state and one failure state.
 - **Deterministic journeys:** when the service depends on external sources, run the journeys in `verify` against a test server binary that mounts the real router, the real middleware, and the built SPA with fake adapters for the external sources. A journey against live external services is a separate live check, not part of `verify`.
 

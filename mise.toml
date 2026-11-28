@@ -22,7 +22,7 @@ node = "24.22.3"
 pnpm = "12.23.0"
 
 [tasks.setup]
-description = "Install the pinned tools, the Rust toolchain, the locked dependencies, and the browsers of the tests"
+description = "Install the pinned tools, the Rust toolchain, the locked dependencies, and the browser of the tests"
 run = [
   # Name the tools: a plain `mise install` also installs the tools of the
   # global mise config. Keep this list equal to [tools].
@@ -35,9 +35,9 @@ run = [
   "rustup show active-toolchain",
   "cargo fetch --locked",
   "pnpm install --frozen-lockfile",
-  # The browsers of the Playwright tests. In CI (GitHub sets CI=true), also
-  # the system packages that the browsers need.
-  "if [ \"${CI:-}\" = true ]; then pnpm exec playwright install --with-deps chromium firefox webkit; else pnpm exec playwright install chromium firefox webkit; fi",
+  # The browser of the Playwright tests. In CI (GitHub sets CI=true), also
+  # the system packages that the browser needs.
+  "if [ \"${CI:-}\" = true ]; then pnpm exec playwright install --with-deps chromium; else pnpm exec playwright install chromium; fi",
   # The local test server (scripts/test-postgres.sh): checks Apple
   # `container` and its service, and pulls the image. CI has no Apple
   # `container`; there scripts/test-postgres.sh ci starts the server.
