@@ -250,9 +250,13 @@ The project commands are mise tasks. Install
 ```sh
 mise trust
 mise run setup
-set -a; . ./.env.test; set +a   # exports TEST_DATABASE_URL; the value must be in quotes
 mise run verify
 ```
+
+`mise run verify` runs the database tests on a new local PostgreSQL
+server in [Apple `container`](https://github.com/apple/container) (version
+1 or later, with its service started: `container system start`). It needs
+no database URL. `mise run setup` checks the tool and pulls the image.
 
 `mise run verify` is the single local gate. [STACK.md](STACK.md) section 3
 lists the tasks and what each one checks. `mise run setup` also installs
@@ -287,17 +291,28 @@ The GitHub Actions workflow `.github/workflows/ci.yml` also runs
 `mise run ci` and `mise run vuln` on linux/amd64 for each pull request and
 each push to `main`. Its job `image-check` builds both images and checks
 the running containers (`scripts/image-check.sh`,
-`scripts/image-check-web.sh`), because the development
-machine has no container runtime. CI does not replace the local gate.
+`scripts/image-check-web.sh`) with Docker. CI does not replace the local
+gate.
 
-The database tests and the SQLx metadata check need `TEST_DATABASE_URL`:
-the URL of the role `neondb_owner` on the Neon branch `test` of the project
-`telemetry`. `mise run test` and `mise run verify` stop with a message when
-it is not set. Keep the URL in `.env.test` or another local file; never
-commit it. The tests refuse the production endpoint. Each test works in a
-schema of its own and removes it, so two runs can share the branch. Every
-connection verifies the server certificate (`sslmode=verify-full`), also
-when the URL says `sslmode=require`.
+`scripts/test-postgres.sh` starts the test server, locally and in CI
+(STACK.md section 3, ADR 0017). Each run gets a server of its own with a
+new test CA, and every connection verifies the server certificate
+(`sslmode=verify-full`).
+
+Two role tests need Neon. Run them with `mise run test-neon` after a
+change of the storage code, `db/`, `migrations/`, or a TLS crate, and
+before an ingest release. The task needs `NEON_TEST_DATABASE_URL`: the URL
+of the role `neondb_owner` on the Neon branch `test` of the project
+`telemetry`. Keep it in `.env.test` or another local file; never commit
+it:
+
+```sh
+set -a; . ./.env.test; set +a   # exports NEON_TEST_DATABASE_URL; the value must be in quotes
+mise run test-neon
+```
+
+The tests refuse the production endpoint. Each test works in a schema of
+its own and removes it, so two runs can share the branch.
 
 After a change of a query or a migration, write the query metadata again
 and commit the `.sqlx/` directory of each crate with queries (for example

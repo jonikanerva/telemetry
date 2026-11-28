@@ -9,12 +9,17 @@
     approved by the owner with the adoption PR (26 November 2026). The
     change of its compensating evidence to the CI job `image-check`: lead,
     27 November 2026, approved by qa-enforcer in PR #23.
+- Partly superseded by ADR 0017 (28 November 2026): the statements that
+  the development machine has no container runtime, and that the
+  end-to-end tests of `tests/storage/pipeline.rs` need Neon.
 - Scope: where the required checks run, and what each environment does not
   prove. `STACK.md` §3, §13, and §14 state the current rules.
 
 ## Context
 
 - The development machine is macOS arm64 and has no container runtime.
+  (Superseded by ADR 0017: the machine has Apple `container` for the
+  local test server; it builds no image.)
 - Production is a Linux container on Railway (linux/amd64 is an
   assumption about the Railway host). Railway builds the image with its own
   builder after the merge.
@@ -22,7 +27,8 @@
   signal handling and child reaping as PID 1, and the child process.
 - Some database tests need Neon: the end-to-end tests of
   `tests/storage/pipeline.rs` give the binary a new URL and an empty
-  environment, so it trusts only the Mozilla roots; two tests of
+  environment, so it trusts only the Mozilla roots (superseded by ADR
+  0017: the URL now holds the test CA); two tests of
   `tests/storage/roles.rs` read the membership of `neon_superuser`.
 
 ## Decision
@@ -60,7 +66,8 @@
 ## Key alternatives
 
 - **A local container runtime.** Not available on the development
-  machine.
+  machine. (Superseded by ADR 0017 for the database tests; the image
+  checks stay in CI.)
 - Other alternatives were not recorded with the decisions.
 
 ## Consequences
