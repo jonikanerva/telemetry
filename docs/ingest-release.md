@@ -21,7 +21,9 @@ Rules:
 
 1. Confirm that the PR has all acceptance evidence: the local
    `mise run verify`, green `ci`, `vuln`, and `image-check` jobs of the
-   current PR head, and the PASS of the independent review.
+   current PR head, and the PASS of the independent review. Also a passed
+   `mise run test-neon` of the current PR head (the tests that need Neon,
+   ADR 0017).
 2. Create the database roles on the branch `production`: README.md,
    "Database roles", steps 1 to 4. Expected: one JSON line
    `roles_applied`. Then read the server version read-only:

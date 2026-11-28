@@ -45,7 +45,7 @@ repo/
   webapp/                # Dockerfile of the web image (ADR 0010)
   migrations/            # SQLx migrations (ADR 0002)
   db/roles.sql           # Roles, schema, and privileges (ADR 0002, ADR 0013); run by the owner role, again after a migration
-  scripts/               # Check scripts: SQLx metadata, image check, contract check, bundle size, CI PostgreSQL, Gitleaks guard
+  scripts/               # Check scripts: SQLx metadata, image check, contract check, bundle size, test PostgreSQL server, Gitleaks guard
   Cargo.toml  Cargo.lock  rust-toolchain.toml  clippy.toml  deny.toml  mise.toml
   package.json  pnpm-workspace.yaml  pnpm-lock.yaml  .npmrc  tsconfig*.json
 ```
@@ -172,23 +172,24 @@ reads the Rust version from `rust-toolchain.toml`
 
 | Task     | Content |
 | -------- | ------- |
-| `setup`  | The pinned tools of `mise.toml`, the Rust toolchain, the locked crates, `pnpm install --frozen-lockfile`, and the Playwright browsers chromium, firefox, and webkit (in CI with `--with-deps`). |
+| `setup`  | The pinned tools of `mise.toml`, the Rust toolchain, the locked crates, `pnpm install --frozen-lockfile`, and the Playwright browsers chromium, firefox, and webkit (in CI with `--with-deps`). Outside CI also `scripts/test-postgres.sh setup`: it checks Apple `container` (version 1 or later) and its service, and pulls the test image for `linux/arm64`. It never installs the tool or starts the service. |
 | `format` | `cargo fmt --all` and Prettier in write mode over the TypeScript packages and their config files. |
 | `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings` for the host (linux/amd64 in CI), Clippy of `telemetry-web-server` with the feature `test-server`, type-aware Oxlint with `--deny-warnings`, and `tsc` of TypeScript 7 for `web`, `packages/api-client`, and `e2e`. |
 | `build`  | `cargo build --workspace --release --locked`, `vite build` of the SPA into `web/dist` with gzip copies, and the bundle-size check (`scripts/bundle-size.sh`). The build uses the committed client; it does not export or generate it. |
 | `contract` | Writes `contract/openapi.json` (`telemetry-web-server export-openapi`) and generates `packages/api-client/src/generated/` from it with Hey API. Run it after a change of an HTTP type or route, and commit both. |
 | `contract-check` | `scripts/contract-check.sh`: exports and generates in a scratch directory and compares the complete trees with `diff -r` (also added and deleted files). It never writes the working tree. |
-| `test`   | `cargo nextest run --workspace --locked` (all tests), the server tests with the feature `test-server`, `cargo test --doc --workspace --locked` (task `doctest`), and task `test-web`: Vitest, then the Playwright journeys in chromium, firefox, and webkit against the debug test server (`telemetry-web-server serve-test`) with the real router, middleware, and built SPA, in one worker (the session store and the login throttle of the test server are global, ADR 0012). |
-| `test-ci` | CI only: `cargo nextest run --workspace --locked --no-fail-fast` against the PostgreSQL server of the runner, without the tests that need Neon (below), the server tests with `test-server`, `doctest`, and `test-web`. |
-| `verify` | The static checks of task `checks` (Rust and Prettier format checks, `lint`, `contract-check`, `cargo deny --locked check`, `pnpm audit --prod=false`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, `.bin/`, or `node_modules/` path), then `sqlx-check`, `build`, and `test`. |
-| `ci`     | The CI job `ci`: `checks`, `sqlx-check`, `build`, and `test-ci` against the PostgreSQL server of the runner (`scripts/ci-postgres.sh`). It does not replace `verify`. |
-| `sqlx-check` | `scripts/sqlx-metadata.sh check`: `cargo sqlx prepare --check` in each crate with a SQLx dependency, against a new database on the server of `TEST_DATABASE_URL` (the Neon branch `test` locally, the PostgreSQL server of the runner in CI), migrated with `migrations/`, then dropped. Each crate has its metadata in `crates/<crate>/.sqlx/`; a `.sqlx/` at the root fails the check. |
-| `sqlx-prepare` | `scripts/sqlx-metadata.sh prepare`: writes `crates/<crate>/.sqlx/` the same way after a change of a query or a migration. |
+| `test`   | `scripts/test-postgres.sh local -- mise run test-db`: a new local test server (below), then task `test-db`. |
+| `test-db` | Hidden. `cargo nextest run --workspace --locked --no-fail-fast` without the tests that need Neon (below), the server tests with the feature `test-server`, `cargo test --doc --workspace --locked` (task `doctest`), and task `test-web`: Vitest, then the Playwright journeys in chromium, firefox, and webkit against the debug test server (`telemetry-web-server serve-test`) with the real router, middleware, and built SPA, in one worker (the session store and the login throttle of the test server are global, ADR 0012). |
+| `test-neon` | The tests that need Neon (below), against the Neon branch `test` (`NEON_TEST_DATABASE_URL`). Not part of `verify`. Run it after a change of `crates/ingest/src/storage/`, `db/`, `migrations/`, or a TLS crate in `Cargo.lock`, and before an ingest release (ADR 0017). |
+| `verify` | The static checks of task `checks` (Rust and Prettier format checks, `lint`, `contract-check`, `cargo deny --locked check`, `pnpm audit --prod=false`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, `.bin/`, or `node_modules/` path), then `build`, then `sqlx-check` and `test` on one local test server. |
+| `ci`     | The CI job `ci`: `checks`, the SQLx check, `build`, and `test-db` against the server that `scripts/test-postgres.sh ci` starts on the runner. It does not replace `verify`. |
+| `sqlx-check` | `scripts/sqlx-metadata.sh check` on a local test server: `cargo sqlx prepare --check` in each crate with a SQLx dependency, against a new database on the server of `TEST_DATABASE_URL` (the local or the CI test server), migrated with `migrations/`, then dropped. Each crate has its metadata in `crates/<crate>/.sqlx/`; a `.sqlx/` at the root fails the check. |
+| `sqlx-prepare` | `scripts/sqlx-metadata.sh prepare` on a local test server: writes `crates/<crate>/.sqlx/` the same way after a change of a query or a migration. |
 | `deps`   | The dependency freshness check (below). |
 | `vuln`   | The vulnerability check (below). |
 | `image-check` | CI only. `scripts/image-check.sh` builds `ingest/Dockerfile` and checks the running container without a database, without an init, with the init of Docker (`--init`, as on Railway), and as user 10001 (must fail). `scripts/image-check-web.sh` builds `webapp/Dockerfile` and checks the web container: user 10001, `/health`, the security headers, the problem document of an unknown API path, a missing asset (404, never `index.html`), the version in `index.html`, gzip assets, SIGTERM, the image size, and no secret in the log. Each script header lists its checks. |
 
-Tests that need Neon: the four end-to-end tests of `tests/storage/pipeline.rs` (the binary gets a new URL and an empty environment, so it trusts only the Mozilla roots, not the test CA) and the two tests of `tests/storage/roles.rs` that read the membership of `neon_superuser` (`the_roles_get_the_privileges_of_adr_0002`, `the_role_script_is_idempotent`). They run only in the local `verify` (ADR 0008).
+Tests that need Neon: the two tests of `tests/storage/roles.rs` that read the membership of `neon_superuser` (`the_roles_get_the_privileges_of_adr_0002`, `the_role_script_is_idempotent`). They run only in `test-neon` (ADR 0017). The filter of `test-db` and the filter of `test-neon` are complements.
 
 Pinned tools: cargo-nextest 0.9.152, cargo-deny 0.22.1, cargo-shear 1.14.1,
 Gitleaks 8.30.1, osv-scanner 2.7.1, SQLx CLI 0.9.1 (features `postgres` and
@@ -196,12 +197,26 @@ Gitleaks 8.30.1, osv-scanner 2.7.1, SQLx CLI 0.9.1 (features `postgres` and
 1.8.2, crane 0.22.1, Node.js 24.22.3, and pnpm 12.23.0. `package.json` and
 `pnpm-lock.yaml` pin the npm tools (§6).
 
-**Database tests.** `test`, `test-ci`, `verify`, and `sqlx-check` need
-`TEST_DATABASE_URL`: locally the URL of the role `neondb_owner` on the Neon
-branch `test` (§5), in CI the URL that `scripts/ci-postgres.sh` sets. A
-missing URL is a failure, not a skipped check. Export it
-before the command (`set -a; . ./.env.test; set +a; mise run verify`, value
-in quotes); mise does not read the file. The query macros read `crates/<crate>/.sqlx/`
+**Database tests (ADR 0017).** `scripts/test-postgres.sh` starts the test
+server of PostgreSQL 18: Apple `container` locally, Docker in CI. Each has
+TLS with a new test CA, the role `neondb_owner` (not a superuser), and
+`TEST_DATABASE_URL` with `sslrootcert`. A local run gets its own server
+(data in tmpfs, `127.0.0.1` with a random port in 10000-18999), which goes
+away at the end of the run. Each start removes the servers whose owner
+process is gone; at most 4 run at the same time. A nested call uses the
+server of the outer call. A delete of the script acts only on a container
+with the label of this project and the owner of the run;
+`scripts/test-postgres-test.sh` (in `checks`) tests these rules with stub
+programs. The passwords go to the tools through the environment or
+standard input, not on the command line. `verify`, `test`, `sqlx-check`, and
+`sqlx-prepare` need no URL and make no Neon connection. A missing Apple
+`container` or a stopped service fails the task; an agent sandbox that
+blocks its XPC service fails it the same way, so run these tasks outside
+the sandbox. `test-neon` needs `NEON_TEST_DATABASE_URL`: the URL of the
+role `neondb_owner` on the Neon branch `test` (§5). A missing URL is a
+failure, not a skipped check. Export it before the command
+(`set -a; . ./.env.test; set +a; mise run test-neon`, value in quotes); mise
+does not read the file. The query macros read `crates/<crate>/.sqlx/`
 (`SQLX_OFFLINE=true`), so `build` and `lint` never connect to a database;
 every `sqlx` call uses `--no-dotenv`. The SQLx check MUST use an isolated
 migrated database. Checks never silently regenerate missing evidence. A
@@ -211,8 +226,12 @@ Scope and gaps of `verify`:
 
 - Gitleaks scans the committed history, not uncommitted or ignored files:
   commit before the final `verify`.
-- `cargo deny` and the database tests need the network; a Neon outage or
-  used-up CU-hours fail `verify` (a gap, not a pass).
+- `cargo deny` needs the network. The database tests need Apple
+  `container`; a Neon outage or used-up CU-hours fail only `test-neon`.
+- The local test server is not Neon: the Neon proxy TLS path, the role
+  `neon_superuser`, the Neon build, and the cold start stay unverified in
+  `verify` (ADR 0017). `test-neon` covers the role, and partly the TLS
+  path.
 - `verify` runs on macOS arm64 and builds no image; CI gives the Linux and
   image evidence (ADR 0008). `crates/ingest/tests/deployment.rs` checks
   that the image, the server configuration, the Railway settings, and the
@@ -220,7 +239,8 @@ Scope and gaps of `verify`:
 - The end-to-end tests need a debug build, because only a debug build
   reads the test overrides (ADR 0001). The ignored test
   `measure_the_size_of_a_signal_row` runs only on request (ADR 0002).
-- Each task stops at the first failure.
+- Each task stops at the first failing step. Inside a step, `test-db` runs
+  every test (`--no-fail-fast`) before it reports the failures.
 - The journeys need the host tool `openssl` (LibreSSL on macOS, OpenSSL on
   the runner) for the test certificate (`e2e/tls-cert.sh`). It is not
   pinned; a missing tool fails `test-web`.
@@ -250,7 +270,8 @@ Merge conditions (`CLAUDE.md`, ADR 0008, ADR 0016):
   checks and the tests of the changed parts (for example `mise run checks`
   and `cargo nextest run` of the changed crates). For a change of database
   code, migrations, queries, roles, or `.sqlx/`, the implementer also runs
-  `mise run sqlx-check` and the database tests with `TEST_DATABASE_URL`.
+  `mise run sqlx-check` and `mise run test` (both on a local test server),
+  and `mise run test-neon` for a change that the `test-neon` row names.
 - A green `ci` job for the current head. When the base changes after the
   run, update the PR branch so that a new run tests the current base.
 - A green `image-check` job of the current head for a change of an image
@@ -353,7 +374,7 @@ other rows name the slice that can measure them.
 ## 5. Persistence shape
 
 - **Storage:** PostgreSQL on Neon (Free plan: 1 GB storage, 100 CU-hours each month, scale to zero after 5 minutes, 6 hours of restore history, computes up to 2 CU, 10 branches; <https://neon.com/docs/introduction/plans>). Neon suspends the compute when the CU-hours are used, and rejects writes when the storage is full. The ingest process writes a batch at the latest 15 minutes after the oldest queued record and keeps no idle connection (ADR 0001). ADR 0002 holds the tables, values, idempotency keys, roles, and size estimate.
-- **Test databases:** the Neon branch `test` (ADR 0002, "Test databases"); never reset it from its parent. The connection sets the `search_path` (production: `raw`), so the storage SQL names no schema. At most 8 database tests run at the same time (`.config/nextest.toml`); a hung test stops after 4 minutes. `db/roles.sql` and the cleanup of test roles take one advisory lock (parallel privilege changes fail with SQLSTATE XX000).
+- **Test databases:** a local or CI test server of `scripts/test-postgres.sh` for `verify` and CI; the Neon branch `test` only for `test-neon` (ADR 0017; ADR 0002, "Test databases"); never reset the branch from its parent. The connection sets the `search_path` (production: `raw`), so the storage SQL names no schema. At most 8 database tests run at the same time (`.config/nextest.toml`); a hung test stops after 4 minutes. `db/roles.sql` and the cleanup of test roles take one advisory lock (parallel privilege changes fail with SQLSTATE XX000).
 - **Queries:** every storage statement is a checked SQLx query macro, except `db/roles.sql` (run through `apply_roles`) and the SQLx migrator. A bind of a `jiff_sqlx::Timestamp` or of an array with NULL elements uses `as _`; a time column uses `AS "name: jiff_sqlx::Timestamp"`. The database tests execute every statement against the migrated schema. Dynamic SQL needs bound parameters, structural constraints, and integration tests.
 - **Web access (ADR 0013):** the web server connects as the role `telemetry_web` (`db/roles.sql`): SELECT only on the columns that the web queries read (`web_columns` of the script: no `latitude`, `longitude`, or `json_value`); no VIN, no `unprocessed_record`, no write; a new query column needs a new grant; CONNECTION LIMIT 4, `statement_timeout` 10 s, `idle_in_transaction_session_timeout` 15 s, `default_transaction_read_only` on. Run `db/roles.sql` again after a migration that adds a table that the web reads. One connection and one `REPEATABLE READ READ ONLY` transaction for each request, no pool, at most 2 reads at a time (5 s wait, then `service_busy`), connect 15 s, the whole read 24 s. The web server never migrates; its queries are checked macros with metadata in `crates/server/.sqlx/`, and `crates/server/tests/battery_postgres.rs` compares them with the reference rules of `telemetry-web-domain` on the migrated schema as the web role. `crates/server/tests/battery_e3.rs` repeats experiment E3 on request.
 - **Entities and retention:** `VISION.md`.
@@ -585,7 +606,7 @@ approval.
 | §3: no scanner for the `apt-get` packages of the built image, the Rust toolchain, the mise tools, and the static C code of `/fleet-telemetry` | A known vulnerability there is found only by a manual comparison. | The manual comparisons of ADR 0005, decision 6. Before a change enables the `kafka` dispatcher, compare the OpenSSL and libcurl records one by one. | ADR 0005 | The built image can be downloaded; a scanner covers these surfaces; another dispatcher or another libzmq address; or by 2027-01-25. |
 | §3: reviewed ignore files of the image scan | An ignored advisory that later gets a Debian fix or a KEV listing stays hidden until its entry expires. | A recorded decision and an expiry for each entry; the deployment-fact checks; the build-log check of §15; manual KEV comparison. | ADR 0005 | Expiry: Go entries 2027-02-24, Debian 13 entries 2027-01-25. Earlier with a new upstream release, a base image change, a broken deployment fact, or a KEV listing. Before the service `telemetry-web` gets a public domain or a TCP proxy: the glibc and gcc-14 entries of `docs/security/osv-scanner-web-debian.toml`. |
 | §3: no scan of the builder image `rust:<version>-slim-trixie` | A compiler or linker vulnerability that changes the binary is not found by a scanner. | The tag is pinned (`<channel of rust-toolchain.toml>-slim-<Debian codename of the final stage>`; no check holds this form); `deps` prints the newest tag; `image-check` runs the binary; manual KEV comparison. | ADR 0005 | A scanner of the built image in CI; a build-stage advisory in CISA KEV; a change of the builder image. |
-| §3: no scan of the test-only CI image `postgres:18.7-trixie` | A vulnerability in that image is not found by a scanner. | It runs only on the CI runner, with test data, no secret, and on loopback. | ADR 0005 | The image is used outside CI. |
+| §3: no scan of the test image `postgres:18.7-trixie` (CI and the local test server) | A vulnerability in that image is not found by a scanner. | It runs only on the CI runner and in the local test server, with test data, no secret, and on loopback (the local server publishes only on `127.0.0.1`). | ADR 0005, ADR 0017 | The image is used outside the tests. |
 | §3, §14: Gitleaks 8.30.1 contains the brotli decoder of CVE-2026-111497 (CISA KEV) | A scan into archives, or another Gitleaks version, can run the decoder on fork input: a denial of service of the scan. | The scan reads no archive content (depth 0); `scripts/gitleaks-guard.sh` in `checks` fails on the literal archive depth flag in any tracked file (also a binary one), on a `git grep` error, and on a version other than 8.30.1; ADR 0011 lists the known limits. | ADR 0011 | A Gitleaks release with brotli 1.2.7 or later; any Gitleaks version change; a need to scan archives; or by 2027-01-25. |
 | §1, §14: runtime tests on linux/amd64 before merge | A Linux-only fault in the container, as PID 1, behind the Railway proxy, or in a test that needs Neon shows only after deployment. | The Linux checks 1 to 6 of ADR 0001 ("To verify at first deployment"): CI, `image-check`, and the Railway checks of `docs/ingest-release.md`. Open: check 3 on Railway, check 4, and check 5. | ADR 0008 | Ends when the release records checks 1 to 5 and check 6 has CI evidence. Reassess on 2027-02-28 if open, and when CI can run the tests that need Neon. |
 | §14: build and test of the ingest image before merge | The Railway build, settings, proxy, and healthcheck are unverified before the merge. | A green `image-check` job of the PR head; the post-release checks and the recovery of `docs/ingest-release.md`. | ADR 0008 | Railway documents its Dockerfile build, or the Railway builder can run before the merge. |
@@ -613,7 +634,7 @@ verification.
 | P1, P6: each task | Criteria, failures, assumptions, and check mapping | Lead records; independent review for material changes |
 | P2–P4: types and dependencies | Strict checks, dependency rationale, crate boundaries | Manifest edits and ambient effects need review |
 | P5–P6: data meaning | Conversion and property or challenge cases; partial versus atomic failure tests | Preserve missing, null, and zero, units, precision, and uncertainty |
-| P5–P7: storage | Migrated-schema metadata check; constraint, competing-write, and upgrade tests; production and test server versions | §5. The tests that need Neon and the Neon TLS path have no Linux evidence before deployment (§13). Restore is not tested. |
+| P5–P7: storage | Migrated-schema metadata check; constraint, competing-write, and upgrade tests; production and test server versions | §5. The two role tests that need Neon run only on macOS in `test-neon`; the Neon TLS path has no Linux evidence before deployment (§13, ADR 0017). Restore is not tested. |
 | P3, P7: security | Named scanner results and privacy checks | Scanners do not prove authorization |
 | P6, P7: release and platform | During development: the fast checks and the tests of the changed parts. Before review: green `ci`. Before merge: one `verify` of the merged version on the current base (P9), green `ci`, and for an image input a green `image-check`; after release: identity, health, and smoke evidence | A local build is not a verified deployment (§13) |
 | P8–P9: material changes | Current docs, ADRs, independent review; independent integrated verification where P9 requires it | Separate reviewer context; exact tested revisions |
@@ -648,7 +669,8 @@ assessment and authorization. An unavailable scanner is a gap, not a pass.
 ### Infrastructure and environments
 
 One deployment environment: production. CI (§3) is a verification
-environment; its pins are the rows that start with "CI".
+environment; its pins are the rows that start with "CI" and the row "Test
+PostgreSQL image".
 
 | Component | Version or value | Notes |
 | --------- | ---------------- | ----- |
@@ -670,12 +692,13 @@ environment; its pins are the rows that start with "CI".
 | Tesla Fleet API | Region `na` | The owner's account is in the NA region. |
 | PostgreSQL | 18, Neon Free plan | Project `telemetry`, region `aws-eu-central-1`, database `neondb`, branch `production`. The branch `test` runs 18.7. |
 | Neon production compute | Fixed 0.25 CU (autoscaling minimum and maximum 0.25) | Endpoint `ep-young-dawn-bgyaj83l`; `suspend_timeout_seconds` 0 (5 minutes). No connection pool (ADR 0001, lead decision 3). |
-| PostgreSQL test database | Neon branch `test`, fixed 0.25 CU | Holds no production data. At most 5 CU-hours each month (ADR 0002). |
+| PostgreSQL test database | Neon branch `test`, fixed 0.25 CU | Only for `test-neon` (ADR 0017). Holds no production data. At most 5 CU-hours each month (ADR 0002). |
 | CI runner image | GitHub-hosted `ubuntu-26.04`, x86_64 | GitHub updates the image within the label; the log of each job shows its version. |
 | CI mise | 2026.11.14 | `version` input of the mise action; the same as on the development machine. |
 | CI action: checkout | `actions/checkout` v7.0.1, commit `3d3c42e5aac5ba805825da76410c181273ba90b1` | Full commit SHA. |
 | CI action: mise | `jdx/mise-action` v5.3.0, commit `924e7c586e33d7d4bae9c14e26c5d22e2beb6e78` | Full commit SHA. |
-| CI PostgreSQL image | `postgres:18.7-trixie`, index digest `sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328` | `postgres_image` of the job `ci`; the version of the Neon branch `test`. Not scanned (§13). |
+| Test PostgreSQL image | `postgres:18.7-trixie`, index digest `sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328` | The one pin: `postgres_image` of the job `ci`, which the local test server reads too (`scripts/test-postgres.sh`); `linux/amd64` in CI, `linux/arm64` locally. The version of the Neon branch `test`. Not scanned (§13). |
+| Apple `container` | 1.7.1 on the development machine; version 1 or later required | Runs the local test server. mise cannot pin it; `setup` checks it, and `deps` prints the installed version and the newest release. |
 
 ### Release rules of the ingest service
 

@@ -7,9 +7,9 @@
 //! rules of `telemetry_web_domain` on the same rows, so the fake source
 //! of the browser tests and production give the same view.
 //!
-//! The tests need `TEST_DATABASE_URL` (the owner role on the Neon branch
-//! `test`, or the PostgreSQL server of the CI runner). A missing URL
-//! fails the test.
+//! The tests need `TEST_DATABASE_URL`: the owner role of the test server
+//! that `scripts/test-postgres.sh` starts (`mise run test`, or CI). A
+//! missing URL fails the test.
 
 //!
 //! The `cfg(test)` attribute marks the helper functions as test code for

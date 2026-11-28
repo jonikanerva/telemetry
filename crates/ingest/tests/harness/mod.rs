@@ -2,7 +2,7 @@
 //! `examples/fake_fleet_telemetry.rs`, for the end-to-end tests.
 //!
 //! Two test binaries use this module: `tests/pipeline.rs` (no database,
-//! part of CI) and `tests/storage/` (the Neon branch `test`).
+//! part of CI) and `tests/storage/` (the test server).
 //!
 //! - The fake child is the example binary. `cargo nextest run` and `cargo
 //!   test` build the examples of the package with the tests, into
