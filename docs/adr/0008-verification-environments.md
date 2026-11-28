@@ -9,9 +9,12 @@
     approved by the owner with the adoption PR (26 November 2026). The
     change of its compensating evidence to the CI job `image-check`: lead,
     27 November 2026, approved by qa-enforcer in PR #23.
-- Partly superseded by ADR 0017 (28 November 2026): the statements that
-  the development machine has no container runtime, and that the
-  end-to-end tests of `tests/storage/pipeline.rs` need Neon.
+  - Decision 1 superseded in part by ADR 0016 (28 November 2026): one local
+    `mise run verify` runs for each version to be merged, by the reviewer
+    for a change with a high-class part, otherwise by the lead. The CI job `ci` stays.
+  - Partly superseded by ADR 0017 (28 November 2026): the statements that
+    the development machine has no container runtime, and that the
+    end-to-end tests of `tests/storage/pipeline.rs` need Neon.
 - Scope: where the required checks run, and what each environment does not
   prove. `STACK.md` §3, §13, and §14 state the current rules.
 
@@ -36,7 +39,7 @@
 1. **Two required runs before merge.** The local `mise run verify`
    (`DOCTRINE.md` P6) and a green CI job `ci` (`mise run ci` on
    linux/amd64) for the current head of the PR. Neither replaces the
-   other.
+   other. ADR 0016 sets who runs the local `verify`, and how often.
 2. **Exception: runtime tests on linux/amd64 before merge.** CI runs the
    tests on linux/amd64 against PostgreSQL on the runner, not in the
    container: `ingest` is not PID 1 there, no Railway proxy is in front of
