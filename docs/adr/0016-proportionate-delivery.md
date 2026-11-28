@@ -3,6 +3,7 @@
 - Status: Accepted, 28 November 2026. Decided by the owner.
 - Supersedes in part: ADR 0008, decision 1, where it requires the local
   `verify` from the implementer and from the reviewer.
+- Changes: ADR 0005, decision 8 (decision 7 below).
 
 ## Context
 
@@ -46,6 +47,10 @@
    time, and the database requests (`STACK.md` §4). Optional: executed response validation and
    real-response tests outside the high class, and axe checks beyond one
    for each page. The browser and viewport rules do not change.
+7. **CI by changed inputs.** A draft PR runs no job. On a PR, `image-check`
+   and `vuln` run only when an input of the job changes (`STACK.md` §3).
+   This changes ADR 0005, decision 8: a red `vuln` job of a push to `main`
+   or of the schedule starts the triage.
 
 ## Key alternatives
 

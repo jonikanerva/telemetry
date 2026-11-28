@@ -5,7 +5,10 @@
 name: ci
 
 on:
+  # Each job also skips a draft PR (the job conditions below): GitHub has no
+  # draft filter for the trigger. A draft PR gets a run with skipped jobs.
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
   push:
     branches: [main]
   # A daily run of the vuln job only, so that a new advisory shows without
@@ -25,9 +28,42 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Selects image-check and vuln from the changed files of a PR
+  # (scripts/ci-select.sh, STACK.md §3). A push to main and the schedule
+  # select every job. A failed or skipped select job gives no output, and
+  # each job that reads it then runs.
+  select:
+    name: select jobs
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      run_image_check: ${{ steps.select.outputs.run_image_check }}
+      run_vuln: ${{ steps.select.outputs.run_vuln }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A PR run checks out the merge commit with the base. Its first
+          # parent is the base, so the diff to it lists the changes of
+          # the PR.
+          fetch-depth: 2
+          persist-credentials: false
+      - id: select
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          changed="$RUNNER_TEMP/changed"
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only --no-renames HEAD^1 HEAD > "$changed" || rm -f "$changed"
+            echo "Changed files:"; cat "$changed" || echo "(no list: every job runs)"
+          fi
+          scripts/ci-select.sh "$EVENT" "$changed" | tee -a "$GITHUB_OUTPUT"
+
   ci:
     name: mise run ci (linux/amd64)
-    if: github.event_name != 'schedule'
+    # Every non-draft PR and every push to main, also for a change of the
+    # documents only: the job holds Gitleaks and the deployment tests.
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && !github.event.pull_request.draft)
     # A pinned image version, not ubuntu-latest, so that the platform
     # changes only with a change of this file.
     runs-on: ubuntu-26.04
@@ -64,6 +100,8 @@ jobs:
     # A separate job, so that a new image advisory does not hide the result
     # of the ci job (STACK.md §3, "Scope and gaps of vuln").
     name: mise run vuln
+    needs: select
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.select.outputs.run_vuln != 'false' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
@@ -86,7 +124,8 @@ jobs:
     # task image-check). The job pushes nothing and uses no secret and no
     # database.
     name: mise run image-check (linux/amd64)
-    if: github.event_name != 'schedule'
+    needs: select
+    if: ${{ !cancelled() && github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.select.outputs.run_image_check != 'false' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:

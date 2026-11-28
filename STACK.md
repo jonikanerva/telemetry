@@ -176,12 +176,13 @@ reads the Rust version from `rust-toolchain.toml`
 | `format` | `cargo fmt --all` and Prettier in write mode over the TypeScript packages and their config files. |
 | `lint`   | `cargo clippy --workspace --all-targets --locked -- -D warnings` for the host (linux/amd64 in CI), Clippy of `telemetry-web-server` with the feature `test-server`, type-aware Oxlint with `--deny-warnings`, and `tsc` of TypeScript 7 for `web`, `packages/api-client`, and `e2e`. |
 | `build`  | `cargo build --workspace --release --locked`, `vite build` of the SPA into `web/dist` with gzip copies, and the bundle-size check (`scripts/bundle-size.sh`). The build uses the committed client; it does not export or generate it. |
+| `light`  | The fast checks of the development loop: the checks of `checks` that need no network and no container (format checks, `lint`, `contract-check`, `cargo shear`, the Gitleaks guard, the syntax checks, and the script tests), `cargo nextest` without the test binaries that need a database (`ingest::storage`, `telemetry-web-server::battery_postgres`), the server tests with the feature `test-server`, the doctests, and Vitest. It removes `TEST_DATABASE_URL` from the environment, so a database test that is not on the list fails. It leaves out `cargo deny`, `pnpm audit`, the Gitleaks history scan, `build`, the SQLx check, the database tests, and the Playwright journeys. |
 | `contract` | Writes `contract/openapi.json` (`telemetry-web-server export-openapi`) and generates `packages/api-client/src/generated/` from it with Hey API. Run it after a change of an HTTP type or route, and commit both. |
 | `contract-check` | `scripts/contract-check.sh`: exports and generates in a scratch directory and compares the complete trees with `diff -r` (also added and deleted files). It never writes the working tree. |
 | `test`   | `scripts/test-postgres.sh local -- mise run test-db`: a new local test server (below), then task `test-db`. |
 | `test-db` | Hidden. `cargo nextest run --workspace --locked --no-fail-fast` without the tests that need Neon (below), the server tests with the feature `test-server`, `cargo test --doc --workspace --locked` (task `doctest`), and task `test-web`: Vitest, then the Playwright journeys in chromium with a desktop viewport against the debug test server (`telemetry-web-server serve-test`) with the real router, middleware, and built SPA, in one worker (the session store and the login throttle of the test server are global, ADR 0012). |
 | `test-neon` | The tests that need Neon (below), against the Neon branch `test` (`NEON_TEST_DATABASE_URL`). Not part of `verify`. Run it after a change of `crates/ingest/src/storage/`, `db/`, `migrations/`, or a TLS crate in `Cargo.lock`, and before an ingest release (ADR 0017). |
-| `verify` | The static checks of task `checks` (Rust and Prettier format checks, `lint`, `contract-check`, `cargo deny --locked check`, `pnpm audit --prod=false`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, no tracked `.env*`, `secrets/`, `.bin/`, or `node_modules/` path), then `build`, then `sqlx-check` and `test` on one local test server. |
+| `verify` | The static checks of task `checks` (Rust and Prettier format checks, `lint`, `contract-check`, `cargo deny --locked check`, `pnpm audit --prod=false`, `cargo shear`, Gitleaks, the syntax of the config files and scripts, the script tests, no tracked `.env*`, `secrets/`, `.bin/`, or `node_modules/` path), then `build`, then `sqlx-check` and `test` on one local test server. |
 | `ci`     | The CI job `ci`: `checks`, the SQLx check, `build`, and `test-db` against the server that `scripts/test-postgres.sh ci` starts on the runner. It does not replace `verify`. |
 | `sqlx-check` | `scripts/sqlx-metadata.sh check` on a local test server: `cargo sqlx prepare --check` in each crate with a SQLx dependency, against a new database on the server of `TEST_DATABASE_URL` (the local or the CI test server), migrated with `migrations/`, then dropped. Each crate has its metadata in `crates/<crate>/.sqlx/`; a `.sqlx/` at the root fails the check. |
 | `sqlx-prepare` | `scripts/sqlx-metadata.sh prepare` on a local test server: writes `crates/<crate>/.sqlx/` the same way after a change of a query or a migration. |
@@ -257,21 +258,33 @@ Scope and gaps of `verify`:
 **CI (GitHub Actions).** `.github/workflows/ci.yml` runs the jobs `ci`
 (with `postgres:18.7-trixie` on the runner, TLS, a test CA, and
 `sslmode=verify-full`), `vuln`, and `image-check` on `ubuntu-26.04`
-(linux/amd64) for each pull request and each push to `main`. A daily
-schedule (04:17 UTC) runs only `vuln`; GitHub disables a schedule after 60
+(linux/amd64) for each pull request that is not a draft and each push to
+`main`. A draft PR gets a run with skipped jobs. A daily schedule (04:17
+UTC) runs only `vuln`; GitHub disables a schedule after 60
 days without activity. The token can only read the contents; there is no
 repository secret and no `pull_request_target` trigger; each third-party
 action is pinned to a full commit SHA. `image-check` pushes no image and
 has no secret and no database. A `pull_request` run tests the merge with
-the base.
+the base. On a pull request, the first job `select` runs
+`scripts/ci-select.sh` on the changed files (the diff of the merge commit
+to the base). `ci` always runs. `image-check` runs only when an image
+input changes: a watch path of either service (§15) or
+`scripts/image-check*.sh`. `vuln` runs only when a `vuln` input (below)
+changes. A change of `ci.yml`, `mise.toml`, or `scripts/ci-select.sh`
+runs every job. A push to `main` runs every job. The selection fails safe:
+an unknown event, a failed or empty diff, a quoted path, or a failed
+`select` job runs every job. `scripts/ci-select-test.sh` (in `checks`) tests the decisions
+and checks that each watch path of §15 selects `image-check`. Gaps: it
+does not check the reverse direction, and it does not compare the
+patterns with the `vuln` input list of this section; a pattern can match
+more paths than the documented input.
 
 Merge conditions (`CLAUDE.md`, ADR 0008, ADR 0016):
 
 - One local `mise run verify` on the version to be merged, integrated with
   the current base: by the reviewer for a change with a high-class part,
   otherwise by the lead (`DOCTRINE.md` P9). Before review, the implementer runs the fast
-  checks and the tests of the changed parts (for example `mise run checks`
-  and `cargo nextest run` of the changed crates). For a change of database
+  checks and the tests of the changed parts (`mise run light`). For a change of database
   code, migrations, queries, roles, or `.sqlx/`, the implementer also runs
   `mise run sqlx-check` and `mise run test` (both on a local test server),
   and `mise run test-neon` for a change that the `test-neon` row names.
@@ -280,6 +293,8 @@ Merge conditions (`CLAUDE.md`, ADR 0008, ADR 0016):
 - A green `image-check` job of the current head for a change of an image
   input (the watch paths of §15) or of the job.
 - A green `vuln` job for a change of a `vuln` input (below).
+- A green job is a job that ran and passed. A `skipped` job is not green:
+  for a change of an image or `vuln` input, the job must run.
 - The workflow adds no branch protection (an owner decision); the
   acceptance conditions of `CLAUDE.md` block a merge with a red run.
 
@@ -346,10 +361,11 @@ Scope and gaps of `vuln`:
     `osv-scanner.toml`, `ingest/Dockerfile`, `webapp/Dockerfile`,
     `ingest/entrypoint.sh`,
     `ingest/server_config.json`, or the ignore files in `docs/security/`.
-  - For any other PR, a red `vuln` job starts a triage in a
-    `chore/deps-<topic>` PR and does not block that PR. Before such a PR
-    merges, the lead compares the IDs of the new findings with the CISA
-    KEV catalog.
+  - A red `vuln` job of a push to `main` or of the schedule starts a
+    triage in a `chore/deps-<topic>` PR and does not block a PR that
+    changes no input. Before such a PR merges while `vuln` on `main` is
+    red, the lead compares the IDs of the new findings with the CISA KEV
+    catalog (ADR 0016).
   - A known exploited vulnerability or a malicious package version makes
     its fix due before other work (`DOCTRINE.md` P7).
 
@@ -638,7 +654,7 @@ verification.
 | P5–P6: data meaning | Conversion and property or challenge cases; partial versus atomic failure tests | Preserve missing, null, and zero, units, precision, and uncertainty |
 | P5–P7: storage | Migrated-schema metadata check; constraint, competing-write, and upgrade tests; production and test server versions | §5. The two role tests that need Neon run only on macOS in `test-neon`; the Neon TLS path has no Linux evidence before deployment (§13, ADR 0017). Restore is not tested. |
 | P3, P7: security | Named scanner results and privacy checks | Scanners do not prove authorization |
-| P6, P7: release and platform | During development: the fast checks and the tests of the changed parts. Before review: green `ci`. Before merge: one `verify` of the merged version on the current base (P9), green `ci`, and for an image input a green `image-check`; after release: identity, health, and smoke evidence | A local build is not a verified deployment (§13) |
+| P6, P7: release and platform | During development: the fast checks and the tests of the changed parts (`mise run light`). Before review: green `ci`. Before merge: one `verify` of the merged version on the current base (P9), green `ci`, and for an image input a green `image-check`; after release: identity, health, and smoke evidence | A local build is not a verified deployment (§13) |
 | P8–P9: material changes | Current docs, ADRs, independent review; independent integrated verification where P9 requires it | Separate reviewer context; exact tested revisions |
 
 ### Check configuration
