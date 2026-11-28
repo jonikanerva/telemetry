@@ -165,5 +165,9 @@ export const fi = {
   scatterSpeedAxis: 'Keskinopeus, km/h',
   scatterCursorHint: 'Valitse ajo osoittimella tai nuolinäppäimillä.',
   scatterEmpty: 'Ei ajoja, joilla on tämä tieto.',
+  scatterDataLoss: (count: number) =>
+    count === 1
+      ? '1 kaavion ajoista on merkitty: datan menetys ajon aikana.'
+      : `${String(count)} kaavion ajoista on merkitty: datan menetys ajon aikana.`,
   scatterCount: (points: number, drives: number) => `${String(points)}/${String(drives)} ajoa kaaviossa.`,
 } as const;

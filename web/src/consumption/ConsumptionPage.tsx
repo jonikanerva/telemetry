@@ -6,7 +6,7 @@ import '../battery/battery.css';
 import './consumption.css';
 
 import { useQuery } from '@tanstack/react-query';
-import type { ConsumptionView, RangeKey } from 'telemetry-web-api-client';
+import type { ConsumptionView, Drive, RangeKey } from 'telemetry-web-api-client';
 
 import { FailureNotice } from '../battery/BatteryPage.js';
 import { RangeSelector } from '../battery/RangeSelector.js';
@@ -17,6 +17,9 @@ import { fi } from '../i18n/fi.js';
 import { consumptionQuery } from './consumption-query.js';
 import {
   consumptionStatusLine,
+  lossesLine,
+  noDrivesText,
+  scatterSummary,
   driveCells,
   hasUnknownValues,
   refreshStatus,
@@ -83,26 +86,35 @@ function NoDrives({ view }: { readonly view: ConsumptionView }) {
     <>
       <StatusLine view={view} />
       <div className="notice notice-info" data-testid="no-drives">
-        <p className="notice-title">{fi.noDrivesTitle}</p>
+        <p className="notice-title">{noDrivesText(view)}</p>
       </div>
     </>
   );
 }
 
 function StatusLine({ view }: { readonly view: ConsumptionView }) {
+  const losses = lossesLine(view);
   return (
-    <p className="status-line" data-testid="status-line" data-freshness={view.status?.freshness ?? 'none'}>
-      {consumptionStatusLine(view)}
-    </p>
+    <>
+      <p className="status-line" data-testid="status-line" data-freshness={view.status?.freshness ?? 'none'}>
+        {consumptionStatusLine(view)}
+      </p>
+      {losses === null ? null : <p data-testid="losses-line">{losses}</p>}
+    </>
   );
 }
 
+type MarkedPoint = ScatterPoint & { readonly marked: boolean };
+
 function DataBody({ view }: { readonly view: ConsumptionView }) {
   const generatedAtMs = Date.parse(view.generated_at);
-  const label = (when: string, wh: number, other: string): string =>
-    `${formatDateTimeNear(Date.parse(when), generatedAtMs)}: ${formatNumber(wh, 0)} Wh/km, ${other}`;
-  const byTemp: ScatterPoint[] = [];
-  const bySpeed: ScatterPoint[] = [];
+  // A drive with a loss mark gets the mark of its table row in its point label.
+  const label = (drive: Drive, wh: number, other: string): string => {
+    const text = `${formatDateTimeNear(Date.parse(drive.start), generatedAtMs)}: ${formatNumber(wh, 0)} Wh/km, ${other}`;
+    return drive.data_loss ? `${text} (${fi.driveDataLoss})` : text;
+  };
+  const byTemp: MarkedPoint[] = [];
+  const bySpeed: MarkedPoint[] = [];
   for (const drive of view.drives) {
     if (drive.consumption === null) {
       continue;
@@ -112,7 +124,8 @@ function DataBody({ view }: { readonly view: ConsumptionView }) {
         id: drive.start,
         x: drive.mean_outside_temp,
         y: drive.consumption,
-        label: label(drive.start, drive.consumption, `${formatNumber(drive.mean_outside_temp, 1)} °C`),
+        label: label(drive, drive.consumption, `${formatNumber(drive.mean_outside_temp, 1)} °C`),
+        marked: drive.data_loss,
       });
     }
     if (drive.mean_speed !== null) {
@@ -120,7 +133,8 @@ function DataBody({ view }: { readonly view: ConsumptionView }) {
         id: drive.start,
         x: drive.mean_speed,
         y: drive.consumption,
-        label: label(drive.start, drive.consumption, `${formatNumber(drive.mean_speed, 0)} km/h`),
+        label: label(drive, drive.consumption, `${formatNumber(drive.mean_speed, 0)} km/h`),
+        marked: drive.data_loss,
       });
     }
   }
@@ -139,14 +153,14 @@ function DataBody({ view }: { readonly view: ConsumptionView }) {
           xLabel={fi.scatterTempAxis}
           yLabel="Wh/km"
           points={byTemp}
-          summary={[fi.scatterCount(byTemp.length, ended)]}
+          summary={scatterSummary(byTemp.length, ended, byTemp.filter((p) => p.marked).length)}
         />
         <ScatterChart
           title={fi.scatterSpeedTitle}
           xLabel={fi.scatterSpeedAxis}
           yLabel="Wh/km"
           points={bySpeed}
-          summary={[fi.scatterCount(bySpeed.length, ended)]}
+          summary={scatterSummary(bySpeed.length, ended, bySpeed.filter((p) => p.marked).length)}
         />
       </div>
       <h2 className="consumption-table-title">{fi.drivesTitle}</h2>

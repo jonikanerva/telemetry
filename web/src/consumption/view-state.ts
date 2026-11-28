@@ -158,3 +158,30 @@ export function hasUnknownValues(view: ConsumptionView): boolean {
         )),
   );
 }
+
+/** The text of the no-drives state: a cut read is never "no drives" as a fact. */
+export function noDrivesText(view: ConsumptionView): string {
+  return view.truncated ? fi.consumptionTruncated : fi.noDrivesTitle;
+}
+
+/**
+ * The line under the status line when the range has recorded losses,
+ * with the wording of the battery charts. A loss that meets no drive shows
+ * only here.
+ */
+export function lossesLine(view: ConsumptionView): string | null {
+  const count = view.gaps.items.length;
+  if (count === 0) {
+    return null;
+  }
+  return view.gaps.truncated ? fi.chartGapCountAtLeast(count) : fi.chartGapCount(count);
+}
+
+/** The text summary of a scatter chart, with the number of plotted drives with a loss mark. */
+export function scatterSummary(points: number, ended: number, marked: number): string[] {
+  const sentences = [fi.scatterCount(points, ended)];
+  if (marked > 0) {
+    sentences.push(fi.scatterDataLoss(marked));
+  }
+  return sentences;
+}
