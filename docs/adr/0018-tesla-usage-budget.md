@@ -26,9 +26,9 @@
   limit. The owner read its usage on the Tesla dashboard as about 1 to 2
   EUR each month (28 November 2026).
 - The model of `docs/telemetry-usage-estimate.md` gives these usages of
-  the 201-field config: planning month 3.41 USD, road-trip month 6.02 USD,
-  awake all month 5.39 USD, and the extreme month (road trip, awake all
-  other hours) 7.85 USD.
+  the 201-field config: planning month 3.33 USD, road-trip month 5.86 USD,
+  awake all month 5.31 USD, the extreme month (road trip, awake all other
+  hours) 7.68 USD, and the noise case of the extreme month 9.39 USD.
 
 ## Decision
 
@@ -41,8 +41,14 @@
 3. The lead may change and send the vehicle telemetry config without a
    separate owner approval when the estimated usage of the new config
    stays below 8 USD each month in the highest modelled month of
-   `docs/telemetry-usage-estimate.md`. The PR records the estimate. A
-   config with a higher estimate needs the owner's approval.
+   `docs/telemetry-usage-estimate.md`. The highest modelled month
+   includes the noise case of that document, so the bound does not depend
+   only on the profile hours that the lead writes. The PR records the
+   estimate. A config with a higher estimate needs the owner's approval.
+   The owner decided the 201-field config directly; its noise case is
+   above 8 USD, so a lead change of that config under this decision needs
+   an estimate below 8 USD in every modelled case, the noise case
+   included.
 
 ## Key alternatives
 
@@ -60,7 +66,7 @@
   approval of the changed budget principle.
 - A billing limit that is too low removes the config and stops Home
   Assistant. The owner checks the dashboard after the first month.
-- The database grows about 57 MB in the planning month, so the 1 GB of the
+- The database grows about 56 MB in the planning month, so the 1 GB of the
   Neon Free plan fills in about 17 months (ADR 0002, "Expected size").
 
 ## Cost of reversal

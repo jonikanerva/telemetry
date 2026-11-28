@@ -246,19 +246,22 @@ suspends the API also for Home Assistant (ADR 0018).
 2. Add a payment method: "Manage Payment" on the same page. The default
    billing limit is 0, and Tesla allows a higher limit only with a payment
    method.
-3. Set the billing limit: "Update Limit". Set it far above the highest
-   modelled month of [the usage estimate](docs/telemetry-usage-estimate.md)
-   plus Home Assistant (about 10.4 USD of usage). Tesla does not say
-   whether the limit counts the usage before or after the monthly
-   discount of 10 USD. A limit of 20 USD is safe in both readings. Two
-   days after the send, read on the dashboard how the usage compares with
-   the limit. If the limit counts the usage after the discount, lower it to
-   about 11 USD, so that the paid part stays near the agreed overage of
-   about 10 EUR (ADR 0018).
+3. Set the billing limit: "Update Limit". The limit is 20 EUR each
+   month. Tesla does not say whether the limit counts the usage before or
+   after the monthly discount of 10 USD. The limit stays far above the
+   highest modelled month in both readings: the noise case of the extreme
+   month in [the usage estimate](docs/telemetry-usage-estimate.md) plus
+   Home Assistant is about 11.9 USD of usage. Keep the limit when the
+   dashboard shows the usage (ADR 0018).
 
 ### Send the config
 
-1. Get a new Tesla OAuth access token. It expires in about 8 hours.
+1. Get a new Tesla OAuth access token. It expires in about 8 hours. Put
+   it in `.env` (see "Configuration", local files). Load it with
+   `set -a; . ./.env; set +a`, and give the commands the variable, for
+   example `-H "Authorization: Bearer $<variable of .env>"`. Never type
+   the token on a command line, so that it stays out of the shell
+   history.
 2. Start `tesla-http-proxy` locally with the application private key.
 3. Send `POST /api/1/vehicles/fleet_telemetry_config` through the proxy
    with the VIN and `config/telemetry_config.json` of the merged `main`.
@@ -283,7 +286,7 @@ collection.
 
 - After two days: read the usage on the dashboard. The usage since the
   send must stay near the planning month of the usage estimate
-  (3.41 USD for a full month). If it grows much faster, roll back and
+  (3.33 USD for a full month). If it grows much faster, roll back and
   report it.
 - After one week: compare the awake hours of the week before and the week
   after the send (the connect and disconnect times in

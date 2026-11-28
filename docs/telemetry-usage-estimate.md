@@ -9,20 +9,24 @@ budget that the estimate is checked against.
 
 | Month (profile below)                     | Signals | Usage of the config | Storage |
 | ----------------------------------------- | ------: | ------------------: | ------: |
-| Planning month                            | 512,005 |            3.41 USD |   57 MB |
-| Road-trip month                           | 902,968 |            6.02 USD |  101 MB |
-| Awake all month                           | 808,262 |            5.39 USD |   90 MB |
-| Extreme: road trip, awake all other hours | 1,176,910 |          7.85 USD |  132 MB |
+| Planning month                            | 499,765 |            3.33 USD |   56 MB |
+| Road-trip month                           | 878,488 |            5.86 USD |   98 MB |
+| Awake all month                           | 796,022 |            5.31 USD |   89 MB |
+| Extreme: road trip, awake all other hours | 1,152,430 |          7.68 USD |  129 MB |
+| Noise case of the extreme month (below)   | 1,408,990 |          9.39 USD |  157 MB |
 
-The highest modelled month is 7.85 USD. That is below the bound of 8 USD
-of ADR 0018.
+These numbers are a bound under the assumptions of "Model", not a
+maximum. The highest modelled month without the noise case is 7.68 USD.
+The noise case of the extreme month is 9.39 USD. ADR 0018 counts the noise
+case in the highest modelled month.
 
 The owner's Home Assistant uses the same Tesla application. The owner read
 its usage on the Tesla dashboard as about 1 to 2 EUR each month (owner
 reading, 28 November 2026; not a measurement of this project). With at
 most 2.5 USD for Home Assistant, the planning, road-trip, and awake months
 stay inside the monthly discount of 10 USD. The extreme month is about
-10.35 USD, which is inside the agreed paid overage (ADR 0018).
+10.18 USD, and its noise case about 11.89 USD. Both are inside the agreed
+paid overage (ADR 0018) and far below the billing limit of 20 EUR.
 
 ## Billing rules
 
@@ -59,7 +63,9 @@ Quotes from the Tesla developer pages, read on 28 November 2026:
   announcement says that the option requires `prefer_typed`; the client
   changelog of the Fleet Telemetry page says that client 1.1.0 removed
   `prefer_typed` and returns all data typed. The vehicle has client 1.3.0,
-  so the config has no `prefer_typed`. Location fields use meters.
+  so the config has no `prefer_typed`. The same changelog says that
+  location fields support `minimum_delta` and that "Changes in distance
+  are measured in meters".
 - `resend_interval_seconds` (same announcement): "Resend a field's value
   every x seconds, even if its value has not changed." The config does not
   use it, because a resend of an unchanged value costs a signal.
@@ -83,7 +89,7 @@ intervals. The config file is the complete list.
 | Charge level, energy, drive, charging power, temperatures, tyre pressures | 20 | Table "Base fields" below |
 | Battery and charging detail: module temperatures (120 s, Δ0.5), pack voltage and current (300 s), brick voltages, ranges, lifetime energy counters (300 to 900 s), `ChargerVoltage` (300 s, Δ2), `ChargeAmps` (60 s), `GradeEstimatePercent` (30 s, Δ1), charging and climate events (1 s), `SentryMode`, `Version`, `LocatedAtHome` | 45 | Events at 1 s: they change only at an event |
 | States and settings: seats, windows, locks, doors, display, safety settings, software update, guest and valet mode, drive-unit temperatures (300 s, Δ1), `LocatedAtWork`, `LocatedAtFavorite`, `Homelink*`, vehicle configuration (3600 s) | 111 | Events at 1 s; slow values at 300 to 3600 s |
-| Driving dynamics: pedals, accelerations, `GpsHeading` (Δ5), torque (5 s), motor current and axle speed (10 s), inverter voltage (30 s), navigation estimates and `GpsAccuracyMeters` (60 s), turn signals and high beams (1 s) | 25 | The largest cost line |
+| Driving dynamics: pedals, accelerations (Δ0.5 m/s²), torque (5 s), `GpsHeading` (10 s, Δ10°), motor current and axle speed (10 s), inverter battery voltage (30 s, Δ1 V), navigation estimates (60 s), `GpsAccuracyMeters` (300 s, Δ5 m), turn signals and high beams (1 s) | 25 | The largest cost line |
 
 ### Base fields
 
@@ -125,11 +131,13 @@ The unit comments of `crates/domain` cite this table.
 
 ## Model
 
-The model counts the maximum number of signals:
+The model gives a bound under these assumptions. It is not a maximum:
+a field can change in a state where the model counts 0 (see the noise
+case).
 
 - A continuously changing field sends 3600 / `interval_seconds` signals
-  each hour in each state where it can change. No saving from
-  `minimum_delta` is counted.
+  each hour in each state where the model expects it to change (table
+  "State classes"). No saving from `minimum_delta` is counted.
 - An event field sends 2 signals each hour while the car drives or
   charges, and 0.5 each hour while it is parked and awake (assumption).
   `Gear` counts 10 each hour of driving, the turn signals 60, and the high
@@ -148,8 +156,9 @@ Signals each hour of a state:
 | Base fields (20)          |   2,939 |         531 |         712 |           289 |
 | Battery and charging (45) |     274 |         246 |         190 |         138.5 |
 | States and settings (111) |     408 |         196 |         196 |          85.5 |
-| Driving dynamics (25)     |   8,600 |          60 |          60 |             0 |
-| **Total (201)**           | **12,221** | **1,033** | **1,158** |       **513** |
+| Driving dynamics (25)     |   8,192 |          60 |          60 |             0 |
+| **Total (201)**           | **11,813** | **1,033** | **1,158** |       **513** |
+| Noise case: added         |       0 |         612 |         612 |           372 |
 
 Profiles (hours each month; assumptions, not measurements):
 
@@ -165,24 +174,89 @@ charges of 6 hours each week, and one fast charge. "Awake all month" and
 "Extreme" fill every other hour of a 30-day month with awake, parked time,
 for example with Sentry Mode on.
 
-Planning month: 12,221 × 30 + 1,033 × 52 + 1,158 × 0.5 + 513 × 60 +
-201 × 300 = 366,630 + 53,716 + 579 + 30,780 + 60,300 = 512,005 signals,
-or 3.41 USD.
+Planning month: 11,813 × 30 + 1,033 × 52 + 1,158 × 0.5 + 513 × 60 +
+201 × 300 = 354,390 + 53,716 + 579 + 30,780 + 60,300 = 499,765 signals,
+or 3.33 USD.
+
+Noise case: sensor noise changes `GpsHeading` and `GpsAccuracyMeters` at
+each interval in every awake hour that is not driving (372 signals an
+hour), and `DiVBatF` and `DiVBatR` at each interval while the car charges
+(240 signals an hour). The case assumes that the `minimum_delta` of the
+accelerations (0.5 m/s²) and of `DiVBat*` (1 V) is larger than the noise
+of a car that stands still. GPS heading and accuracy can jump more than
+their deltas when the car stands still, so the case counts them in full.
+Extreme month: 1,152,430 + 612 × 46 + 372 × 614 = 1,408,990 signals, or
+9.39 USD. Without the delta assumption (the accelerations and `DiVBat*`
+also at each interval in every awake hour that is not driving), the
+extreme month is 2,506,750 signals, or 16.71 USD.
 
 Sensitivity:
 
 - Connections: 150, 300, or 600 connections in the planning month give
-  481,855, 512,005, or 572,305 signals.
-- The driving-dynamics group is 70 % of the driving rate. At 10 s instead
-  of 5 s for its 8 fields at 5 s, the planning month falls by 86,400
-  signals (0.58 USD).
-- Driving dominates: each extra hour of driving adds 12,221 signals
+  469,615, 499,765, or 560,065 signals.
+- The driving-dynamics group is 69 % of the driving rate. At 10 s instead
+  of 5 s for its 7 fields at 5 s, the planning month falls by 75,600
+  signals (0.50 USD).
+- Driving dominates: each extra hour of driving adds 11,813 signals
   (0.08 USD).
+
+### State classes
+
+The model uses these classes. States: D driving, A AC charging, C DC
+charging, P awake and parked; "-" counts 0 in every state. An event field
+counts 2 signals each hour in D, A, and C, and 0.5 in P, unless the row
+states another rate. A static field counts 0. With these classes, the
+formula of this section gives every number of this document.
+
+| Kind | Interval (s) | Δ | States | Fields |
+| ---- | -----------: | - | ------ | ------ |
+| continuous | 60 | - | DACP | `Soc`, `BatteryLevel` |
+| continuous | 30 | - | DACP | `EnergyRemaining` |
+| continuous | 3600 | - | DACP | `NominalFullPackEnergyKwh`, `IsolationResistance`, `RollingResistanceCoefficient` |
+| event, 10 an hour | 1 | - | D | `Gear` |
+| continuous | 2 | - | D | `VehicleSpeed` |
+| continuous | 5 | 20 | D | `Location` |
+| continuous | 30 | - | D | `Odometer` |
+| event, 2 an hour | 1 | - | AC | `DetailedChargeState` |
+| event, 1 an hour | 1 | - | C | `FastChargerPresent` |
+| continuous | 30 | - | A | `ACChargingPower` |
+| continuous | 60 | - | A | `ACChargingEnergyIn` |
+| continuous | 10 | - | C | `DCChargingPower` |
+| continuous | 60 | - | AC | `DCChargingEnergyIn`, `ChargeRateMilePerHour` |
+| continuous | 300 | - | DACP | `OutsideTemp`, `HvacFanSpeed`, `HvacFanStatus` |
+| continuous | 300 | 0.5 | DACP | `InsideTemp`, `PackVoltage` |
+| continuous | 600 | - | DACP | `TpmsPressureFl`, `TpmsPressureFr`, `TpmsPressureRl`, `TpmsPressureRr` |
+| continuous | 120 | 0.5 | DACP | `ModuleTempMax`, `ModuleTempMin` |
+| event | 1 | - | DACP | `BatteryHeaterOn`, `BMSState`, `ChargeLimitSoc`, `DriveRail`, `SentryMode`, `Version`, `SoftwareUpdateInProgress`, `LocatedAtHome`, `HvacPower`, `HvacACEnabled`, `HvacLeftTemperatureRequest`, `ClimateKeeperMode`, `CabinOverheatProtectionMode`, `DefrostForPreconditioning`, `PreconditioningEnabled`, `NotEnoughPowerToHeat`, `PowerTransferStatus`, `ChargeState`, `DCDCEnable`, `Hvil`, `SuperchargerSessionTripPlanner`, `DiStateF`, `DiStateR`, `CruiseSetSpeed`, `GpsState`, `AccessoryRail`, `HvacAutoMode`, `HvacRightTemperatureRequest`, `DefrostMode`, `CabinOverheatProtectionTemperatureLimit`, `RearDefrostEnabled`, `RearDisplayHvacEnabled`, `SeatHeaterLeft`, `SeatHeaterRight`, `SeatHeaterRearLeft`, `SeatHeaterRearRight`, `SeatHeaterRearCenter`, `AutoSeatClimateLeft`, `AutoSeatClimateRight`, `ClimateSeatCoolingFrontLeft`, `ClimateSeatCoolingFrontRight`, `SeatVentEnabled`, `HvacSteeringWheelHeatAuto`, `HvacSteeringWheelHeatLevel`, `WiperHeatEnabled`, `Locked`, `DoorState`, `FdWindow`, `FpWindow`, `RdWindow`, `RpWindow`, `CenterDisplay`, `DriverSeatOccupied`, `DriverSeatBelt`, `LightsHazardsActive`, `SoftwareUpdateAvailable`, `SoftwareUpdateExpectedDurationMinutes`, `SoftwareUpdateScheduledStartTime`, `SoftwareUpdateVersion`, `ServiceMode`, `GuestModeEnabled`, `GuestModeMobileAccessState`, `PinToDriveEnabled`, `ValetModeEnabled`, `SpeedLimitMode`, `CurrentLimitMph`, `RemoteStartEnabled`, `RemoteStartActive`, `PairedPhoneKeyAndKeyFobQty`, `VehicleName`, `LocatedAtWork`, `LocatedAtFavorite`, `HomelinkNearby`, `HomelinkDeviceCount`, `TpmsHardWarnings`, `TpmsSoftWarnings`, `AutomaticBlindSpotCamera`, `BlindSpotCollisionWarningChime`, `SpeedLimitWarning`, `ForwardCollisionWarning`, `LaneDepartureAvoidance`, `EmergencyLaneDepartureAvoidance`, `AutomaticEmergencyBrakingOff`, `AutomaticEmergencyBrakingState`, `CruiseFollowDistance`, `ChargePort` |
+| event | 1 | - | ACP | `ChargerPhases`, `ChargeCurrentRequest`, `ChargeCurrentRequestMax`, `ChargeEnableRequest`, `ChargePortDoorOpen`, `ChargePortLatch`, `ChargingCableType`, `FastChargerType`, `BmsFullchargecomplete`, `ChargePortColdWeatherMode`, `ScheduledChargingMode`, `ScheduledChargingPending`, `ScheduledChargingStartTime`, `ScheduledDepartureTime` |
+| continuous | 300 | 1 | DACP | `PackCurrent` |
+| continuous | 300 | - | DP | `LifetimeEnergyUsed` |
+| continuous | 300 | - | D | `LifetimeEnergyGainedRegen` |
+| continuous | 900 | - | AC | `LifetimeEnergyChargedKwh`, `EstimatedHoursToChargeTermination` |
+| continuous | 900 | - | C | `LifetimeDcChargeEnergyKwh` |
+| continuous | 900 | - | DACP | `EstBatteryRange`, `RatedRange`, `BrickVoltageMax`, `BrickVoltageMin`, `IdealBatteryRange`, `BrickSocMinPercent`, `NumBrickVoltageMax`, `NumBrickVoltageMin`, `NumModuleTempMax`, `NumModuleTempMin` |
+| continuous | 300 | 2 | ACP | `ChargerVoltage` |
+| continuous | 60 | 0.5 | A | `ChargeAmps` |
+| continuous | 300 | - | AC | `TimeToFullCharge` |
+| continuous | 30 | 1 | D | `GradeEstimatePercent`, `DiVBatF`, `DiVBatR` |
+| continuous | 300 | 1 | D | `DiStatorTempF`, `DiStatorTempR`, `DiInverterTF`, `DiInverterTR`, `DiHeatsinkTF`, `DiHeatsinkTR` |
+| continuous | 600 | - | D | `TpmsLastSeenPressureTimeFl`, `TpmsLastSeenPressureTimeFr`, `TpmsLastSeenPressureTimeRl`, `TpmsLastSeenPressureTimeRr` |
+| continuous | 60 | - | - | `SoftwareUpdateDownloadPercentComplete`, `SoftwareUpdateInstallationPercentComplete` |
+| continuous | 60 | 1 | D | `MilesSinceReset`, `SelfDrivingMilesSinceReset` |
+| continuous | 5 | - | D | `PedalPosition`, `BrakePedalPos`, `BrakePedal`, `DiTorqueActualF`, `DiTorqueActualR` |
+| continuous | 5 | 0.5 | D | `LongitudinalAcceleration`, `LateralAcceleration` |
+| continuous | 10 | 10 | D | `GpsHeading` |
+| continuous | 10 | - | D | `DiMotorCurrentF`, `DiMotorCurrentR`, `DiAxleSpeedF`, `DiAxleSpeedR`, `DiTorquemotor`, `DiSlaveTorqueCmd` |
+| continuous | 300 | 5 | D | `GpsAccuracyMeters` |
+| continuous | 60 | - | D | `MilesToArrival`, `MinutesToArrival`, `ExpectedEnergyPercentAtTripArrival`, `RouteTrafficMinutesDelay`, `MaxSpeedToReachDestinationMph` |
+| event, 60 an hour | 1 | - | D | `LightsTurnSignal` |
+| event, 20 an hour | 1 | - | D | `LightsHighBeams` |
+| static | 3600 | - | - | `CarType`, `Trim`, `ExteriorColor`, `RoofColor`, `WheelType`, `EfficiencyPackage`, `EuropeVehicle`, `RightHandDrive`, `RearSeatHeaters`, `SunroofInstalled`, `SettingDistanceUnit`, `SettingTemperatureUnit`, `Setting24HourTime`, `SettingTirePressureUnit`, `SettingChargeUnit` |
 
 ## Storage
 
 One signal is one row of `raw.vehicle_signal`, 111.7 B (measured, ADR
-0002, "Expected size"). The planning month adds about 57 MB. The Neon Free
+0002, "Expected size"). The planning month adds about 56 MB. The Neon Free
 plan has 1 GB, so the database fills in about 17 months at the planning
 rate, less the data already stored, and in about 11 months when the car is
 awake all the time. The raw-signal retention period (`VISION.md`, "Open
@@ -224,6 +298,11 @@ therefore expected to be below the model, but no discount is measured.
   include the fields is an assumption.
 - The Tesla pages do not say what the vehicle does with a field that it
   does not support.
+- The model counts the driving-dynamics fields at 0 outside driving. The
+  noise case above counts the GPS fields in every awake hour; without
+  the `minimum_delta` assumption of that case, the extreme month is
+  16.71 USD, or about 19.2 USD with Home Assistant. That is still below
+  the billing limit of 20 EUR in both readings of the limit.
 - The model counts each event field at 2 signals an hour. An event field
   that in fact changes at each interval of 1 s can send up to 3,600
   signals an hour. The README send procedure checks the dashboard usage

@@ -316,10 +316,11 @@ A location row is 8 B larger. A short text value is about the same size.
 >
 > | Case                          | Signals each month | Storage each month | Time to 1 GB     |
 > | ----------------------------- | -----------------: | -----------------: | ---------------- |
-> | Planning month                | 512,005            | about 57 MB        | about 17 months  |
-> | Road-trip month               | 902,968            | about 101 MB       | about 10 months  |
-> | Awake all month               | 808,262            | about 90 MB        | about 11 months  |
-> | Extreme month                 | 1,176,910          | about 132 MB       | about 8 months   |
+> | Planning month                | 499,765            | about 56 MB        | about 17 months  |
+> | Road-trip month               | 878,488            | about 98 MB        | about 10 months  |
+> | Awake all month               | 796,022            | about 89 MB        | about 11 months  |
+> | Extreme month                 | 1,152,430          | about 129 MB       | about 8 months   |
+> | Noise case of the extreme month | 1,408,990        | about 157 MB       | about 6 months   |
 >
 > The time to 1 GB does not count the data already stored. The raw-signal
 > retention period (`VISION.md`, "Open Questions") is due before the
