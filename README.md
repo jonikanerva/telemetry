@@ -329,15 +329,8 @@ privileges"): `telemetry_migrator` owns the schema `raw` and runs
 `ingest migrate`; `telemetry_ingest` runs `ingest run` and can only read
 and insert. The web service uses a third role, `telemetry_web`. It can
 only read, and only the columns that the web uses. Each grant is a
-`SELECT` on a list of columns, never on a whole table:
-
-- `vehicle_signal`: `vehicle_id`, `field`, `created_at`, `received_at`,
-  `value_type`, `int_value`, `float_value`, `text_value`;
-- `connectivity_event`: `connection_id`, `vehicle_id`, `created_at`,
-  `received_at`, `status`;
-- `ingest_event`: `id`, `run_id`, `occurred_at`, `kind`, `reason`,
-  `dropped_count`, `first_received_at`, `last_received_at`;
-- `vehicle`: `id`.
+`SELECT` on a list of columns, never on a whole table. The array
+`web_columns` in `db/roles.sql` holds the list.
 
 The web role cannot read the location (`latitude`, `longitude`,
 `json_value` of `vehicle_signal`), the VIN, `unprocessed_record`,
