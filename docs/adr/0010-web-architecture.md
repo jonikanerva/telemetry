@@ -6,6 +6,10 @@
   (qa-enforcer) in PR #46: <https://github.com/jonikanerva/telemetry/pull/46#pullrequestreview-6092253490>.
   Decision 9, the JSON-only formatter as an exception: superseded in part
   by ADR 0016 (28 November 2026); decision 8 stays as a rule.
+  Decision 9, the basis and the reassessment condition of the web ignore
+  file: amended by the lead, 28 November 2026, in PR #57, when the web
+  service got a public address; the independent review of PR #57 is the
+  approval.
   Owner decision, 28 November 2026: the product supports Chrome on a
   desktop viewport only, and the Playwright journeys run in chromium only.
   This supersedes the three-engine statements of decision 5 and of "Result
@@ -157,9 +161,18 @@
    - The JSON-only formatter of ADR 0009, decision 3, for the web server
      too (decision 8).
    - The ignore file `docs/security/osv-scanner-web-debian.toml` for the
-     web runtime image: its glibc and gcc-14 entries hold only while the
-     web service has no public network input (`docs/security/image-advisories.md`,
-     "Web image"; STACK.md §13, row of ADR 0005).
+     web runtime image. Its glibc and gcc-14 entries rest on these facts
+     (`docs/security/image-advisories.md`, "Web image"): the server loads
+     only glibc and `libgcc_s`, not libstdc++ (W3); it imports none of
+     the faulty glibc functions and no function that changes the
+     environment (W5); `scripts/image-check-web.sh` checks both in the CI
+     job `image-check`. The service has a public address and no HTTP
+     request sets the environment (W4). Reassess the entries when Debian
+     publishes a fix, when CISA KEV lists a CVE, when W3 or W5 breaks,
+     when the base image or the linking of the server changes, or at the
+     expiry date. (Superseded condition: the entries held only while the
+     web service had no public network input. The service got the custom
+     domain `tesla.calmdonut.com`, so that condition no longer held.)
 
 ## Result of experiment E1
 
