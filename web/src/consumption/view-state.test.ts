@@ -5,6 +5,9 @@ import { describe, expect, it } from 'vitest';
 import type { QuerySnapshot } from '../view-state.js';
 import {
   consumptionStatusLine,
+  lossesLine,
+  noDrivesText,
+  scatterSummary,
   driveCells,
   hasUnknownValues,
   km,
@@ -241,5 +244,37 @@ describe('the states of the battery view', () => {
   it('counts a drive without a temperature as partial data', () => {
     expect(hasUnknownValues(view([ended]))).toBe(false);
     expect(hasUnknownValues(view([{ ...ended, mean_outside_temp: null }]))).toBe(true);
+  });
+});
+
+describe('a cut read and the recorded losses', () => {
+  const loss = {
+    kind: 'queue_full',
+    from: '2026-11-27T10:10:00Z',
+    to: '2026-11-27T10:11:00Z',
+    count: { value: 3, of: 'records' },
+  } as const;
+
+  it('never says "no drives" as a fact when the read was cut', () => {
+    expect(noDrivesText(view([]))).toBe('Ei ajoja valitulla aikavälillä.');
+    expect(noDrivesText(view([], { truncated: true }))).toBe(
+      'Aikavälillä on enemmän dataa kuin yksi haku lukee: vanhimmat ajot puuttuvat.',
+    );
+  });
+
+  it('shows the recorded losses of the range, also a loss that meets no drive', () => {
+    expect(lossesLine(view([ended]))).toBeNull();
+    expect(lossesLine(view([], { gaps: { items: [loss], truncated: false } }))).toBe('1 aukko valitulla välillä.');
+    expect(lossesLine(view([], { gaps: { items: [loss, loss], truncated: true } }))).toBe(
+      'Vähintään 2 aukkoa valitulla välillä.',
+    );
+  });
+
+  it('tells how many plotted drives have a loss mark', () => {
+    expect(scatterSummary(3, 4, 0)).toEqual(['3/4 ajoa kaaviossa.']);
+    expect(scatterSummary(3, 4, 1)).toEqual([
+      '3/4 ajoa kaaviossa.',
+      '1 kaavion ajoista on merkitty: datan menetys ajon aikana.',
+    ]);
   });
 });

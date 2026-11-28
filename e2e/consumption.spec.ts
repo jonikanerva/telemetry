@@ -56,7 +56,11 @@ test('data: the drives, the totals, and the charts', async ({ page, baseURL }) =
 
   const byTemp = page.getByRole('figure', { name: 'Kulutus ja ulkolämpötila' });
   await expect(byTemp.getByTestId('scatter-point')).toHaveCount(3);
-  await expect(byTemp.getByTestId('scatter-summary')).toHaveText('3/4 ajoa kaaviossa.');
+  // The drive of 25.11. has a loss mark, also in the chart.
+  await expect(byTemp.getByTestId('scatter-summary')).toHaveText(
+    '3/4 ajoa kaaviossa.1 kaavion ajoista on merkitty: datan menetys ajon aikana.',
+  );
+  await expect(page.getByTestId('losses-line')).toHaveText('1 aukko valitulla välillä.');
   // The keyboard cursor reads the coldest drive first.
   await byTemp.getByRole('slider').focus();
   await expect(byTemp.getByTestId('scatter-readout')).toContainText('°C');

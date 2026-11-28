@@ -64,11 +64,14 @@ pub async fn read_consumption(
     read_consumption_with(conn, window, MAX_DRIVE_SAMPLES).await
 }
 
-/// [`read_consumption`] with another limit of the value rows (the tests).
+/// [`read_consumption`] with another limit of the value rows. Only the
+/// database tests call it: they are an integration test crate, so the
+/// function cannot be crate-private; it is hidden from the documentation.
 ///
 /// # Errors
 ///
 /// Returns the classified [`SourceError`].
+#[doc(hidden)]
 pub async fn read_consumption_with(
     conn: &mut PgConnection,
     window: Window,
