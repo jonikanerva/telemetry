@@ -52,7 +52,8 @@ explicit local verification contract. Never invent a successful command.
 During development, run the fast checks and the tests of the changed parts
 (`STACK.md` §3). Wait for a green required CI result before review. Run the
 full `$VERIFY_CMD` once for each version to be merged, as `DOCTRINE.md` P9
-assigns it: the reviewer for a high-class change, otherwise the lead.
+assigns it: the reviewer for a change with a high-class part, otherwise
+the lead.
 
 A review PASS covers the reviewed version only. Before merge, confirm the
 current PR head, current base, required checks, required independent review,

@@ -37,7 +37,7 @@ It does not grant authority beyond the adopted project contract.
 ## 0. Project shape: web parts
 
 - **Critical execution paths:** server request decode, domain conversion, use case, and response; browser route, query/client boundary, view model, and render. Blocking work must not stall async I/O or the browser main thread.
-- **Applicable UI states:** the states of `VISION.md` (Product Shape).
+- **Applicable UI states:** the states of `VISION.md` (Product Shape), and denied access (an expired session, 401).
 - **Intended use:** interactive web applications. Durable data, accounts, background jobs, and real-time connections depend on `VISION.md`; they are not mandatory product features.
 - **Reassessment:** SEO-first, SSR-required, or offline-first products need an adapted design. A small integration or CRUD product may cost less to maintain as one TypeScript system; record the product reason for Rust.
 
@@ -204,7 +204,7 @@ optional flags. A failed fetch MUST NOT become an empty successful result.
 Use an approved OIDC provider and opaque backend-owned cookie sessions.
 Evaluate openidconnect and a maintained session implementation with a
 compatible storage/version tuple. Backend authorization applies per resource
-and tenant, regardless of browser visibility or cached claims.
+regardless of browser visibility or cached claims.
 
 Define Secure, HttpOnly, and suitable SameSite cookie settings, CSRF protection,
 rotation, fixation prevention, expiry, revocation, logout, and concurrent
@@ -370,7 +370,7 @@ they address a named risk. Their versions belong in the adopting tool pins.
 - Blocking I/O or heavy CPU work on async request execution paths; synchronous lock guards across await; unowned spawned tasks or silently discarded errors/futures.
 - Unbound SQL interpolation or unchecked SQL safety assertions.
 - Two rustls crypto providers in one binary, for example SQLx `tls-rustls-ring-webpki` together with reqwest `rustls` (aws-lc-rs). rustls panics when a certificate verifier is built without an explicit provider, so `sslmode=verify-ca` or `verify-full` stops the process. Check `cargo tree -i ring` and `cargo tree -i aws-lc-rs` after a TLS feature change.
-- useEffect for server-data fetching, duplicate global query stores without need, or auth-scoped cache reuse across users/tenants.
+- useEffect for server-data fetching, duplicate global query stores without need, or cached data kept after logout.
 - Host-local timezone arithmetic, invented instants for date-only values, or manual UTC-offset calculations (§10).
 
 Scope tests and tooling according to their contracts. Supported platform APIs

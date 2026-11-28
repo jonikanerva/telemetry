@@ -17,8 +17,10 @@ tooling, and the release path (image, entrypoint, Railway settings, CI
 gates). Every other surface has the light class, for example a read-only
 view, a chart, or a derived display value. The changed surface sets the
 class, not the file type. In a mixed change, only the affected part has the
-high class. Light-class work uses the simplest solution that works and at
-most one review round. The next release corrects a wrong light-class result.
+high class. Light-class work uses the simplest solution that works and one
+review round. The lead has a blocking finding of that round fixed and checks
+the fix itself; a second round is only for a defect in behaviour, privacy,
+or data. The next release corrects a wrong light-class result.
 
 MUST and MUST NOT define requirements. SHOULD defines a default that needs a
 reason to depart from. MAY permits a choice within established authority.
@@ -323,15 +325,19 @@ review, the implementer runs the fast checks and the tests of the changed
 parts, and waits for a green required CI result. When a change touches
 database code, migrations, queries, roles, or SQLx metadata, the
 implementer also runs the database tests (`STACK.md` §3), because CI does
-not run the tests that need Neon. For a high-class change, the reviewer
-runs the full `$VERIFY_CMD` once, in an isolated clean checkout of the PR
-head integrated with the current base, on the version that it would
-otherwise pass. The reviewer records both input revisions and the tested
+not run the tests that need Neon. For a change with a high-class part,
+the reviewer runs the full `$VERIFY_CMD` once, in an isolated clean
+checkout of the PR head integrated with the current base, on the version
+that it would otherwise pass. The reviewer records both input revisions and the tested
 integration commit or tree. A missing or failed run is FAIL; the
 implementer's report cannot replace it. Reuse of other evidence under P6
 does not waive this run. For any other change, the lead, or the implementer
 on the lead's instruction, runs the full `$VERIFY_CMD` once on the
-integrated version before merge.
+integrated version before merge. When the head or the integration base
+changes after the full run, the party that ran it runs the affected checks
+again under P6. When that party is a reviewer that is no longer available,
+the lead assigns the run to a new reviewer context for a change with a
+high-class part, and runs it itself otherwise.
 
 Verify the integrated result. The lead owns acceptance and release even when
 other agents approve parts. Continue within the agreed goal and authority.

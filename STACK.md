@@ -17,7 +17,7 @@ import it.
 ## 0. Project shape
 
 - **Project risk rationale:** one person, the owner, depends on the system. The data contains the vehicle location history and the VIN; a leak shows where the owner is and when the owner is away. A collection failure loses history that cannot be collected again. Usage above the Tesla billing limit removes the vehicle telemetry configuration and suspends the Tesla API for the owner's Home Assistant. No other system depends on this product. The product sends no commands to the vehicle.
-- **Change risk:** each changed surface has the risk class of `DOCTRINE.md` (introduction). High class here: `crates/ingest`, `ingest/`, `db/`, `migrations/`, each database role and query, `crates/server/src/auth/`, `config/telemetry_config.json`, the images and Railway settings of both services, the CI workflow, the check tasks of `mise.toml`, `deny.toml`, and `docs/security/`. Light class: the SPA views, the display rules of `crates/domain`, and read-only API responses, unless they expose location or the VIN. A class does not waive a required check.
+- **Change risk:** `DOCTRINE.md` (introduction) decides the risk class of each changed surface. These paths are examples of the high class here: `crates/ingest`, `ingest/`, `db/`, `migrations/`, each database role and query, `crates/server/src/auth/`, the session guard and security headers of `crates/server/src/app.rs`, the configuration and secrets of the web server (`crates/server/src/config.rs`, `WEB_PASSWORD_HASH`), the log redaction of both services (`logging.rs`), `config/telemetry_config.json`, the Railway settings of both services, the CI workflow, `scripts/`, the check tasks of `mise.toml`, `deny.toml`, `docs/security/`, and every other input of an image (the watch paths of §15) or of a CI gate. Any other code that handles a secret, access control, the session, or location or the VIN is also high class. Light class: the SPA views, the display rules of `crates/domain`, and read-only API responses, unless they expose location or the VIN. A class does not waive a required check.
 - **Phase scope (ADR 0009):** the ingest path and the raw storage are live. The web phase has started: these parts of `docs/stack-web-profile.md` are binding: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. The derived periods (drives, charges, parked) come later. The general text of the other sections in `docs/stack-web-profile.md` binds all code wherever the code has that concern; read the section when a change touches its topic.
 - **Shape:** a monorepo with two Railway services. The service `telemetry` runs one image with Tesla's `fleet-telemetry` server (upstream Go binary) and the Rust ingest process, which supervises it and writes the records to PostgreSQL (ADR 0001). The service `telemetry-web` runs one image with the Rust web server and the built SPA on one origin (ADR 0010). The application server uses Rust (ADR 0009).
 
@@ -245,8 +245,8 @@ the base.
 Merge conditions (`CLAUDE.md`, ADR 0008, ADR 0016):
 
 - One local `mise run verify` on the version to be merged, integrated with
-  the current base: by the reviewer for a high-class change, otherwise by
-  the lead (`DOCTRINE.md` P9). Before review, the implementer runs the fast
+  the current base: by the reviewer for a change with a high-class part,
+  otherwise by the lead (`DOCTRINE.md` P9). Before review, the implementer runs the fast
   checks and the tests of the changed parts (for example `mise run checks`
   and `cargo nextest run` of the changed crates). For a change of database
   code, migrations, queries, roles, or `.sqlx/`, the implementer also runs

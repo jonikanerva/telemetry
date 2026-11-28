@@ -23,16 +23,17 @@
 
 1. **Two risk classes.** The high class covers harm that is hard to
    reverse; every other surface has the light class (`DOCTRINE.md`
-   introduction, `STACK.md` §0). Light-class work gets at most one review
-   round.
+   introduction, `STACK.md` §0). Light-class work gets one review round;
+   a second round only for a defect in behaviour, privacy, or data.
 2. **Review bar.** Only a defect in behaviour, privacy, or data, a broken
    owner rule, or a failed or missing required check blocks. The lead has
    other findings fixed and checks the delta itself (`DOCTRINE.md` P9).
 3. **One full verify per merge.** The implementer runs the fast checks and
    the tests of the changed parts, the database tests for a database
    change, and waits for a green CI result. The reviewer runs the full
-   `verify` once for a high-class change; the lead runs it once for any
-   other change (`DOCTRINE.md` P6, P9; `STACK.md` §3).
+   `verify` once for a change with a high-class part; the lead runs it
+   once for any other change. After a new head or base, the party that ran
+   it runs the affected checks again (`DOCTRINE.md` P6, P9; `STACK.md` §3).
 4. **Size limit.** At a third review round, or well past the estimate, the
    lead stops and asks the owner (`DOCTRINE.md` P1).
 5. **Cost and fewer documents.** Time, machine resources, and review

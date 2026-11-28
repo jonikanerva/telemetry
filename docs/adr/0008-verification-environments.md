@@ -11,7 +11,7 @@
     27 November 2026, approved by qa-enforcer in PR #23.
   - Decision 1 superseded in part by ADR 0016 (28 November 2026): one local
     `mise run verify` runs for each version to be merged, by the reviewer
-    for a high-class change, otherwise by the lead. The CI job `ci` stays.
+    for a change with a high-class part, otherwise by the lead. The CI job `ci` stays.
 - Scope: where the required checks run, and what each environment does not
   prove. `STACK.md` §3, §13, and §14 state the current rules.
 

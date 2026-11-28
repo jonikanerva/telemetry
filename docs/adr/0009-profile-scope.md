@@ -7,6 +7,9 @@
   - One JSON log formatter (exception to `STACK.md` §8): decided by the
     lead, 26 November 2026, with approval by an independent reviewer
     (qa-enforcer) in PR #9.
+  - Decision 3 as an exception: superseded in part by ADR 0016
+    (28 November 2026). The profile no longer asks for a readable
+    formatter, so the JSON-only rule stays without an exception.
   - The extension of the JSON-only rule to the web server: ADR 0010
     (decision 8), with its approval.
   - A second image for the ingest service (exception to the one-image
