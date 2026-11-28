@@ -19,4 +19,5 @@ mod schema;
 mod size;
 mod support;
 mod tls;
+mod usage;
 mod writer;

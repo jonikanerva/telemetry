@@ -284,17 +284,23 @@ collection.
 
 ### Checks after the send
 
-- After two days: read the usage on the dashboard. The usage since the
-  send must stay near the planning month of the usage estimate
-  (3.33 USD for a full month). If it grows much faster, roll back and
-  report it.
-- After one week: compare the awake hours of the week before and the week
-  after the send (the connect and disconnect times in
-  `raw.connectivity_event`). The car must sleep as before (`VISION.md`,
-  "Success Definition"). If it sleeps less, roll back and report it.
-- After the first full month: compare the dashboard usage with the
-  planning month of the usage estimate, and read the bill. Report a
-  difference to the lead, so that the estimate gets the measured value.
+The statements of `scripts/usage-measurement.sql` give the stored
+values; "Measure the usage" in
+[the usage estimate](docs/telemetry-usage-estimate.md) tells how to run
+them and how to compare them with the dashboard.
+
+- After two days: read the usage on the dashboard, and run statements 1
+  to 3 and 8. The usage since the send must stay near the planning month
+  of the usage estimate (3.33 USD for a full month). If it grows much
+  faster, roll back and report it.
+- After one week: compare the connections and the connected time of the
+  week before and the week after the send (statements 4 and 5). The car
+  must sleep as before (`VISION.md`, "Success Definition"). If it sleeps
+  less, roll back and report it.
+- After the first full month: run every statement, compare the
+  dashboard usage with the planning month of the usage estimate, and
+  read the bill. Report a difference to the lead, so that the estimate
+  gets the measured value.
 
 ## Verification
 

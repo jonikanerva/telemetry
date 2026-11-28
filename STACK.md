@@ -45,7 +45,7 @@ repo/
   webapp/                # Dockerfile of the web image (ADR 0010)
   migrations/            # SQLx migrations (ADR 0002)
   db/roles.sql           # Roles, schema, and privileges (ADR 0002, ADR 0013); run by the owner role, again after a migration
-  scripts/               # Check scripts: SQLx metadata, image check, contract check, bundle size, test PostgreSQL server, Gitleaks guard
+  scripts/               # Check scripts: SQLx metadata, image check, contract check, bundle size, test PostgreSQL server, Gitleaks guard; the usage measurement queries (usage-measurement.sql)
   Cargo.toml  Cargo.lock  rust-toolchain.toml  clippy.toml  deny.toml  mise.toml
   package.json  pnpm-workspace.yaml  pnpm-lock.yaml  .npmrc  tsconfig*.json
 ```
