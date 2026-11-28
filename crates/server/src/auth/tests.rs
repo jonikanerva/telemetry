@@ -987,11 +987,11 @@ async fn every_documented_api_route_outside_the_public_list_needs_a_session() {
     }
     public.sort();
     assert_eq!(public, ["/api/v1/session", "/health"]);
-    // Today the contract has no private route, so the loop above checks
-    // only the public list; `the_guard_runs_before_a_handler_at_the_battery_mount_point`
-    // proves the guard on the production assembly. Each route of the
-    // battery API (slice S3) is private, so from S3 on this walk must
-    // check at least as many protected routes as the battery router has.
+    // The loop above checks each private route of the contract, also
+    // `/api/v1/battery`. The requests go to the counting route at the
+    // battery mount point of the production assembly (`App`). Each route
+    // of the battery API is private, so the walk must check at least as
+    // many protected routes as the battery router has.
     let battery_routes = crate::battery::router().into_openapi().paths.paths.len();
     assert!(
         protected >= battery_routes,

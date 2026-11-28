@@ -5,6 +5,300 @@ export type ClientOptions = {
 };
 
 /**
+ * The series of the range.
+ */
+export type BatteryCharts = {
+    /**
+     * Field `NominalFullPackEnergyKwh`.
+     */
+    nominal_full_pack_energy: Series;
+    /**
+     * Field `Soc`.
+     */
+    soc: Series;
+};
+
+/**
+ * The range of a response.
+ */
+export type BatteryRange = {
+    /**
+     * The width of one bucket of a series. Buckets start at whole
+     * multiples of the width since 2000-01-01T00:00:00Z (UTC).
+     */
+    bucket_seconds: number;
+    /**
+     * The start, inclusive (server clock).
+     */
+    from: Instant;
+    /**
+     * The requested range.
+     */
+    key: RangeKey;
+    /**
+     * The end, exclusive (server clock). Equal to `generated_at`.
+     */
+    to: Instant;
+};
+
+/**
+ * Connection, newest data, and freshness.
+ */
+export type BatteryStatus = {
+    /**
+     * The newest stored connectivity event of the vehicle.
+     */
+    connection: Connection;
+    /**
+     * Whether new data is expected and has arrived.
+     */
+    freshness: Freshness;
+    /**
+     * Vehicle clock: the newest `created_at` of a row of the four battery
+     * fields before `generated_at`, usable or not.
+     */
+    latest_data_at: Instant;
+    /**
+     * Ingest clock: the newest `received_at` among the newest stored row
+     * of each battery field. The ingest process stores data at most about
+     * 15 minutes after it receives it.
+     */
+    latest_received_at: Instant;
+};
+
+/**
+ * The newest value of each field before `range.to`.
+ */
+export type BatteryTiles = {
+    /**
+     * Field `EnergyRemaining`.
+     */
+    energy_remaining: Reading;
+    /**
+     * Field `NominalFullPackEnergyKwh`, with its change over the range.
+     */
+    nominal_full_pack_energy: CapacityTile;
+    /**
+     * Field `OutsideTemp`.
+     */
+    outside_temp: Reading;
+    /**
+     * Field `Soc`: usable state of charge.
+     */
+    soc: Reading;
+};
+
+/**
+ * The body of a successful `GET /api/v1/battery`.
+ */
+export type BatteryView = {
+    /**
+     * The time of the response (server clock). Equal to `range.to`.
+     */
+    generated_at: Instant;
+    /**
+     * The requested range.
+     */
+    range: BatteryRange;
+    state: 'no_data_yet';
+} | {
+    /**
+     * The series of the range.
+     */
+    charts: BatteryCharts;
+    /**
+     * The losses that the ingest process recorded in the range.
+     */
+    gaps: Gaps;
+    /**
+     * The time of the response (server clock). Equal to `range.to`.
+     */
+    generated_at: Instant;
+    /**
+     * The requested range.
+     */
+    range: BatteryRange;
+    /**
+     * The starts of the ingest process in the range.
+     */
+    restarts: Restarts;
+    state: 'available';
+    /**
+     * Connection, newest data, and freshness.
+     */
+    status: BatteryStatus;
+    /**
+     * The newest value of each field before `range.to`, whatever the
+     * range start.
+     */
+    tiles: BatteryTiles;
+};
+
+/**
+ * The change of the capacity over the range.
+ *
+ * The baseline is the newest usable value before `range.from`, or
+ * else the oldest usable value in the range.
+ */
+export type CapacityChange = {
+    /**
+     * `to_value - from_value`, in the unit of the reading.
+     */
+    delta: number;
+    /**
+     * Vehicle clock: the `created_at` of the baseline.
+     */
+    from_at: Instant;
+    /**
+     * The baseline value.
+     */
+    from_value: number;
+    state: 'value';
+    /**
+     * Vehicle clock: the `created_at` of the newest value.
+     */
+    to_at: Instant;
+    /**
+     * The newest value.
+     */
+    to_value: number;
+} | {
+    /**
+     * Why the change is unknown.
+     */
+    reason: ChangeUnknownReason;
+    state: 'unknown';
+};
+
+/**
+ * The capacity tile: the newest value and its change over the range.
+ */
+export type CapacityTile = {
+    /**
+     * The change from the baseline to the newest value.
+     */
+    change: CapacityChange;
+    /**
+     * The newest usable value.
+     */
+    reading: Reading;
+};
+
+/**
+ * Why a change is unknown.
+ */
+export type ChangeUnknownReason = 'no_latest' | 'no_baseline';
+
+/**
+ * The newest stored connectivity event of the vehicle, as it is.
+ *
+ * The stored data cannot tell a sleeping car from a car without network:
+ * both are `disconnected`. An ingest process that ends writes no
+ * DISCONNECTED event, so a `connected` event can be old; `freshness` then
+ * shows `overdue`.
+ */
+export type Connection = {
+    /**
+     * Server clock: the time of the event.
+     */
+    at: Instant;
+    state: 'connected';
+} | {
+    /**
+     * Server clock: the time of the event.
+     */
+    at: Instant;
+    state: 'disconnected';
+} | {
+    state: 'none';
+};
+
+/**
+ * What a gap count counts.
+ */
+export type CountUnit = 'records' | 'messages';
+
+/**
+ * Counts of rows that are not usable, by reason.
+ */
+export type ExcludedRows = {
+    /**
+     * Rows with the invalid marker of the vehicle.
+     */
+    invalid_marker: number;
+    /**
+     * Rows that hold no usable number: a text that is not a plain
+     * decimal number, a value that is not finite, an integer beyond
+     * 2^53, a boolean, or another value type.
+     */
+    not_numeric: number;
+};
+
+/**
+ * Whether new data is expected and has arrived.
+ */
+export type Freshness = 'current' | 'overdue' | 'not_expected';
+
+/**
+ * One loss that the ingest process recorded: records or messages that it
+ * received or should have received and did not store. A sleeping car, a
+ * restart, or a refused connection is never a gap.
+ */
+export type Gap = {
+    /**
+     * The recorded number of lost items.
+     */
+    count: GapCount;
+    /**
+     * Ingest clock: the first lost item. `from <= to`.
+     */
+    from: Instant;
+    /**
+     * The cause of the loss.
+     */
+    kind: GapKind;
+    /**
+     * Ingest clock: the last lost item.
+     */
+    to: Instant;
+};
+
+/**
+ * A recorded number of lost items.
+ */
+export type GapCount = {
+    /**
+     * What the number counts.
+     */
+    of: CountUnit;
+    /**
+     * The number, at least 1.
+     */
+    value: number;
+};
+
+/**
+ * The cause of a loss.
+ */
+export type GapKind = 'queue_full' | 'database_refused' | 'zmq_shortfall';
+
+/**
+ * The losses that the ingest process recorded in the range.
+ */
+export type Gaps = {
+    /**
+     * At most 500 gaps whose interval meets the range, in order of
+     * `from`, then `to`.
+     */
+    items: Array<Gap>;
+    /**
+     * True when more gaps meet the range than `items` holds. The series
+     * is then split only at the gaps in `items`.
+     */
+    truncated: boolean;
+};
+
+/**
  * The body of `GET /health`.
  */
 export type Health = {
@@ -39,6 +333,32 @@ export type LoginRequest = {
      * The password: 1 to 1024 bytes of UTF-8.
      */
     password: string;
+};
+
+/**
+ * One bucket of usable samples.
+ */
+export type Point = {
+    /**
+     * Vehicle clock: the `created_at` of the newest sample in the bucket.
+     */
+    at: Instant;
+    /**
+     * The number of usable samples in the bucket, at least 1.
+     */
+    count: number;
+    /**
+     * The value of the newest sample in the bucket.
+     */
+    last: number;
+    /**
+     * The largest value in the bucket.
+     */
+    max: number;
+    /**
+     * The smallest value in the bucket.
+     */
+    min: number;
 };
 
 /**
@@ -79,6 +399,85 @@ export type Problem = {
 export type ProblemCode = 'unauthenticated' | 'invalid_credentials' | 'login_throttled' | 'forbidden_origin' | 'invalid_request' | 'unsupported_media_type' | 'payload_too_large' | 'not_found' | 'method_not_allowed' | 'database_unavailable' | 'service_busy' | 'timeout' | 'data_contract_violation' | 'internal_error';
 
 /**
+ * A time range that ends at the time of the response. Each range has a
+ * fixed length in hours, not calendar days, and a fixed bucket width.
+ */
+export type RangeKey = '24h' | '7d' | '30d' | '90d' | '1y';
+
+/**
+ * The newest usable value of a field.
+ *
+ * A row is usable when it holds a finite number: a double or float, an
+ * integer of at most 2^53 in magnitude, or a text of the form
+ * `-?[0-9]+(.[0-9]+)?` with at most 32 characters. The invalid marker of
+ * the vehicle and every other value are not usable. A float and an
+ * integer are kept exactly. A text is converted to the nearest 64-bit
+ * float, so a text with more than 15 significant digits can change in
+ * its last digits. No value is replaced with zero.
+ */
+export type Reading = {
+    /**
+     * Vehicle clock: the `created_at` of the value.
+     */
+    measured_at: Instant;
+    newer_unusable_at: Instant | null;
+    state: 'value';
+    /**
+     * The unit of the value.
+     */
+    unit: Unit;
+    /**
+     * The value as the vehicle sent it.
+     */
+    value: number;
+} | {
+    latest_unusable_at: Instant | null;
+    state: 'missing';
+    /**
+     * The unit of the field.
+     */
+    unit: Unit;
+};
+
+/**
+ * The starts of the ingest process in the range. A start states only
+ * that the process started there, not that data was lost.
+ */
+export type Restarts = {
+    /**
+     * Ingest clock: at most 500 start times in the range, in order.
+     */
+    items: Array<Instant>;
+    /**
+     * True when more starts lie in the range than `items` holds.
+     */
+    truncated: boolean;
+};
+
+/**
+ * One series: the usable samples of a field in the range, in buckets.
+ */
+export type Series = {
+    carry_in: Point | null;
+    /**
+     * The rows of the field in the range that are not usable. They are
+     * in no point.
+     */
+    excluded: ExcludedRows;
+    /**
+     * The points of the range in order of `at`. A new segment starts only
+     * where a gap lies between two points; a time without samples (the
+     * car asleep) does not split a segment. Empty when no usable sample
+     * lies in the range.
+     */
+    segments: Array<Array<Point>>;
+    /**
+     * The unit of the values.
+     */
+    unit: Unit;
+};
+
+/**
  * The response body of a valid session.
  */
 export type Session = {
@@ -92,6 +491,77 @@ export type Session = {
      */
     idle_expires_at: Instant;
 };
+
+/**
+ * The unit of a field. The vehicle sends no unit; the server knows it
+ * from the documentation of the field.
+ */
+export type Unit = {
+    /**
+     * Where the unit comes from.
+     */
+    source: UnitSource;
+    /**
+     * The unit.
+     */
+    symbol: UnitSymbol;
+};
+
+/**
+ * Where a unit comes from.
+ */
+export type UnitSource = 'documented' | 'assumed';
+
+/**
+ * A unit symbol.
+ */
+export type UnitSymbol = 'percent' | 'kilowatt_hour' | 'degree_celsius';
+
+export type GetBatteryData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * The time range that ends now. Required.
+         */
+        range: RangeKey;
+    };
+    url: '/api/v1/battery';
+};
+
+export type GetBatteryErrors = {
+    /**
+     * The query is not valid, or the request carries more than one session cookie (`invalid_request`).
+     */
+    400: Problem;
+    /**
+     * The request has no valid session.
+     */
+    401: Problem;
+    /**
+     * The request body is larger than the limit.
+     */
+    413: Problem;
+    /**
+     * Stored data breaks an assumption (`data_contract_violation`), or an unexpected failure (`internal_error`).
+     */
+    500: Problem;
+    /**
+     * The database is not available (`database_unavailable`), the server is busy (`service_busy`), or the request took too long (`timeout`).
+     */
+    503: Problem;
+};
+
+export type GetBatteryError = GetBatteryErrors[keyof GetBatteryErrors];
+
+export type GetBatteryResponses = {
+    /**
+     * The battery view of the range.
+     */
+    200: BatteryView;
+};
+
+export type GetBatteryResponse = GetBatteryResponses[keyof GetBatteryResponses];
 
 export type LogoutData = {
     body?: never;

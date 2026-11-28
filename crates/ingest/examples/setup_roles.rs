@@ -7,8 +7,14 @@
 //! | Variable | Content |
 //! | -------- | ------- |
 //! | `OWNER_DATABASE_URL` | URL of `neondb_owner` on the branch, database `neondb` |
-//! | `TELEMETRY_INGEST_PASSWORD` | New password of `telemetry_ingest`; unset keeps the password |
-//! | `TELEMETRY_MIGRATOR_PASSWORD` | New password of `telemetry_migrator`; unset keeps the password |
+//! | `TELEMETRY_INGEST_PASSWORD` | New password of `telemetry_ingest`; unset keeps its password and LOGIN |
+//! | `TELEMETRY_MIGRATOR_PASSWORD` | New password of `telemetry_migrator`; unset keeps its password and LOGIN |
+//! | `TELEMETRY_WEB_PASSWORD` | New password of `telemetry_web`; unset keeps its password and LOGIN |
+//!
+//! An unset password variable keeps the password and the LOGIN attribute
+//! of its role, so a run for one role does not change the login of the
+//! other roles.
+//! Set only the variables of the roles that need a new password.
 //!
 //! A password must have 32 to 128 characters from `A`-`Z`, `a`-`z`, and
 //! `0`-`9`, for example `openssl rand -hex 32`. Such a password needs no
@@ -57,16 +63,21 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
-    let passwords = password("TELEMETRY_INGEST_PASSWORD")
-        .and_then(|ingest| Ok((ingest, password("TELEMETRY_MIGRATOR_PASSWORD")?)));
-    let (ingest_password, migrator_password) = match passwords {
+    let passwords = password("TELEMETRY_INGEST_PASSWORD").and_then(|ingest| {
+        Ok((
+            ingest,
+            password("TELEMETRY_MIGRATOR_PASSWORD")?,
+            password("TELEMETRY_WEB_PASSWORD")?,
+        ))
+    });
+    let (ingest_password, migrator_password, web_password) = match passwords {
         Ok(passwords) => passwords,
         Err(name) => {
             error!(target: TARGET, error = name, "invalid_password");
             return ExitCode::FAILURE;
         }
     };
-    let setup = RoleSetup::production(ingest_password, migrator_password);
+    let setup = RoleSetup::production(ingest_password, migrator_password, web_password);
     let Some(public) = Schema::new("public") else {
         return ExitCode::FAILURE;
     };

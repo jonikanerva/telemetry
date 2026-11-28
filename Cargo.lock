@@ -1960,6 +1960,11 @@ dependencies = [
 [[package]]
 name = "telemetry-web-domain"
 version = "0.1.0"
+dependencies = [
+ "jiff",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "telemetry-web-server"
@@ -1971,11 +1976,14 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jiff",
+ "jiff-sqlx",
  "proptest",
  "rustls",
  "serde",
  "serde_json",
+ "sqlx",
  "subtle",
+ "telemetry-web-domain",
  "thiserror",
  "tokio",
  "tokio-rustls",
@@ -1985,6 +1993,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "utoipa-axum",
+ "uuid",
 ]
 
 [[package]]

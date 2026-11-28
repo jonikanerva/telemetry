@@ -64,6 +64,14 @@ mod railway {
     pub const DRAINING_SECONDS: u64 = 15;
     /// The public origin of the CSRF rule (`WEB_PUBLIC_ORIGIN`, ADR 0012).
     pub const PUBLIC_ORIGIN: &str = "https://tesla.calmdonut.com";
+    /// The database variables that hold a secret, with the value cell of
+    /// their row in the settings table. The table never holds the secret
+    /// itself. `DATABASE_URL` is a URL of the role `telemetry_web`; the
+    /// release build does not start without it.
+    pub const SECRET_VARIABLES: [(&str, &str); 1] = [(
+        "DATABASE_URL",
+        "Secret: a URL of the role `telemetry_web`; never in a document",
+    )];
     pub const OVERLAP_SECONDS: u64 = 0;
     /// Every input of the image, and nothing else: a change of the ingest
     /// sources, of the browser tests, or of the documentation does not
@@ -304,6 +312,24 @@ fn value_cell(row: &str) -> String {
     row.split('|').nth(2).unwrap().trim().to_owned()
 }
 
+/// The third cell of a table row: where the lead sets the value.
+fn where_cell(row: &str) -> String {
+    row.split('|').nth(3).unwrap().trim().to_owned()
+}
+
+/// The text of the subsection of the web service in STACK.md §15 without
+/// the table rows, up to the next heading.
+fn stack_prose() -> String {
+    read("STACK.md")
+        .lines()
+        .skip_while(|line| *line != STACK_SETTINGS_HEADING)
+        .skip(1)
+        .take_while(|line| !line.starts_with('#'))
+        .filter(|line| !line.starts_with('|'))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[test]
 fn the_settings_table_of_stack_md_holds_the_same_values() {
     for (name, value) in [
@@ -339,6 +365,18 @@ fn the_settings_table_of_stack_md_holds_the_same_values() {
         .map(|item| item.trim_matches('`'))
         .collect();
     assert_eq!(listed, BTreeSet::from(railway::WATCH_PATHS));
+    // Each secret variable has a row that names the variable and holds no
+    // value, and the text below the table names it as a secret.
+    let prose = stack_prose();
+    for (name, value) in railway::SECRET_VARIABLES {
+        let row = stack_row(&format!("`{name}`"));
+        assert_eq!(value_cell(&row), value, "{name}");
+        assert_eq!(where_cell(&row), format!("Variable `{name}`"), "{name}");
+        assert!(
+            prose.contains(&format!("service variable `{name}` holds a secret")),
+            "the text below the table does not name {name} as a secret"
+        );
+    }
 }
 
 /// The server accepts the documented public origin at its start, and the
@@ -364,6 +402,13 @@ fn the_railway_settings_match_the_image_and_the_code() {
     assert_eq!(railway::DOCKERFILE_PATH, format!("/{DOCKERFILE}"));
     assert!(SHUTDOWN_DEADLINE < Duration::from_secs(railway::DRAINING_SECONDS));
     assert_eq!(railway::OVERLAP_SECONDS, 0);
+    // The secret variables are the variables that the release build reads
+    // for the database.
+    let secrets: Vec<&str> = railway::SECRET_VARIABLES
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(secrets, [telemetry_web_server::battery::DATABASE_URL]);
     // The server serves the healthcheck path with GET. The committed
     // contract is the export of the routes of the server, and the task
     // `contract-check` proves that it equals a new export.

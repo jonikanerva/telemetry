@@ -1,0 +1,107 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            f.field AS \"field!\",\n            latest.created_at AS \"latest_created_at?: jiff_sqlx::Timestamp\",\n            latest.received_at AS \"latest_received_at?: jiff_sqlx::Timestamp\",\n            usable.created_at AS \"usable_at?: jiff_sqlx::Timestamp\",\n            usable.v AS \"usable_value?\",\n            carry.created_at AS \"carry_at?: jiff_sqlx::Timestamp\",\n            carry.v AS \"carry_value?\",\n            first.created_at AS \"first_at?: jiff_sqlx::Timestamp\",\n            first.v AS \"first_value?\"\n        FROM unnest($2::integer[]) AS f (field)\n        LEFT JOIN LATERAL (\n            SELECT s.created_at, s.received_at\n            FROM vehicle_signal AS s\n            WHERE s.vehicle_id = $1 AND s.field = f.field AND s.created_at < $4\n            ORDER BY s.created_at DESC\n            LIMIT 1\n        ) AS latest ON true\n        LEFT JOIN LATERAL (\n            SELECT x.created_at, x.v FROM (\n                SELECT s.created_at, CASE\n                    WHEN s.value_type IN (4, 5) AND s.float_value NOT IN ('NaN', 'Infinity', '-Infinity') THEN s.float_value\n                    WHEN s.value_type IN (2, 3) AND s.int_value BETWEEN -9007199254740992 AND 9007199254740992 THEN s.int_value::double precision\n                    WHEN s.value_type = 1 AND length(s.text_value) <= 32 AND s.text_value ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN s.text_value::double precision\n                END AS v\n                FROM vehicle_signal AS s\n                WHERE s.vehicle_id = $1 AND s.field = f.field AND s.created_at < $4\n                ORDER BY s.created_at DESC\n            ) AS x\n            WHERE x.v IS NOT NULL\n            LIMIT 1\n        ) AS usable ON true\n        LEFT JOIN LATERAL (\n            SELECT x.created_at, x.v FROM (\n                SELECT s.created_at, CASE\n                    WHEN s.value_type IN (4, 5) AND s.float_value NOT IN ('NaN', 'Infinity', '-Infinity') THEN s.float_value\n                    WHEN s.value_type IN (2, 3) AND s.int_value BETWEEN -9007199254740992 AND 9007199254740992 THEN s.int_value::double precision\n                    WHEN s.value_type = 1 AND length(s.text_value) <= 32 AND s.text_value ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN s.text_value::double precision\n                END AS v\n                FROM vehicle_signal AS s\n                WHERE s.vehicle_id = $1 AND s.field = f.field AND s.created_at < $3\n                ORDER BY s.created_at DESC\n            ) AS x\n            WHERE x.v IS NOT NULL\n            LIMIT 1\n        ) AS carry ON true\n        LEFT JOIN LATERAL (\n            SELECT x.created_at, x.v FROM (\n                SELECT s.created_at, CASE\n                    WHEN s.value_type IN (4, 5) AND s.float_value NOT IN ('NaN', 'Infinity', '-Infinity') THEN s.float_value\n                    WHEN s.value_type IN (2, 3) AND s.int_value BETWEEN -9007199254740992 AND 9007199254740992 THEN s.int_value::double precision\n                    WHEN s.value_type = 1 AND length(s.text_value) <= 32 AND s.text_value ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN s.text_value::double precision\n                END AS v\n                FROM vehicle_signal AS s\n                WHERE s.vehicle_id = $1 AND s.field = f.field AND s.created_at >= $3 AND s.created_at < $4\n                ORDER BY s.created_at ASC\n            ) AS x\n            WHERE x.v IS NOT NULL\n            LIMIT 1\n        ) AS first ON true\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "field!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "latest_created_at?: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "latest_received_at?: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "received_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "usable_at?: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "usable_value?",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "carry_at?: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "carry_value?",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "first_at?: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "first_value?",
+        "type_info": "Float8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int4Array",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "7343ba0643ea6436cf00c6f543b12007df4e9f834b7f2ea047d867b56f97ee3c"
+}

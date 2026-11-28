@@ -327,27 +327,79 @@ mise run sqlx-prepare
 The ingest process uses two database roles (ADR 0002, "Roles and
 privileges"): `telemetry_migrator` owns the schema `raw` and runs
 `ingest migrate`; `telemetry_ingest` runs `ingest run` and can only read
-and insert. `db/roles.sql` creates both roles and the schema. Run it once
+and insert. The web service uses a third role, `telemetry_web`. It can
+only read, and only the columns that the web uses. Each grant is a
+`SELECT` on a list of columns, never on a whole table:
+
+- `vehicle_signal`: `vehicle_id`, `field`, `created_at`, `received_at`,
+  `value_type`, `int_value`, `float_value`, `text_value`;
+- `connectivity_event`: `connection_id`, `vehicle_id`, `created_at`,
+  `received_at`, `status`;
+- `ingest_event`: `id`, `run_id`, `occurred_at`, `kind`, `reason`,
+  `dropped_count`, `first_received_at`, `last_received_at`;
+- `vehicle`: `id`.
+
+The web role cannot read the location (`latitude`, `longitude`,
+`json_value` of `vehicle_signal`), the VIN, `unprocessed_record`,
+`vehicle_alert`, or `vehicle_error`. A column that a migration adds
+stays unreadable for the web role.
+`db/roles.sql` creates the three roles and the schema. Run it once
 on each Neon branch that runs the service, before the first deployment
-that runs `ingest migrate`. The script is idempotent; a second run keeps
-the passwords when no new password is given.
+that runs `ingest migrate`. The script is idempotent. A run changes the
+password and the LOGIN attribute of a role only when the run gives the
+password of that role. A role without a given password keeps its
+password and its LOGIN attribute. A role that a run creates without a
+password cannot log in until a later run gives its password.
+
+The script grants the web role its table privileges only on tables that
+exist. On a new branch, the tables exist only after `ingest migrate`.
+Run the script again after the first `ingest migrate`. Each run
+removes every other privilege of the web role in the schema and grants
+the exact set again, in one transaction.
+
+A new column or table in a query of the web needs a new grant: add it
+to `web_columns` in `db/roles.sql`, and run the script again after the
+migration that creates it. A later view that shows the route reads the
+location. That view needs its own grant and its own review.
 
 The procedure needs no `psql`. It runs the script through the same Rust
 code that the tests use:
 
 1. Read the owner URL of the branch with the Neon CLI (`neon`, the global
-   mise tool), and generate two passwords:
+   mise tool):
 
    ```sh
    export OWNER_DATABASE_URL="$(neon connection-string production \
      --project-id <project-id> --role-name neondb_owner \
      --database-name neondb --ssl verify-full)"
-   export TELEMETRY_INGEST_PASSWORD="$(openssl rand -hex 32)"
-   export TELEMETRY_MIGRATOR_PASSWORD="$(openssl rand -hex 32)"
    ```
 
+   Then generate a password only for each role that needs a new
+   password. Each variable that you set changes the password of its
+   role, and the service that uses the role cannot connect until its
+   Railway variable has the new password (step 3).
+
+   - The first run on a new branch: all three roles.
+
+     ```sh
+     export TELEMETRY_INGEST_PASSWORD="$(openssl rand -hex 32)"
+     export TELEMETRY_MIGRATOR_PASSWORD="$(openssl rand -hex 32)"
+     export TELEMETRY_WEB_PASSWORD="$(openssl rand -hex 32)"
+     ```
+
+   - The web role only, for example its first run on a branch where the
+     ingest roles exist: set only `TELEMETRY_WEB_PASSWORD`.
+
+     ```sh
+     export TELEMETRY_WEB_PASSWORD="$(openssl rand -hex 32)"
+     ```
+
+   - A run after a migration: no password variable. The run needs only
+     `OWNER_DATABASE_URL`.
+
    A password must have 32 to 128 letters and digits, so it needs no
-   escape in a URL; the program refuses other passwords.
+   escape in a URL; the program refuses other passwords. An unset
+   variable keeps the password and the LOGIN attribute of its role.
 
 2. Run the script:
 
@@ -363,16 +415,22 @@ code that the tests use:
    them (ADR 0002). After a suspected leak, repeat the procedure with new
    passwords.
 
-3. Set the Railway variables of the service `telemetry`, with the host of
-   the owner URL. Use the direct host, not the `-pooler` host: the
-   connections set the `search_path` at start, and `ingest migrate` takes
-   a session lock. Set them with `railway variable set --skip-deploys`, so
-   that no deployment starts (`docs/ingest-release.md`, section 1).
+3. Set the Railway variable of each role whose password changed in
+   step 1, with the host of the owner URL. A role without a new
+   password keeps its variable. Use the direct host, not the `-pooler`
+   host: the connections set the `search_path` at start, and
+   `ingest migrate` takes a session lock. Set the variables with
+   `railway variable set --skip-deploys`, so that no deployment starts
+   (`docs/ingest-release.md`, section 1).
 
-   - `DATABASE_URL=postgresql://telemetry_ingest:<ingest password>@<host>/neondb?sslmode=verify-full`
-   - `MIGRATION_DATABASE_URL=postgresql://telemetry_migrator:<migrator password>@<host>/neondb?sslmode=verify-full`
+   - Service `telemetry`, ingest role:
+     `DATABASE_URL=postgresql://telemetry_ingest:<ingest password>@<host>/neondb?sslmode=verify-full`
+   - Service `telemetry`, migrator role:
+     `MIGRATION_DATABASE_URL=postgresql://telemetry_migrator:<migrator password>@<host>/neondb?sslmode=verify-full`
+   - Service `telemetry-web`, web role:
+     `DATABASE_URL=postgresql://telemetry_web:<web password>@<host>/neondb?sslmode=verify-full`
 
-4. Unset the three variables of step 1 and close the shell.
+4. Unset the variables of step 1 and close the shell.
 
 ## Contributing
 

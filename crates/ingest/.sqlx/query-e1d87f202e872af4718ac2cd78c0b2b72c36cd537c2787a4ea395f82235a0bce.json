@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT num_nulls(\n                set_config('telemetry.ingest_role', $1, true),\n                set_config('telemetry.migrator_role', $2, true),\n                set_config('telemetry.schema', $3, true),\n                set_config('telemetry.ingest_password', $4, true),\n                set_config('telemetry.migrator_password', $5, true),\n                set_config('telemetry.web_role', $6, true),\n                set_config('telemetry.web_password', $7, true)\n            ) AS \"nulls!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "nulls!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e1d87f202e872af4718ac2cd78c0b2b72c36cd537c2787a4ea395f82235a0bce"
+}

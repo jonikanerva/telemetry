@@ -18,3 +18,9 @@ slow-timeout = { period = "60s", terminate-after = 20 }
 filter = "binary(storage)"
 test-group = "database"
 slow-timeout = { period = "30s", terminate-after = 8 }
+
+# The database tests of the web server (one schema and three roles each).
+[[profile.default.overrides]]
+filter = "package(telemetry-web-server) & binary(battery_postgres)"
+test-group = "database"
+slow-timeout = { period = "30s", terminate-after = 8 }

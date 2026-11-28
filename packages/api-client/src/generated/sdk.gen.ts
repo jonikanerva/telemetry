@@ -4,8 +4,8 @@ import * as z from 'zod';
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client/index.js';
-import type { GetHealthData, GetHealthErrors, GetHealthResponses, GetSessionData, GetSessionErrors, GetSessionResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses } from './types.gen.js';
-import { zGetHealthResponse, zGetSessionResponse, zLoginBody, zLoginResponse, zLogoutResponse } from './zod.gen.js';
+import type { GetBatteryData, GetBatteryErrors, GetBatteryResponses, GetHealthData, GetHealthErrors, GetHealthResponses, GetSessionData, GetSessionErrors, GetSessionResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses } from './types.gen.js';
+import { zGetBatteryQuery, zGetBatteryResponse, zGetHealthResponse, zGetSessionResponse, zLoginBody, zLoginResponse, zLogoutResponse } from './zod.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -20,6 +20,28 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
      */
     meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
+
+/**
+ * Returns the battery view of one range.
+ *
+ * The session guard (`crate::auth`) runs first: without a valid session
+ * the answer is 401 `unauthenticated` (declared by
+ * `auth::responses`), and no read starts.
+ *
+ * Each request reads the database once, in one read-only snapshot. A
+ * database that cannot be reached gives 503 `database_unavailable`,
+ * never an empty result.
+ */
+export const getBattery = <ThrowOnError extends boolean = false>(options: Options<GetBatteryData, ThrowOnError>): RequestResult<GetBatteryResponses, GetBatteryErrors, ThrowOnError> => (options.client ?? client).get<GetBatteryResponses, GetBatteryErrors, ThrowOnError>({
+    requestValidator: async (data) => await z.object({
+        body: z.never().optional(),
+        path: z.never().optional(),
+        query: zGetBatteryQuery
+    }).parseAsync(data),
+    responseTransformer: async (data) => await zGetBatteryResponse.parseAsync(data),
+    url: '/api/v1/battery',
+    ...options
+});
 
 /**
  * Logs out: ends the session of the request and removes the cookie.

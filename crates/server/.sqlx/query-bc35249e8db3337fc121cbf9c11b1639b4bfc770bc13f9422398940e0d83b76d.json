@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            ARRAY(SELECT id FROM vehicle ORDER BY id LIMIT 2) AS \"vehicles!\",\n            c.connection_id AS \"connection_id?\",\n            c.created_at AS \"created_at?: jiff_sqlx::Timestamp\",\n            c.status AS \"status?\"\n        FROM (SELECT 1) AS one\n        LEFT JOIN LATERAL (\n            SELECT connection_id, created_at, status\n            FROM connectivity_event\n            WHERE vehicle_id = (SELECT min(id) FROM vehicle)\n              AND created_at < $1 AND status IN (1, 2)\n            ORDER BY created_at DESC, connection_id DESC, status DESC\n            LIMIT 1\n        ) AS c ON true\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vehicles!",
+        "type_info": "Int2Array",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "connection_id?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connectivity_event",
+            "name": "connection_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at?: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "connectivity_event",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "status?",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "connectivity_event",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "bc35249e8db3337fc121cbf9c11b1639b4bfc770bc13f9422398940e0d83b76d"
+}

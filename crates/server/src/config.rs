@@ -404,7 +404,7 @@ mod tests {
     }
 
     /// The variables of the API slices that these tests do not check
-    /// (`crate::auth` tests its own). A pair of the test replaces a
+    /// (`crate::auth` tests its own; `DATABASE_URL` of the battery API). A pair of the test replaces a
     /// default. The hash is made in the test from a test-only password.
     fn slice_defaults() -> HashMap<String, OsString> {
         static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -416,6 +416,10 @@ mod tests {
             (
                 "WEB_PUBLIC_ORIGIN".to_owned(),
                 OsString::from("https://telemetry.test"),
+            ),
+            (
+                "DATABASE_URL".to_owned(),
+                OsString::from("postgresql://u:p@db.invalid/neondb"),
             ),
         ])
     }
