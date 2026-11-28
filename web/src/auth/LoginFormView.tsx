@@ -31,11 +31,7 @@ export type LoginFormViewProps = {
 export function LoginFormView(props: LoginFormViewProps) {
   const failed = props.message !== null;
   return (
-    // No `aria-labelledby` on the section: the page has one `h1`. With a
-    // named region here, axe crashed the Firefox content process of the
-    // browser tests (SIGSEGV in XUL, Playwright 1.65.1 on macOS); without
-    // it, no crash in the runs. The root cause in Firefox is not known.
-    <section className="login">
+    <section className="login" aria-labelledby="login-title">
       <h1 id="login-title">{fi.loginTitle}</h1>
       {/* Outside the form: a screen reader can hold back a live region
           inside an `aria-busy` subtree. */}

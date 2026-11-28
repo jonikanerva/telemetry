@@ -87,6 +87,8 @@ export default defineConfig({
       WEB_TEST_TLS_KEY: path.join(tlsDir, 'key.pem'),
       WEB_PUBLIC_ORIGIN: new URL(baseURL).origin,
       E2E_TEST_PASSWORD: TEST_PASSWORD,
+      // The scenario files of the battery journeys (battery.spec.ts).
+      WEB_TEST_SCENARIO_DIR: path.join(repositoryRoot, 'e2e', 'scenarios'),
     },
     url: `${baseURL}/health`,
     ignoreHTTPSErrors: true,

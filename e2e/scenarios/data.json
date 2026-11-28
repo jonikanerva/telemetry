@@ -1,0 +1,2209 @@
+{
+  "now": "2026-11-27T12:00:00Z",
+  "vehicles": [1],
+  "signals": [
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T06:00:00Z",
+      "received_at": "2026-11-20T06:00:02Z",
+      "value_type": 5,
+      "float_value": 65.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T06:00:00Z",
+      "received_at": "2026-11-20T06:00:02Z",
+      "value_type": 5,
+      "float_value": 48.75
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-20T06:00:00Z",
+      "received_at": "2026-11-20T06:00:02Z",
+      "value_type": 5,
+      "float_value": -4.7
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-20T06:00:00Z",
+      "received_at": "2026-11-20T06:00:02Z",
+      "value_type": 5,
+      "float_value": 75.39
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T06:20:00Z",
+      "received_at": "2026-11-20T06:20:02Z",
+      "value_type": 5,
+      "float_value": 58.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T06:20:00Z",
+      "received_at": "2026-11-20T06:20:02Z",
+      "value_type": 5,
+      "float_value": 43.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T06:40:00Z",
+      "received_at": "2026-11-20T06:40:02Z",
+      "value_type": 5,
+      "float_value": 51.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T06:40:00Z",
+      "received_at": "2026-11-20T06:40:02Z",
+      "value_type": 5,
+      "float_value": 38.25
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T07:00:00Z",
+      "received_at": "2026-11-20T07:00:02Z",
+      "value_type": 5,
+      "float_value": 44.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T07:00:00Z",
+      "received_at": "2026-11-20T07:00:02Z",
+      "value_type": 5,
+      "float_value": 33.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T15:00:00Z",
+      "received_at": "2026-11-20T15:00:02Z",
+      "value_type": 5,
+      "float_value": 38.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T15:00:00Z",
+      "received_at": "2026-11-20T15:00:02Z",
+      "value_type": 5,
+      "float_value": 28.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-20T15:00:00Z",
+      "received_at": "2026-11-20T15:00:02Z",
+      "value_type": 5,
+      "float_value": -2.9
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-20T15:00:00Z",
+      "received_at": "2026-11-20T15:00:02Z",
+      "value_type": 5,
+      "float_value": 75.38
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T15:20:00Z",
+      "received_at": "2026-11-20T15:20:02Z",
+      "value_type": 5,
+      "float_value": 32.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T15:20:00Z",
+      "received_at": "2026-11-20T15:20:02Z",
+      "value_type": 5,
+      "float_value": 24.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T15:40:00Z",
+      "received_at": "2026-11-20T15:40:02Z",
+      "value_type": 5,
+      "float_value": 26.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T15:40:00Z",
+      "received_at": "2026-11-20T15:40:02Z",
+      "value_type": 5,
+      "float_value": 19.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T16:00:00Z",
+      "received_at": "2026-11-20T16:00:02Z",
+      "value_type": 5,
+      "float_value": 20.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T16:00:00Z",
+      "received_at": "2026-11-20T16:00:02Z",
+      "value_type": 5,
+      "float_value": 15.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T22:00:00Z",
+      "received_at": "2026-11-20T22:00:02Z",
+      "value_type": 5,
+      "float_value": 26.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T22:00:00Z",
+      "received_at": "2026-11-20T22:00:02Z",
+      "value_type": 5,
+      "float_value": 19.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-20T22:00:00Z",
+      "received_at": "2026-11-20T22:00:02Z",
+      "value_type": 5,
+      "float_value": -1.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-20T22:00:00Z",
+      "received_at": "2026-11-20T22:00:02Z",
+      "value_type": 5,
+      "float_value": 75.37
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T22:20:00Z",
+      "received_at": "2026-11-20T22:20:02Z",
+      "value_type": 5,
+      "float_value": 32.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T22:20:00Z",
+      "received_at": "2026-11-20T22:20:02Z",
+      "value_type": 5,
+      "float_value": 24.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T22:40:00Z",
+      "received_at": "2026-11-20T22:40:02Z",
+      "value_type": 5,
+      "float_value": 38.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T22:40:00Z",
+      "received_at": "2026-11-20T22:40:02Z",
+      "value_type": 5,
+      "float_value": 28.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T23:00:00Z",
+      "received_at": "2026-11-20T23:00:02Z",
+      "value_type": 5,
+      "float_value": 44.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T23:00:00Z",
+      "received_at": "2026-11-20T23:00:02Z",
+      "value_type": 5,
+      "float_value": 33.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T23:20:00Z",
+      "received_at": "2026-11-20T23:20:02Z",
+      "value_type": 5,
+      "float_value": 50.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T23:20:00Z",
+      "received_at": "2026-11-20T23:20:02Z",
+      "value_type": 5,
+      "float_value": 37.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-20T23:40:00Z",
+      "received_at": "2026-11-20T23:40:02Z",
+      "value_type": 5,
+      "float_value": 56.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-20T23:40:00Z",
+      "received_at": "2026-11-20T23:40:02Z",
+      "value_type": 5,
+      "float_value": 42.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T00:00:00Z",
+      "received_at": "2026-11-21T00:00:02Z",
+      "value_type": 5,
+      "float_value": 62.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T00:00:00Z",
+      "received_at": "2026-11-21T00:00:02Z",
+      "value_type": 5,
+      "float_value": 46.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T06:00:00Z",
+      "received_at": "2026-11-21T06:00:02Z",
+      "value_type": 5,
+      "float_value": 55.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T06:00:00Z",
+      "received_at": "2026-11-21T06:00:02Z",
+      "value_type": 5,
+      "float_value": 41.25
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-21T06:00:00Z",
+      "received_at": "2026-11-21T06:00:02Z",
+      "value_type": 5,
+      "float_value": -4.7
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-21T06:00:00Z",
+      "received_at": "2026-11-21T06:00:02Z",
+      "value_type": 5,
+      "float_value": 75.36
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T06:20:00Z",
+      "received_at": "2026-11-21T06:20:02Z",
+      "value_type": 5,
+      "float_value": 48.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T06:20:00Z",
+      "received_at": "2026-11-21T06:20:02Z",
+      "value_type": 5,
+      "float_value": 36.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T06:40:00Z",
+      "received_at": "2026-11-21T06:40:02Z",
+      "value_type": 5,
+      "float_value": 41.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T06:40:00Z",
+      "received_at": "2026-11-21T06:40:02Z",
+      "value_type": 5,
+      "float_value": 30.75
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T07:00:00Z",
+      "received_at": "2026-11-21T07:00:02Z",
+      "value_type": 5,
+      "float_value": 34.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T07:00:00Z",
+      "received_at": "2026-11-21T07:00:02Z",
+      "value_type": 5,
+      "float_value": 25.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T15:00:00Z",
+      "received_at": "2026-11-21T15:00:02Z",
+      "value_type": 5,
+      "float_value": 28.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T15:00:00Z",
+      "received_at": "2026-11-21T15:00:02Z",
+      "value_type": 5,
+      "float_value": 21.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-21T15:00:00Z",
+      "received_at": "2026-11-21T15:00:02Z",
+      "value_type": 5,
+      "float_value": -2.9
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-21T15:00:00Z",
+      "received_at": "2026-11-21T15:00:02Z",
+      "value_type": 5,
+      "float_value": 75.35
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T15:20:00Z",
+      "received_at": "2026-11-21T15:20:02Z",
+      "value_type": 5,
+      "float_value": 22.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T15:20:00Z",
+      "received_at": "2026-11-21T15:20:02Z",
+      "value_type": 5,
+      "float_value": 16.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T15:40:00Z",
+      "received_at": "2026-11-21T15:40:02Z",
+      "value_type": 5,
+      "float_value": 16.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T15:40:00Z",
+      "received_at": "2026-11-21T15:40:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T16:00:00Z",
+      "received_at": "2026-11-21T16:00:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T16:00:00Z",
+      "received_at": "2026-11-21T16:00:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T22:00:00Z",
+      "received_at": "2026-11-21T22:00:02Z",
+      "value_type": 5,
+      "float_value": 16.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T22:00:00Z",
+      "received_at": "2026-11-21T22:00:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-21T22:00:00Z",
+      "received_at": "2026-11-21T22:00:02Z",
+      "value_type": 5,
+      "float_value": -1.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-21T22:00:00Z",
+      "received_at": "2026-11-21T22:00:02Z",
+      "value_type": 5,
+      "float_value": 75.34
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T22:20:00Z",
+      "received_at": "2026-11-21T22:20:02Z",
+      "value_type": 5,
+      "float_value": 22.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T22:20:00Z",
+      "received_at": "2026-11-21T22:20:02Z",
+      "value_type": 5,
+      "float_value": 16.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T22:40:00Z",
+      "received_at": "2026-11-21T22:40:02Z",
+      "value_type": 5,
+      "float_value": 28.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T22:40:00Z",
+      "received_at": "2026-11-21T22:40:02Z",
+      "value_type": 5,
+      "float_value": 21.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T23:00:00Z",
+      "received_at": "2026-11-21T23:00:02Z",
+      "value_type": 5,
+      "float_value": 34.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T23:00:00Z",
+      "received_at": "2026-11-21T23:00:02Z",
+      "value_type": 5,
+      "float_value": 25.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T23:20:00Z",
+      "received_at": "2026-11-21T23:20:02Z",
+      "value_type": 5,
+      "float_value": 40.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T23:20:00Z",
+      "received_at": "2026-11-21T23:20:02Z",
+      "value_type": 5,
+      "float_value": 30.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-21T23:40:00Z",
+      "received_at": "2026-11-21T23:40:02Z",
+      "value_type": 5,
+      "float_value": 46.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-21T23:40:00Z",
+      "received_at": "2026-11-21T23:40:02Z",
+      "value_type": 5,
+      "float_value": 34.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T00:00:00Z",
+      "received_at": "2026-11-22T00:00:02Z",
+      "value_type": 5,
+      "float_value": 52.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T00:00:00Z",
+      "received_at": "2026-11-22T00:00:02Z",
+      "value_type": 5,
+      "float_value": 39.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T06:00:00Z",
+      "received_at": "2026-11-22T06:00:02Z",
+      "value_type": 5,
+      "float_value": 45.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T06:00:00Z",
+      "received_at": "2026-11-22T06:00:02Z",
+      "value_type": 5,
+      "float_value": 33.75
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-22T06:00:00Z",
+      "received_at": "2026-11-22T06:00:02Z",
+      "value_type": 5,
+      "float_value": -4.7
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-22T06:00:00Z",
+      "received_at": "2026-11-22T06:00:02Z",
+      "value_type": 5,
+      "float_value": 75.33
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T06:20:00Z",
+      "received_at": "2026-11-22T06:20:02Z",
+      "value_type": 5,
+      "float_value": 38.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T06:20:00Z",
+      "received_at": "2026-11-22T06:20:02Z",
+      "value_type": 5,
+      "float_value": 28.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T06:40:00Z",
+      "received_at": "2026-11-22T06:40:02Z",
+      "value_type": 5,
+      "float_value": 31.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T06:40:00Z",
+      "received_at": "2026-11-22T06:40:02Z",
+      "value_type": 5,
+      "float_value": 23.25
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T07:00:00Z",
+      "received_at": "2026-11-22T07:00:02Z",
+      "value_type": 5,
+      "float_value": 24.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T07:00:00Z",
+      "received_at": "2026-11-22T07:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T15:00:00Z",
+      "received_at": "2026-11-22T15:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T15:00:00Z",
+      "received_at": "2026-11-22T15:00:02Z",
+      "value_type": 5,
+      "float_value": 13.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-22T15:00:00Z",
+      "received_at": "2026-11-22T15:00:02Z",
+      "value_type": 5,
+      "float_value": -2.9
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-22T15:00:00Z",
+      "received_at": "2026-11-22T15:00:02Z",
+      "value_type": 5,
+      "float_value": 75.32
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T15:20:00Z",
+      "received_at": "2026-11-22T15:20:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T15:20:00Z",
+      "received_at": "2026-11-22T15:20:02Z",
+      "value_type": 5,
+      "float_value": 9.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T15:40:00Z",
+      "received_at": "2026-11-22T15:40:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T15:40:00Z",
+      "received_at": "2026-11-22T15:40:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T16:00:00Z",
+      "received_at": "2026-11-22T16:00:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T16:00:00Z",
+      "received_at": "2026-11-22T16:00:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T22:00:00Z",
+      "received_at": "2026-11-22T22:00:02Z",
+      "value_type": 5,
+      "float_value": 16.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T22:00:00Z",
+      "received_at": "2026-11-22T22:00:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-22T22:00:00Z",
+      "received_at": "2026-11-22T22:00:02Z",
+      "value_type": 5,
+      "float_value": -1.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-22T22:00:00Z",
+      "received_at": "2026-11-22T22:00:02Z",
+      "value_type": 5,
+      "float_value": 75.31
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T22:20:00Z",
+      "received_at": "2026-11-22T22:20:02Z",
+      "value_type": 5,
+      "float_value": 22.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T22:20:00Z",
+      "received_at": "2026-11-22T22:20:02Z",
+      "value_type": 5,
+      "float_value": 16.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T22:40:00Z",
+      "received_at": "2026-11-22T22:40:02Z",
+      "value_type": 5,
+      "float_value": 28.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T22:40:00Z",
+      "received_at": "2026-11-22T22:40:02Z",
+      "value_type": 5,
+      "float_value": 21.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T23:00:00Z",
+      "received_at": "2026-11-22T23:00:02Z",
+      "value_type": 5,
+      "float_value": 34.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T23:00:00Z",
+      "received_at": "2026-11-22T23:00:02Z",
+      "value_type": 5,
+      "float_value": 25.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T23:20:00Z",
+      "received_at": "2026-11-22T23:20:02Z",
+      "value_type": 5,
+      "float_value": 40.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T23:20:00Z",
+      "received_at": "2026-11-22T23:20:02Z",
+      "value_type": 5,
+      "float_value": 30.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-22T23:40:00Z",
+      "received_at": "2026-11-22T23:40:02Z",
+      "value_type": 5,
+      "float_value": 46.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-22T23:40:00Z",
+      "received_at": "2026-11-22T23:40:02Z",
+      "value_type": 5,
+      "float_value": 34.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T00:00:00Z",
+      "received_at": "2026-11-23T00:00:02Z",
+      "value_type": 5,
+      "float_value": 52.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T00:00:00Z",
+      "received_at": "2026-11-23T00:00:02Z",
+      "value_type": 5,
+      "float_value": 39.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T06:00:00Z",
+      "received_at": "2026-11-23T06:00:02Z",
+      "value_type": 5,
+      "float_value": 45.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T06:00:00Z",
+      "received_at": "2026-11-23T06:00:02Z",
+      "value_type": 5,
+      "float_value": 33.75
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-23T06:00:00Z",
+      "received_at": "2026-11-23T06:00:02Z",
+      "value_type": 5,
+      "float_value": -4.7
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-23T06:00:00Z",
+      "received_at": "2026-11-23T06:00:02Z",
+      "value_type": 5,
+      "float_value": 75.3
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T06:20:00Z",
+      "received_at": "2026-11-23T06:20:02Z",
+      "value_type": 5,
+      "float_value": 38.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T06:20:00Z",
+      "received_at": "2026-11-23T06:20:02Z",
+      "value_type": 5,
+      "float_value": 28.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T06:40:00Z",
+      "received_at": "2026-11-23T06:40:02Z",
+      "value_type": 5,
+      "float_value": 31.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T06:40:00Z",
+      "received_at": "2026-11-23T06:40:02Z",
+      "value_type": 5,
+      "float_value": 23.25
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T07:00:00Z",
+      "received_at": "2026-11-23T07:00:02Z",
+      "value_type": 5,
+      "float_value": 24.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T07:00:00Z",
+      "received_at": "2026-11-23T07:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T15:00:00Z",
+      "received_at": "2026-11-23T15:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T15:00:00Z",
+      "received_at": "2026-11-23T15:00:02Z",
+      "value_type": 5,
+      "float_value": 13.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-23T15:00:00Z",
+      "received_at": "2026-11-23T15:00:02Z",
+      "value_type": 5,
+      "float_value": -2.9
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-23T15:00:00Z",
+      "received_at": "2026-11-23T15:00:02Z",
+      "value_type": 5,
+      "float_value": 75.29
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T15:20:00Z",
+      "received_at": "2026-11-23T15:20:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T15:20:00Z",
+      "received_at": "2026-11-23T15:20:02Z",
+      "value_type": 5,
+      "float_value": 9.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T15:40:00Z",
+      "received_at": "2026-11-23T15:40:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T15:40:00Z",
+      "received_at": "2026-11-23T15:40:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T16:00:00Z",
+      "received_at": "2026-11-23T16:00:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T16:00:00Z",
+      "received_at": "2026-11-23T16:00:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T22:00:00Z",
+      "received_at": "2026-11-23T22:00:02Z",
+      "value_type": 5,
+      "float_value": 16.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T22:00:00Z",
+      "received_at": "2026-11-23T22:00:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-23T22:00:00Z",
+      "received_at": "2026-11-23T22:00:02Z",
+      "value_type": 5,
+      "float_value": -1.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-23T22:00:00Z",
+      "received_at": "2026-11-23T22:00:02Z",
+      "value_type": 5,
+      "float_value": 75.28
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T22:20:00Z",
+      "received_at": "2026-11-23T22:20:02Z",
+      "value_type": 5,
+      "float_value": 22.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T22:20:00Z",
+      "received_at": "2026-11-23T22:20:02Z",
+      "value_type": 5,
+      "float_value": 16.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T22:40:00Z",
+      "received_at": "2026-11-23T22:40:02Z",
+      "value_type": 5,
+      "float_value": 28.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T22:40:00Z",
+      "received_at": "2026-11-23T22:40:02Z",
+      "value_type": 5,
+      "float_value": 21.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T23:00:00Z",
+      "received_at": "2026-11-23T23:00:02Z",
+      "value_type": 5,
+      "float_value": 34.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T23:00:00Z",
+      "received_at": "2026-11-23T23:00:02Z",
+      "value_type": 5,
+      "float_value": 25.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T23:20:00Z",
+      "received_at": "2026-11-23T23:20:02Z",
+      "value_type": 5,
+      "float_value": 40.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T23:20:00Z",
+      "received_at": "2026-11-23T23:20:02Z",
+      "value_type": 5,
+      "float_value": 30.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-23T23:40:00Z",
+      "received_at": "2026-11-23T23:40:02Z",
+      "value_type": 5,
+      "float_value": 46.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-23T23:40:00Z",
+      "received_at": "2026-11-23T23:40:02Z",
+      "value_type": 5,
+      "float_value": 34.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T00:00:00Z",
+      "received_at": "2026-11-24T00:00:02Z",
+      "value_type": 5,
+      "float_value": 52.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T00:00:00Z",
+      "received_at": "2026-11-24T00:00:02Z",
+      "value_type": 5,
+      "float_value": 39.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T06:00:00Z",
+      "received_at": "2026-11-24T06:00:02Z",
+      "value_type": 5,
+      "float_value": 45.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T06:00:00Z",
+      "received_at": "2026-11-24T06:00:02Z",
+      "value_type": 5,
+      "float_value": 33.75
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-24T06:00:00Z",
+      "received_at": "2026-11-24T06:00:02Z",
+      "value_type": 5,
+      "float_value": -4.7
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-24T06:00:00Z",
+      "received_at": "2026-11-24T06:00:02Z",
+      "value_type": 5,
+      "float_value": 75.27
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T06:20:00Z",
+      "received_at": "2026-11-24T06:20:02Z",
+      "value_type": 5,
+      "float_value": 38.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T06:20:00Z",
+      "received_at": "2026-11-24T06:20:02Z",
+      "value_type": 5,
+      "float_value": 28.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T06:40:00Z",
+      "received_at": "2026-11-24T06:40:02Z",
+      "value_type": 5,
+      "float_value": 31.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T06:40:00Z",
+      "received_at": "2026-11-24T06:40:02Z",
+      "value_type": 5,
+      "float_value": 23.25
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T07:00:00Z",
+      "received_at": "2026-11-24T07:00:02Z",
+      "value_type": 5,
+      "float_value": 24.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T07:00:00Z",
+      "received_at": "2026-11-24T07:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T15:00:00Z",
+      "received_at": "2026-11-24T15:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T15:00:00Z",
+      "received_at": "2026-11-24T15:00:02Z",
+      "value_type": 5,
+      "float_value": 13.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-24T15:00:00Z",
+      "received_at": "2026-11-24T15:00:02Z",
+      "value_type": 5,
+      "float_value": -2.9
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-24T15:00:00Z",
+      "received_at": "2026-11-24T15:00:02Z",
+      "value_type": 5,
+      "float_value": 75.26
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T15:20:00Z",
+      "received_at": "2026-11-24T15:20:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T15:20:00Z",
+      "received_at": "2026-11-24T15:20:02Z",
+      "value_type": 5,
+      "float_value": 9.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T15:40:00Z",
+      "received_at": "2026-11-24T15:40:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T15:40:00Z",
+      "received_at": "2026-11-24T15:40:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T16:00:00Z",
+      "received_at": "2026-11-24T16:00:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T16:00:00Z",
+      "received_at": "2026-11-24T16:00:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T22:00:00Z",
+      "received_at": "2026-11-24T22:00:02Z",
+      "value_type": 5,
+      "float_value": 16.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T22:00:00Z",
+      "received_at": "2026-11-24T22:00:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-24T22:00:00Z",
+      "received_at": "2026-11-24T22:00:02Z",
+      "value_type": 5,
+      "float_value": -1.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-24T22:00:00Z",
+      "received_at": "2026-11-24T22:00:02Z",
+      "value_type": 5,
+      "float_value": 75.25
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T22:20:00Z",
+      "received_at": "2026-11-24T22:20:02Z",
+      "value_type": 5,
+      "float_value": 22.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T22:20:00Z",
+      "received_at": "2026-11-24T22:20:02Z",
+      "value_type": 5,
+      "float_value": 16.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T22:40:00Z",
+      "received_at": "2026-11-24T22:40:02Z",
+      "value_type": 5,
+      "float_value": 28.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T22:40:00Z",
+      "received_at": "2026-11-24T22:40:02Z",
+      "value_type": 5,
+      "float_value": 21.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T23:00:00Z",
+      "received_at": "2026-11-24T23:00:02Z",
+      "value_type": 5,
+      "float_value": 34.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T23:00:00Z",
+      "received_at": "2026-11-24T23:00:02Z",
+      "value_type": 5,
+      "float_value": 25.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T23:20:00Z",
+      "received_at": "2026-11-24T23:20:02Z",
+      "value_type": 5,
+      "float_value": 40.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T23:20:00Z",
+      "received_at": "2026-11-24T23:20:02Z",
+      "value_type": 5,
+      "float_value": 30.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T23:40:00Z",
+      "received_at": "2026-11-24T23:40:02Z",
+      "value_type": 5,
+      "float_value": 46.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-24T23:40:00Z",
+      "received_at": "2026-11-24T23:40:02Z",
+      "value_type": 5,
+      "float_value": 34.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T00:00:00Z",
+      "received_at": "2026-11-25T00:00:02Z",
+      "value_type": 5,
+      "float_value": 52.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T00:00:00Z",
+      "received_at": "2026-11-25T00:00:02Z",
+      "value_type": 5,
+      "float_value": 39.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T06:00:00Z",
+      "received_at": "2026-11-25T06:00:02Z",
+      "value_type": 5,
+      "float_value": 45.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T06:00:00Z",
+      "received_at": "2026-11-25T06:00:02Z",
+      "value_type": 5,
+      "float_value": 33.75
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-25T06:00:00Z",
+      "received_at": "2026-11-25T06:00:02Z",
+      "value_type": 5,
+      "float_value": -4.7
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-25T06:00:00Z",
+      "received_at": "2026-11-25T06:00:02Z",
+      "value_type": 5,
+      "float_value": 75.24
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T06:20:00Z",
+      "received_at": "2026-11-25T06:20:02Z",
+      "value_type": 5,
+      "float_value": 38.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T06:20:00Z",
+      "received_at": "2026-11-25T06:20:02Z",
+      "value_type": 5,
+      "float_value": 28.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T06:40:00Z",
+      "received_at": "2026-11-25T06:40:02Z",
+      "value_type": 5,
+      "float_value": 31.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T06:40:00Z",
+      "received_at": "2026-11-25T06:40:02Z",
+      "value_type": 5,
+      "float_value": 23.25
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T07:00:00Z",
+      "received_at": "2026-11-25T07:00:02Z",
+      "value_type": 5,
+      "float_value": 24.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T07:00:00Z",
+      "received_at": "2026-11-25T07:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T15:00:00Z",
+      "received_at": "2026-11-25T15:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T15:00:00Z",
+      "received_at": "2026-11-25T15:00:02Z",
+      "value_type": 5,
+      "float_value": 13.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-25T15:00:00Z",
+      "received_at": "2026-11-25T15:00:02Z",
+      "value_type": 5,
+      "float_value": -2.9
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-25T15:00:00Z",
+      "received_at": "2026-11-25T15:00:02Z",
+      "value_type": 5,
+      "float_value": 75.23
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T15:20:00Z",
+      "received_at": "2026-11-25T15:20:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T15:20:00Z",
+      "received_at": "2026-11-25T15:20:02Z",
+      "value_type": 5,
+      "float_value": 9.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T15:40:00Z",
+      "received_at": "2026-11-25T15:40:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T15:40:00Z",
+      "received_at": "2026-11-25T15:40:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T16:00:00Z",
+      "received_at": "2026-11-25T16:00:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T16:00:00Z",
+      "received_at": "2026-11-25T16:00:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T22:00:00Z",
+      "received_at": "2026-11-25T22:00:02Z",
+      "value_type": 5,
+      "float_value": 16.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T22:00:00Z",
+      "received_at": "2026-11-25T22:00:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-25T22:00:00Z",
+      "received_at": "2026-11-25T22:00:02Z",
+      "value_type": 5,
+      "float_value": -1.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-25T22:00:00Z",
+      "received_at": "2026-11-25T22:00:02Z",
+      "value_type": 5,
+      "float_value": 75.22
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T22:20:00Z",
+      "received_at": "2026-11-25T22:20:02Z",
+      "value_type": 5,
+      "float_value": 22.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T22:20:00Z",
+      "received_at": "2026-11-25T22:20:02Z",
+      "value_type": 5,
+      "float_value": 16.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T22:40:00Z",
+      "received_at": "2026-11-25T22:40:02Z",
+      "value_type": 5,
+      "float_value": 28.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T22:40:00Z",
+      "received_at": "2026-11-25T22:40:02Z",
+      "value_type": 5,
+      "float_value": 21.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T23:00:00Z",
+      "received_at": "2026-11-25T23:00:02Z",
+      "value_type": 5,
+      "float_value": 34.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T23:00:00Z",
+      "received_at": "2026-11-25T23:00:02Z",
+      "value_type": 5,
+      "float_value": 25.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T23:20:00Z",
+      "received_at": "2026-11-25T23:20:02Z",
+      "value_type": 5,
+      "float_value": 40.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T23:20:00Z",
+      "received_at": "2026-11-25T23:20:02Z",
+      "value_type": 5,
+      "float_value": 30.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-25T23:40:00Z",
+      "received_at": "2026-11-25T23:40:02Z",
+      "value_type": 5,
+      "float_value": 46.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-25T23:40:00Z",
+      "received_at": "2026-11-25T23:40:02Z",
+      "value_type": 5,
+      "float_value": 34.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T00:00:00Z",
+      "received_at": "2026-11-26T00:00:02Z",
+      "value_type": 5,
+      "float_value": 52.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T00:00:00Z",
+      "received_at": "2026-11-26T00:00:02Z",
+      "value_type": 5,
+      "float_value": 39.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T06:00:00Z",
+      "received_at": "2026-11-26T06:00:02Z",
+      "value_type": 5,
+      "float_value": 45.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T06:00:00Z",
+      "received_at": "2026-11-26T06:00:02Z",
+      "value_type": 5,
+      "float_value": 33.75
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-26T06:00:00Z",
+      "received_at": "2026-11-26T06:00:02Z",
+      "value_type": 5,
+      "float_value": -4.7
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-26T06:00:00Z",
+      "received_at": "2026-11-26T06:00:02Z",
+      "value_type": 5,
+      "float_value": 75.21
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T06:20:00Z",
+      "received_at": "2026-11-26T06:20:02Z",
+      "value_type": 5,
+      "float_value": 38.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T06:20:00Z",
+      "received_at": "2026-11-26T06:20:02Z",
+      "value_type": 5,
+      "float_value": 28.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T06:40:00Z",
+      "received_at": "2026-11-26T06:40:02Z",
+      "value_type": 5,
+      "float_value": 31.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T06:40:00Z",
+      "received_at": "2026-11-26T06:40:02Z",
+      "value_type": 5,
+      "float_value": 23.25
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T07:00:00Z",
+      "received_at": "2026-11-26T07:00:02Z",
+      "value_type": 5,
+      "float_value": 24.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T07:00:00Z",
+      "received_at": "2026-11-26T07:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T15:00:00Z",
+      "received_at": "2026-11-26T15:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T15:00:00Z",
+      "received_at": "2026-11-26T15:00:02Z",
+      "value_type": 5,
+      "float_value": 13.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-26T15:00:00Z",
+      "received_at": "2026-11-26T15:00:02Z",
+      "value_type": 5,
+      "float_value": -2.9
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-26T15:00:00Z",
+      "received_at": "2026-11-26T15:00:02Z",
+      "value_type": 5,
+      "float_value": 75.2
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T15:20:00Z",
+      "received_at": "2026-11-26T15:20:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T15:20:00Z",
+      "received_at": "2026-11-26T15:20:02Z",
+      "value_type": 5,
+      "float_value": 9.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T15:40:00Z",
+      "received_at": "2026-11-26T15:40:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T15:40:00Z",
+      "received_at": "2026-11-26T15:40:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T16:00:00Z",
+      "received_at": "2026-11-26T16:00:02Z",
+      "value_type": 5,
+      "float_value": 10.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T16:00:00Z",
+      "received_at": "2026-11-26T16:00:02Z",
+      "value_type": 5,
+      "float_value": 7.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T22:00:00Z",
+      "received_at": "2026-11-26T22:00:02Z",
+      "value_type": 5,
+      "float_value": 16.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T22:00:00Z",
+      "received_at": "2026-11-26T22:00:02Z",
+      "value_type": 5,
+      "float_value": 12.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-26T22:00:00Z",
+      "received_at": "2026-11-26T22:00:02Z",
+      "value_type": 5,
+      "float_value": -1.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-26T22:00:00Z",
+      "received_at": "2026-11-26T22:00:02Z",
+      "value_type": 5,
+      "float_value": 75.19
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T22:20:00Z",
+      "received_at": "2026-11-26T22:20:02Z",
+      "value_type": 5,
+      "float_value": 22.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T22:20:00Z",
+      "received_at": "2026-11-26T22:20:02Z",
+      "value_type": 5,
+      "float_value": 16.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T22:40:00Z",
+      "received_at": "2026-11-26T22:40:02Z",
+      "value_type": 5,
+      "float_value": 28.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T22:40:00Z",
+      "received_at": "2026-11-26T22:40:02Z",
+      "value_type": 5,
+      "float_value": 21.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T23:00:00Z",
+      "received_at": "2026-11-26T23:00:02Z",
+      "value_type": 5,
+      "float_value": 34.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T23:00:00Z",
+      "received_at": "2026-11-26T23:00:02Z",
+      "value_type": 5,
+      "float_value": 25.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T23:20:00Z",
+      "received_at": "2026-11-26T23:20:02Z",
+      "value_type": 5,
+      "float_value": 40.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T23:20:00Z",
+      "received_at": "2026-11-26T23:20:02Z",
+      "value_type": 5,
+      "float_value": 30.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-26T23:40:00Z",
+      "received_at": "2026-11-26T23:40:02Z",
+      "value_type": 5,
+      "float_value": 46.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-26T23:40:00Z",
+      "received_at": "2026-11-26T23:40:02Z",
+      "value_type": 5,
+      "float_value": 34.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-27T00:00:00Z",
+      "received_at": "2026-11-27T00:00:02Z",
+      "value_type": 5,
+      "float_value": 52.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-27T00:00:00Z",
+      "received_at": "2026-11-27T00:00:02Z",
+      "value_type": 5,
+      "float_value": 39.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-27T06:00:00Z",
+      "received_at": "2026-11-27T06:00:02Z",
+      "value_type": 5,
+      "float_value": 45.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-27T06:00:00Z",
+      "received_at": "2026-11-27T06:00:02Z",
+      "value_type": 5,
+      "float_value": 33.75
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-27T06:00:00Z",
+      "received_at": "2026-11-27T06:00:02Z",
+      "value_type": 5,
+      "float_value": -4.7
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-27T06:00:00Z",
+      "received_at": "2026-11-27T06:00:02Z",
+      "value_type": 5,
+      "float_value": 75.18
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-27T06:20:00Z",
+      "received_at": "2026-11-27T06:20:02Z",
+      "value_type": 5,
+      "float_value": 38.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-27T06:20:00Z",
+      "received_at": "2026-11-27T06:20:02Z",
+      "value_type": 5,
+      "float_value": 28.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-27T06:40:00Z",
+      "received_at": "2026-11-27T06:40:02Z",
+      "value_type": 5,
+      "float_value": 31.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-27T06:40:00Z",
+      "received_at": "2026-11-27T06:40:02Z",
+      "value_type": 5,
+      "float_value": 23.25
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-27T07:00:00Z",
+      "received_at": "2026-11-27T07:00:02Z",
+      "value_type": 5,
+      "float_value": 24.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-27T07:00:00Z",
+      "received_at": "2026-11-27T07:00:02Z",
+      "value_type": 5,
+      "float_value": 18.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T12:02:00Z",
+      "received_at": "2026-11-24T12:02:02Z",
+      "value_type": 10,
+      "bool_value": true
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-24T12:04:00Z",
+      "received_at": "2026-11-24T12:04:02Z",
+      "value_type": 5,
+      "float_value": "NaN"
+    },
+    {
+      "vehicle_id": 1,
+      "field": 86,
+      "created_at": "2026-11-27T11:30:00Z",
+      "received_at": "2026-11-27T11:30:02Z",
+      "value_type": 1,
+      "text_value": "x"
+    },
+    {
+      "vehicle_id": 1,
+      "field": 158,
+      "created_at": "2026-11-27T11:35:00Z",
+      "received_at": "2026-11-27T11:35:02Z",
+      "value_type": 1,
+      "text_value": "56.25"
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-27T11:40:00Z",
+      "received_at": "2026-11-27T11:40:02Z",
+      "value_type": 5,
+      "float_value": 61.5
+    },
+    {
+      "vehicle_id": 1,
+      "field": 8,
+      "created_at": "2026-11-27T11:50:00Z",
+      "received_at": "2026-11-27T11:50:02Z",
+      "value_type": 5,
+      "float_value": 61.0
+    },
+    {
+      "vehicle_id": 1,
+      "field": 263,
+      "created_at": "2026-11-27T11:40:00Z",
+      "received_at": "2026-11-27T11:40:02Z",
+      "value_type": 5,
+      "float_value": 75.31
+    }
+  ],
+  "connectivity": [
+    {
+      "vehicle_id": 1,
+      "connection_id": "7f1c2a3e-0000-4000-8000-000000000001",
+      "created_at": "2026-11-27T11:10:00Z",
+      "status": 1
+    }
+  ],
+  "ingest_events": [
+    {
+      "run_id": "5b0e9d4c-0000-4000-8000-00000000000a",
+      "occurred_at": "2026-11-17T12:00:00Z",
+      "kind": "started"
+    },
+    {
+      "run_id": "5b0e9d4c-0000-4000-8000-00000000000a",
+      "occurred_at": "2026-11-17T12:01:00Z",
+      "kind": "gate_opened"
+    },
+    {
+      "run_id": "5b0e9d4c-0000-4000-8000-00000000000a",
+      "occurred_at": "2026-11-25T11:50:00Z",
+      "kind": "gate_closed",
+      "reason": "shutdown"
+    },
+    {
+      "run_id": "5b0e9d4c-0000-4000-8000-00000000000b",
+      "occurred_at": "2026-11-25T11:49:53Z",
+      "kind": "started"
+    },
+    {
+      "run_id": "5b0e9d4c-0000-4000-8000-00000000000a",
+      "occurred_at": "2026-11-25T11:50:02Z",
+      "kind": "stopped",
+      "reason": "SIGTERM"
+    },
+    {
+      "run_id": "5b0e9d4c-0000-4000-8000-00000000000b",
+      "occurred_at": "2026-11-25T11:51:00Z",
+      "kind": "gate_opened"
+    },
+    {
+      "run_id": "5b0e9d4c-0000-4000-8000-00000000000b",
+      "occurred_at": "2026-11-26T09:06:00Z",
+      "kind": "records_dropped",
+      "reason": "queue_full",
+      "dropped_count": 12,
+      "first_received_at": "2026-11-26T09:00:00Z",
+      "last_received_at": "2026-11-26T09:05:00Z"
+    }
+  ]
+}

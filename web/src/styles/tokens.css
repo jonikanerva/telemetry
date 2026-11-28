@@ -1,8 +1,10 @@
 /*
  * Design tokens. The light scheme is the default; the dark scheme follows
  * the setting of the operating system. There is no theme toggle.
- * Each text pair has a contrast of at least 4.5:1, and the focus ring has
- * at least 3:1 against the page background (WCAG 2.2 AA).
+ * Contrast rule (WCAG 2.2 AA), checked by web/src/styles/tokens.test.ts:
+ * text 4.5:1 against its background; chart lines, markers, the gap
+ * hatch, borders of controls, and the focus ring 3:1 against the page
+ * background. The grid lines and the placeholder blocks are decoration: the table and the readout hold their values.
  */
 :root {
   color-scheme: light dark;
@@ -12,14 +14,30 @@
   --color-text: #1a1a1a;
   --color-text-muted: #4b5563;
   --color-border: #6b7280;
+  --color-border-subtle: #d1d5db;
   --color-link: #0b57d0;
   --color-focus: #0b57d0;
   --color-notice-bg: #fff4ce;
   --color-notice-text: #1a1a1a;
   --color-error-bg: #fde7e9;
   --color-error-text: #7a0010;
+  --color-info-bg: #e8f0fe;
+  --color-info-text: #1a1a1a;
+  --color-warning-bg: #fff4ce;
+  --color-warning-text: #1a1a1a;
   --color-button-bg: #0b57d0;
   --color-button-text: #ffffff;
+
+  --color-chart-primary: #0b57d0;
+  --color-chart-secondary: #00796b;
+  --color-chart-grid: #e5e7eb;
+  --color-chart-axis-text: #4b5563;
+  --color-chart-crosshair: #4b5563;
+  --color-gap-hatch: #6b7280;
+  --color-gap-fill: #eceef1;
+  --color-status-connected: #1e7e34;
+  --color-status-offline: #6b7280;
+  --color-placeholder: #eceef1;
 
   --focus-ring: 3px solid var(--color-focus);
   --focus-offset: 2px;
@@ -41,13 +59,29 @@
     --color-text: #f0f0f0;
     --color-text-muted: #b6bcc6;
     --color-border: #9ca3af;
+    --color-border-subtle: #374151;
     --color-link: #8ab4f8;
     --color-focus: #8ab4f8;
     --color-notice-bg: #3d3200;
     --color-notice-text: #f0f0f0;
     --color-error-bg: #4a0d14;
     --color-error-text: #ffd6db;
+    --color-info-bg: #10243f;
+    --color-info-text: #f0f0f0;
+    --color-warning-bg: #3d3200;
+    --color-warning-text: #f0f0f0;
     --color-button-bg: #8ab4f8;
     --color-button-text: #121212;
+
+    --color-chart-primary: #8ab4f8;
+    --color-chart-secondary: #4fd1c5;
+    --color-chart-grid: #2b3038;
+    --color-chart-axis-text: #b6bcc6;
+    --color-chart-crosshair: #b6bcc6;
+    --color-gap-hatch: #9ca3af;
+    --color-gap-fill: #24282f;
+    --color-status-connected: #6fdc8c;
+    --color-status-offline: #9ca3af;
+    --color-placeholder: #24282f;
   }
 }

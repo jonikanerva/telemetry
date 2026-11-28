@@ -3,19 +3,26 @@
 // - `invalid_credentials`: a wrong password. The form clears the field.
 // - `login_throttled`: too many attempts. The form keeps the input and
 //   shows the wait time when the server sends it.
+// - 400 `invalid_request`: the browser holds two session cookies
+//   (auth/conflicting-cookies.ts). The form says how to fix that.
 // - Every other failure (network, timeout, invalid or unknown body, 400,
 //   403, 413, 415, 5xx, a programmer defect): the service did not answer
 //   as expected. The form keeps the input.
 import { ApiRequestError } from 'telemetry-web-api-client';
 
 import { fi } from '../i18n/fi.js';
+import { isConflictingCookies } from './conflicting-cookies.js';
 
 export type LoginFailure =
   | { readonly kind: 'invalid_credentials' }
   | { readonly kind: 'throttled'; readonly retryAfterSeconds: number | null }
+  | { readonly kind: 'conflicting_cookies' }
   | { readonly kind: 'unavailable' };
 
 export function classifyLoginFailure(error: unknown): LoginFailure {
+  if (isConflictingCookies(error)) {
+    return { kind: 'conflicting_cookies' };
+  }
   if (!(error instanceof ApiRequestError) || error.error.kind !== 'problem') {
     return { kind: 'unavailable' };
   }
@@ -37,6 +44,8 @@ export function loginFailureMessage(failure: LoginFailure): string {
       return failure.retryAfterSeconds === null
         ? fi.loginThrottledNoTime
         : fi.loginThrottled(failure.retryAfterSeconds);
+    case 'conflicting_cookies':
+      return fi.conflictingCookies;
     case 'unavailable':
       return fi.loginUnavailable;
     default:

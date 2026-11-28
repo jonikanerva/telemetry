@@ -6,21 +6,25 @@
 // - `/logout` (routes/logout.tsx): public; the page after a logout that
 //   the server did not confirm.
 // - `protected` (routes/protected.tsx): a pathless layout that checks the
-//   session. Its children: `/` (routes/index.tsx).
-//
-// Mount points: S4 adds routes/battery.tsx (`/battery`) as a child of the
-// protected layout, with battery/, chart/, and format/.
+//   session. Its children: `/` (routes/index.tsx, a redirect to
+//   `/battery`) and `/battery` (routes/battery.tsx, with battery/, chart/,
+//   and format/).
 import type { QueryClient } from '@tanstack/react-query';
 import { createRouter } from '@tanstack/react-router';
 
 import { RouteUnavailable } from './auth/RouteUnavailable.js';
+import { batteryRoute } from './routes/battery.js';
 import { indexRoute } from './routes/index.js';
 import { loginRoute } from './routes/login.js';
 import { logoutRoute } from './routes/logout.js';
 import { protectedRoute } from './routes/protected.js';
 import { rootRoute } from './routes/root.js';
 
-const routeTree = rootRoute.addChildren([loginRoute, logoutRoute, protectedRoute.addChildren([indexRoute])]);
+const routeTree = rootRoute.addChildren([
+  loginRoute,
+  logoutRoute,
+  protectedRoute.addChildren([indexRoute, batteryRoute]),
+]);
 
 export function createAppRouter(queryClient: QueryClient) {
   return createRouter({

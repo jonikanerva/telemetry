@@ -28,6 +28,7 @@ describe('LoginFormView', () => {
   it('has a heading, a labelled password field, and a submit button', () => {
     const html = render();
     expect(html).toContain('<h1 id="login-title">Kirjaudu sisään</h1>');
+    expect(html).toMatch(/^<section class="login" aria-labelledby="login-title">/);
     expect(html).toContain('<label for="login-password">Salasana</label>');
     expect(html).toMatch(/<input[^>]* id="login-password"/);
     expect(html).toMatch(/<input[^>]* type="password"/);

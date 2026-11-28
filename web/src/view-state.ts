@@ -1,6 +1,6 @@
 // The typed view state of a query (profile §2.4). A failed request is
 // always `unavailable`, never an empty result. The battery view adds a
-// `stale_usable` state (design §7) when it needs one.
+// `stale_usable` state (battery/view-state.ts).
 import { ApiRequestError } from 'telemetry-web-api-client';
 import type { ApiError } from 'telemetry-web-api-client';
 

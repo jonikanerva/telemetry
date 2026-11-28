@@ -1,4 +1,4 @@
-// The TanStack Query client and its explicit defaults (design §7).
+// The TanStack Query client and its explicit defaults.
 // No background traffic: no refetch on focus, on reconnect, or on an
 // interval. The owner refreshes with the "Päivitä" button.
 import { MutationCache, QueryCache, QueryClient } from '@tanstack/react-query';

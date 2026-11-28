@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { fi } from '../i18n/fi.js';
 import { createQueryClient } from '../query-client.js';
-import { mayShowLogoutFailure, performLogout, retryLogout } from './logout.js';
+import { clearLogoutFailure, mayShowLogoutFailure, performLogout, retryLogout } from './logout.js';
 import type { LogoutAttempt, LogoutFailureMark, LogoutTarget } from './logout.js';
 import { SESSION_QUERY_KEY } from './session.js';
 import { SESSION, problemError } from './test-support.js';
@@ -165,5 +165,20 @@ describe('the failure page needs a failed logout of this page session', () => {
     const working = retrySetup(() => Promise.resolve(SUCCESS));
     await retryLogout(working.attempt, { ...working.deps, mark });
     expect(mark.failed).toBe(false);
+  });
+});
+
+describe('a successful login after a failed logout', () => {
+  it('clears the mark, so that /logout does not show the old failure', async () => {
+    const mark: LogoutFailureMark = { failed: false };
+    await performLogout({
+      logout: async () => Promise.resolve({ ok: false, error: { kind: 'network' } }),
+      queryClient: createQueryClient(),
+      navigate: async () => Promise.resolve(),
+      mark,
+    });
+    expect(mayShowLogoutFailure(mark)).toBe(true);
+    clearLogoutFailure(mark);
+    expect(mayShowLogoutFailure(mark)).toBe(false);
   });
 });

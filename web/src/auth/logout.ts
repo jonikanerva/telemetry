@@ -40,6 +40,15 @@ export type LogoutFailureMark = { failed: boolean };
 /** The mark of the running page; memory only, so a reload drops it. */
 export const logoutFailureMark: LogoutFailureMark = { failed: false };
 
+/**
+ * Clears the mark after a successful login. The new session is not the
+ * session of the failed logout, so `/logout` must not show that failure
+ * again.
+ */
+export function clearLogoutFailure(mark: LogoutFailureMark = logoutFailureMark): void {
+  mark.failed = false;
+}
+
 /** Whether `/logout` may show the failure page. */
 export function mayShowLogoutFailure(mark: LogoutFailureMark = logoutFailureMark): boolean {
   return mark.failed;

@@ -1,0 +1,218 @@
+/* The time-series chart (TimeSeriesChart.tsx). Colours come from the tokens. */
+.chart {
+  margin: 0;
+  min-width: 0;
+}
+
+.chart-caption {
+  margin-bottom: var(--space-1);
+}
+
+.chart-title {
+  margin: 0;
+  font-size: 1.0625rem;
+}
+
+.chart-subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+/* The readout has a fixed height, so a selection moves no content. */
+.chart-readout {
+  margin: var(--space-1) 0;
+  min-height: 2.75rem;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-frame {
+  position: relative;
+  width: 100%;
+  border-radius: var(--radius);
+}
+
+.chart-frame-large {
+  height: 220px;
+}
+
+.chart-frame-small {
+  height: 160px;
+}
+
+/* The keyboard cursor is the hidden range input; its focus shows on the frame. */
+.chart-frame:focus-within {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.chart-cursor {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+}
+
+.chart-svg {
+  display: block;
+  overflow: visible;
+  /* A horizontal drag moves the cursor; a vertical drag scrolls the page. */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.chart-grid {
+  stroke: var(--color-chart-grid);
+  stroke-width: 1;
+}
+
+.chart-axis-text {
+  fill: var(--color-chart-axis-text);
+  font-size: 0.75rem;
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-empty-text {
+  fill: var(--color-text-muted);
+  font-size: 0.875rem;
+  font-family: var(--font-body);
+}
+
+.chart-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart-line-primary {
+  stroke: var(--color-chart-primary);
+}
+
+.chart-line-secondary {
+  stroke: var(--color-chart-secondary);
+}
+
+.chart-marker-primary {
+  fill: var(--color-chart-primary);
+}
+
+.chart-marker-secondary {
+  fill: var(--color-chart-secondary);
+}
+
+.chart-focus-dot {
+  stroke: var(--color-bg);
+  stroke-width: 2;
+}
+
+.chart-restart {
+  stroke: var(--color-chart-crosshair);
+  stroke-width: 2;
+}
+
+.chart-crosshair {
+  stroke: var(--color-chart-crosshair);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.chart-gap {
+  stroke: var(--color-gap-hatch);
+  stroke-width: 1;
+}
+
+.chart-hatch-bg {
+  fill: var(--color-gap-fill);
+}
+
+.chart-hatch-line {
+  stroke: var(--color-gap-hatch);
+  stroke-width: 2;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.chart-swatch {
+  flex: none;
+  vertical-align: -1px;
+}
+
+.chart-summary {
+  margin-top: var(--space-2);
+  font-size: 0.875rem;
+}
+
+.chart-summary p {
+  margin: 0;
+}
+
+.chart-table {
+  margin-top: var(--space-2);
+}
+
+.chart-table summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--target-min);
+  color: var(--color-link);
+  cursor: pointer;
+}
+
+.table-scroll {
+  max-width: 100%;
+  max-height: 24rem;
+  overflow: auto;
+  border-radius: var(--radius);
+}
+
+.table-scroll table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.table-scroll th,
+.table-scroll td {
+  padding: var(--space-1) var(--space-3) var(--space-1) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table-scroll th {
+  position: sticky;
+  top: 0;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.table-break td {
+  color: var(--color-text-muted);
+  font-style: italic;
+}

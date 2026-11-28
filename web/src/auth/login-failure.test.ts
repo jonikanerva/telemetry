@@ -1,12 +1,21 @@
 import { ApiRequestError } from 'telemetry-web-api-client';
 import { describe, expect, it } from 'vitest';
 
+import { fi } from '../i18n/fi.js';
 import { classifyLoginFailure, clearsPassword, loginFailureMessage } from './login-failure.js';
 import { problemError } from './test-support.js';
 
 const UNAVAILABLE = 'Kirjautuminen ei onnistunut. Palvelu ei vastannut. Yritä hetken kuluttua uudelleen.';
 
 describe('the login failure', () => {
+  it('explains two session cookies on a 400 invalid_request and keeps the input', () => {
+    const failure = classifyLoginFailure(problemError('invalid_request', 400));
+    expect(failure).toEqual({ kind: 'conflicting_cookies' });
+    expect(loginFailureMessage(failure)).toBe(fi.conflictingCookies);
+    expect(loginFailureMessage(failure)).toContain('Poista tämän sivuston evästeet');
+    expect(clearsPassword(failure)).toBe(false);
+  });
+
   it('shows a wrong password and clears the field', () => {
     const failure = classifyLoginFailure(problemError('invalid_credentials', 401));
     expect(loginFailureMessage(failure)).toBe('Salasana on väärä.');
@@ -34,7 +43,6 @@ describe('the login failure', () => {
     ['a 500', problemError('internal_error', 500)],
     ['a 503', problemError('database_unavailable', 503)],
     ['a 403', problemError('forbidden_origin', 403)],
-    ['a 400', problemError('invalid_request', 400)],
     ['a 413', problemError('payload_too_large', 413)],
     ['a 415', problemError('unsupported_media_type', 415)],
     ['unauthenticated', problemError('unauthenticated', 401)],

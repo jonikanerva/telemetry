@@ -124,27 +124,6 @@ button[aria-disabled='true'] {
   font-weight: 700;
 }
 
-.health {
-  display: grid;
-  gap: var(--space-3);
-  justify-items: start;
-}
-
-.health dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: var(--space-1) var(--space-3);
-  margin: 0;
-}
-
-.health dt {
-  color: var(--color-text-muted);
-}
-
-.health dd {
-  margin: 0;
-}
-
 code {
   font-family: var(--font-mono);
 }
@@ -202,10 +181,29 @@ code {
   color: var(--color-text);
 }
 
-.session-end {
-  color: var(--color-text-muted);
-}
-
 .retry-button {
   margin-top: var(--space-3);
+}
+
+/* The navigation of the header (shell/RootLayout.tsx). */
+.app-nav {
+  display: flex;
+  margin-right: auto;
+  gap: var(--space-2);
+}
+
+.app-nav-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--target-min);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.app-nav-link[aria-current='page'] {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 0.3em;
 }

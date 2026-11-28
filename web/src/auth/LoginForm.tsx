@@ -1,6 +1,7 @@
 // The login form: POST /api/v1/session through a mutation.
 //
-// - Success: the session body goes into the query cache, and the browser
+// - Success: the session body goes into the query cache, the mark of an
+//   earlier failed logout is cleared (auth/logout.ts), and the browser
 //   opens the target page with `replace`, so the back button does not
 //   return to the login page.
 // - Failure: the message of auth/login-failure.ts, focus to the password
@@ -13,6 +14,7 @@ import type { Session } from 'telemetry-web-api-client';
 
 import { classifyLoginFailure, clearsPassword, loginFailureMessage } from './login-failure.js';
 import { LoginFormView } from './LoginFormView.js';
+import { clearLogoutFailure } from './logout.js';
 import { SESSION_QUERY_KEY } from './session.js';
 
 export function LoginForm({ redirect }: { readonly redirect: string }) {
@@ -26,6 +28,7 @@ export function LoginForm({ redirect }: { readonly redirect: string }) {
     mutationFn: async (value: string): Promise<Session> => unwrap(await api.login(value)),
     onSuccess: async (session) => {
       queryClient.setQueryData<Session>(SESSION_QUERY_KEY, session);
+      clearLogoutFailure();
       await navigate({ href: redirect, replace: true });
     },
     onError: (error) => {

@@ -28,15 +28,72 @@ import './zod-config.js';
 import { createClient, createConfig } from './generated/client/index.js';
 import type { Client } from './generated/client/index.js';
 import {
+  getBattery as generatedGetBattery,
   getHealth as generatedGetHealth,
   getSession as generatedGetSession,
   login as generatedLogin,
   logout as generatedLogout,
 } from './generated/sdk.gen.js';
-import type { Health, ProblemCode, Session } from './generated/types.gen.js';
-import { zHealth, zProblem, zSession } from './generated/zod.gen.js';
+import type {
+  BatteryCharts,
+  BatteryRange,
+  BatteryStatus,
+  BatteryTiles,
+  BatteryView,
+  CapacityChange,
+  CapacityTile,
+  ChangeUnknownReason,
+  Connection,
+  CountUnit,
+  ExcludedRows,
+  Freshness,
+  Gap,
+  GapCount,
+  GapKind,
+  Gaps,
+  Health,
+  Point,
+  ProblemCode,
+  RangeKey,
+  Reading,
+  Restarts,
+  Series,
+  Session,
+  Unit,
+  UnitSource,
+  UnitSymbol,
+} from './generated/types.gen.js';
+import { zBatteryView, zHealth, zProblem, zSession } from './generated/zod.gen.js';
 
-export type { Health, ProblemCode, Session };
+export type {
+  BatteryCharts,
+  BatteryRange,
+  BatteryStatus,
+  BatteryTiles,
+  BatteryView,
+  CapacityChange,
+  CapacityTile,
+  ChangeUnknownReason,
+  Connection,
+  CountUnit,
+  ExcludedRows,
+  Freshness,
+  Gap,
+  GapCount,
+  GapKind,
+  Gaps,
+  Health,
+  Point,
+  ProblemCode,
+  RangeKey,
+  Reading,
+  Restarts,
+  Series,
+  Session,
+  Unit,
+  UnitSource,
+  UnitSymbol,
+};
 
 /** A validated problem body: the output type of the generated schema. */
 export type Problem = ReturnType<typeof zProblem.parse>;
@@ -93,6 +150,8 @@ export type ApiClient = {
   readonly login: (password: string, options?: RequestOptions) => Promise<ApiResult<Session>>;
   /** DELETE /api/v1/session: a logout. Success means status 204. */
   readonly logout: (options?: RequestOptions) => Promise<ApiResult<undefined>>;
+  /** GET /api/v1/battery?range=<range>: the battery view of one range. */
+  readonly getBattery: (range: RangeKey, options?: RequestOptions) => Promise<ApiResult<BatteryView>>;
 };
 
 // The result shape of a generated SDK function with `throwOnError: false`.
@@ -112,6 +171,7 @@ type Parsed<T> = { readonly success: true; readonly data: T } | { readonly succe
 
 const healthBody: Success<Health> = { kind: 'json', schema: zHealth };
 const sessionBody: Success<Session> = { kind: 'json', schema: zSession };
+const batteryBody: Success<BatteryView> = { kind: 'json', schema: zBatteryView };
 const noContent: Success<undefined> = { kind: 'no_content', value: undefined };
 
 export function createApiClient(options: ApiClientOptions = {}): ApiClient {
@@ -197,6 +257,8 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       run(request.signal, sessionBody, async (signal) => generatedLogin({ client, signal, body: { password } })),
     logout: async (request = {}) =>
       run(request.signal, noContent, async (signal) => generatedLogout({ client, signal })),
+    getBattery: async (range, request = {}) =>
+      run(request.signal, batteryBody, async (signal) => generatedGetBattery({ client, signal, query: { range } })),
   };
 }
 
