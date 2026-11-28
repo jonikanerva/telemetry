@@ -901,8 +901,7 @@ decisions" and "Decisions of the pipeline change").
 - **Note N1.** `fleet-telemetry` can read `DATABASE_URL` in the environment
   of `ingest` (ADR 0001, "Process tree on Railway").
 - **Entrypoint and pre-deploy command as root** (ADR 0001, "Process tree on
-  Railway"). Open issue #31: a service variable named `cert` or `key` would
-  reach the environment of `ingest`.
+  Railway").
 - **Gate.** No handshake deadline; a flood that fills the 1024 connections
   blocks the vehicle while it lasts plus the dead-peer bound, below the
   vehicle buffer (ADR 0001, lead decision 6).

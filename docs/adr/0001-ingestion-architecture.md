@@ -1,7 +1,7 @@
 # ADR 0001: Ingestion architecture
 
 - Status: Accepted, 26 November 2026 (issue #4). Amended by issues #13, #14,
-  and #29, and by the owner decisions of 27 November 2026.
+  #29, and #31, and by the owner decisions of 27 November 2026.
 - Scope: the path from the vehicle to PostgreSQL. ADR 0002 owns the tables.
 
 ## Context
@@ -365,7 +365,8 @@ in `ingest`. No path from outside the container reads the file.
 **Residual risks of option 1.** These items stay after the owner decision
 for option 1 (27 November 2026). The owner accepted note N1 and the
 pre-deploy command as root explicitly on that date, and decided that
-issue #31 has no schedule.
+issue #31 has no schedule. On 28 November 2026 the owner decided to fix
+issue #31 while the vehicle sleeps.
 
 - **Note N1: the child can read the environment of `ingest`.**
   `fleet-telemetry` runs as user 10001, as `ingest` does, so it can read
@@ -391,13 +392,13 @@ issue #31 has no schedule.
   a link that a process of UID 10001 left in a reused container
   filesystem rests on the `rm -f`, and on the premise that no process of
   UID 10001 runs during the root part of the entrypoint.
-- **The shell variables `cert` and `key`.** The entrypoint copies the TLS
-  variables to them. If the container environment already holds a
-  variable with one of these names, the shell keeps it exported, and the
-  key reaches the environment of `ingest`. Precondition: a Railway service
-  variable named `cert` or `key`. Issue #31 tracks the fix. It has no
-  schedule, because the fix changes a watch path and so releases the
-  service again.
+- **The shell variables `cert` and `key` (fixed, issue #31).** The
+  entrypoint copies the TLS variables to them. If the container
+  environment already holds a variable with one of these names, the shell
+  keeps it exported, and an assignment exports the TLS value to `ingest`.
+  The entrypoint runs `unset cert key` before the copy, so no program gets
+  these names. The deployment test and the CI job `image-check` start the
+  entrypoint with both names set and check the environment of `ingest`.
 - **The pre-deploy command runs as root.** It stays
   `/usr/local/bin/ingest migrate`. A wrapper that drops to UID 10001 would
   change a Railway setting, and a rollback to an earlier image without the

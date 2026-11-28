@@ -1453,6 +1453,12 @@ fn stub_path(dir: &Path) -> String {
 
 /// Runs the copy with the variables of a Railway start.
 fn run_entrypoint(dir: &Path, script: &Path) -> std::process::Output {
+    run_entrypoint_with(dir, script, &[])
+}
+
+/// Runs the copy with the variables of a Railway start and the `extra`
+/// variables.
+fn run_entrypoint_with(dir: &Path, script: &Path, extra: &[(&str, &str)]) -> std::process::Output {
     Command::new("/bin/sh")
         .arg(script)
         .env_clear()
@@ -1464,6 +1470,7 @@ fn run_entrypoint(dir: &Path, script: &Path) -> std::process::Output {
             "MIGRATION_DATABASE_URL",
             "postgresql://telemetry_migrator:migrator-secret@db.invalid/neondb",
         )
+        .envs(extra.iter().copied())
         .output()
         .unwrap()
 }
@@ -1551,6 +1558,43 @@ fn the_entrypoint_writes_private_tls_files_and_starts_ingest_without_them() {
         fs::read_to_string(dir.join("soft")).unwrap(),
         fs::read_to_string(dir.join("hard")).unwrap()
     );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The variables `cert` and `key` of the script must not reach a program
+/// (issue #31). A container environment can already hold variables with
+/// these names, for example from a Railway service variable. The shell then
+/// keeps each name exported, and an assignment exports the TLS value.
+#[test]
+fn the_entrypoint_does_not_export_inherited_cert_and_key_variables() {
+    let inherited = [("cert", "inherited-cert"), ("key", "inherited-key")];
+    let dir = scratch("inherited");
+    let script = entrypoint_copy(&dir, None);
+    let output = run_entrypoint_with(&dir, &script, &inherited);
+    assert!(output.status.success(), "{output:?}");
+    for file in ["env", "chown-env", "setpriv-env"] {
+        let env = fs::read_to_string(dir.join(file)).unwrap();
+        assert!(
+            !env.lines()
+                .any(|line| line.starts_with("cert=") || line.starts_with("key=")),
+            "{file} holds cert or key:\n{env}"
+        );
+        assert!(!env.contains("BEGIN CERTIFICATE"), "{file}:\n{env}");
+        assert_no_secret_in(&env, file);
+    }
+    fs::remove_dir_all(&dir).unwrap();
+    // Premise: without the unset, the TLS key reaches ingest. So the
+    // checks above can detect the fault.
+    let dir = scratch("inherited-unfixed");
+    let script = entrypoint_copy(&dir, None);
+    let fixed = fs::read_to_string(&script).unwrap();
+    let unfixed = fixed.replacen("unset cert key\n", "", 1);
+    assert_ne!(fixed, unfixed, "the script has no line `unset cert key`");
+    fs::write(&script, unfixed).unwrap();
+    let output = run_entrypoint_with(&dir, &script, &inherited);
+    assert!(output.status.success(), "{output:?}");
+    let env = fs::read_to_string(dir.join("env")).unwrap();
+    assert!(env.contains("PRIVATE KEY"), "{env}");
     fs::remove_dir_all(&dir).unwrap();
 }
 

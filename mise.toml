@@ -458,7 +458,7 @@ fi
 # The entrypoint runs rm, chown, and setpriv as root and nothing else
 # (image-advisories.md, "Debian 13 base"). The pin is the git blob ID of
 # the file. Repeat that split and update the pin when the file changes.
-if [ "$(git hash-object ingest/entrypoint.sh)" != 9756457071506c4cf76ec0634d8ce6844410b854 ]; then
+if [ "$(git hash-object ingest/entrypoint.sh)" != dae544187a49e798b39013734371885ee0aa597d ]; then
   echo "vuln: ingest/entrypoint.sh changed. Repeat the entrypoint split of docs/security/image-advisories.md and update the pin in the vuln task."
   status=1
 fi
