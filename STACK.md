@@ -17,7 +17,7 @@ import it.
 ## 0. Project shape
 
 - **Project risk rationale:** one person, the owner, depends on the system. The data contains the vehicle location history and the VIN; a leak shows where the owner is and when the owner is away. A collection failure loses history that cannot be collected again. Usage above the Tesla billing limit removes the vehicle telemetry configuration and suspends the Tesla API for the owner's Home Assistant. No other system depends on this product. The product sends no commands to the vehicle.
-- **Change risk:** assess each changed surface against that rationale. A risk label does not waive required evidence or review. Changes to the ingest service, the vehicle telemetry configuration, access control, and stored location data are material.
+- **Change risk:** each changed surface has the risk class of `DOCTRINE.md` (introduction). High class here: `crates/ingest`, `ingest/`, `db/`, `migrations/`, each database role and query, `crates/server/src/auth/`, `config/telemetry_config.json`, the images and Railway settings of both services, the CI workflow, the check tasks of `mise.toml`, `deny.toml`, and `docs/security/`. Light class: the SPA views, the display rules of `crates/domain`, and read-only API responses, unless they expose location or the VIN. A class does not waive a required check.
 - **Phase scope (ADR 0009):** the ingest path and the raw storage are live. The web phase has started: these parts of `docs/stack-web-profile.md` are binding: §1 Frontend, §2.1, §2.4, §2.5, the web rows of §4, §11, and the pnpm, TypeScript, Oxlint, Vitest, and Playwright parts of §3, §6, and §14. The derived periods (drives, charges, parked) come later. The general text of the other sections in `docs/stack-web-profile.md` binds all code wherever the code has that concern; read the section when a change touches its topic.
 - **Shape:** a monorepo with two Railway services. The service `telemetry` runs one image with Tesla's `fleet-telemetry` server (upstream Go binary) and the Rust ingest process, which supervises it and writes the records to PostgreSQL (ADR 0001). The service `telemetry-web` runs one image with the Rust web server and the built SPA on one origin (ADR 0010). The application server uses Rust (ADR 0009).
 
@@ -242,9 +242,15 @@ action is pinned to a full commit SHA. `image-check` pushes no image and
 has no secret and no database. A `pull_request` run tests the merge with
 the base.
 
-Merge conditions (`CLAUDE.md`, ADR 0008):
+Merge conditions (`CLAUDE.md`, ADR 0008, ADR 0016):
 
-- The local `mise run verify` on the version to be merged.
+- One local `mise run verify` on the version to be merged, integrated with
+  the current base: by the reviewer for a high-class change, otherwise by
+  the lead (`DOCTRINE.md` P9). Before review, the implementer runs the fast
+  checks and the tests of the changed parts (for example `mise run checks`
+  and `cargo nextest run` of the changed crates). For a change of database
+  code, migrations, queries, roles, or `.sqlx/`, the implementer also runs
+  `mise run sqlx-check` and the database tests with `TEST_DATABASE_URL`.
 - A green `ci` job for the current head. When the base changes after the
   run, update the PR branch so that a new run tests the current base.
 - A green `image-check` job of the current head for a change of an image
@@ -336,11 +342,9 @@ other rows name the slice that can measure them.
 | Initial bundle | JS ≤ 200 KB and CSS ≤ 30 KB, gzip, the files that `index.html` references | JS 131,619 B, CSS 1,009 B (S1 shell, macOS arm64, 27 November 2026) | `scripts/bundle-size.sh` in `build` |
 | Web image | ≤ 100 MB compressed (`docker save` with gzip) | Printed by `image-check-web.sh` in CI | `image-check-web.sh` fails above the budget |
 | Startup to `/health` | ≤ 1 s, release image on linux/amd64 | Printed in whole seconds (container start included) by `image-check-web.sh` in CI | Not a gate: the script waits at most 30 s |
-| Battery API, warm | p95 ≤ 1 s for 24h to 30d, ≤ 2 s for 90d and 1y | Not measured | Owned by S3 |
 | Battery API, cold Neon | ≤ 8 s total | Not measured | Owned by S3 (experiment E3) |
-| Login | p95 ≤ 1 s with the Argon2 parameters of S2 | Not measured | Owned by S2 |
 | Resident memory | steady ≤ 128 MiB, peak ≤ 256 MiB | Not measured | Railway metrics after the release |
-| Concurrency | database requests ≤ 2, Argon2 ≤ 1 | Not applicable in S1 | Owned by S2 and S3 |
+| Concurrency | Argon2 ≤ 1 | Not applicable in S1 | Owned by S2 |
 | Lab experience | LCP ≤ 2.5 s, CLS ≤ 0.1 (Chromium, mobile viewport, 4× CPU slowdown); no field data | Not measured | Owned by S4 |
 | Web use of Neon | ≤ 10 CU-hours each month | Not applicable in S1 (no database) | Owned by S3 |
 
@@ -487,7 +491,7 @@ justified lossless operations need no blanket ban.
 
 ## 8. Logging & privacy
 
-tracing with the tracing-subscriber JSON formatter only (§13, ADR 0009).
+tracing with the tracing-subscriber JSON formatter only (ADR 0009).
 Allowlist the fields of events and spans. No automatic Debug output of
 arguments, configuration, headers, or payloads. Redact secret types and
 test the redaction. Carry safe correlation through spans. Create a request
@@ -582,7 +586,6 @@ approval.
 | §3: no scan of the builder image `rust:<version>-slim-trixie` | A compiler or linker vulnerability that changes the binary is not found by a scanner. | The tag is pinned (`<channel of rust-toolchain.toml>-slim-<Debian codename of the final stage>`; no check holds this form); `deps` prints the newest tag; `image-check` runs the binary; manual KEV comparison. | ADR 0005 | A scanner of the built image in CI; a build-stage advisory in CISA KEV; a change of the builder image. |
 | §3: no scan of the test-only CI image `postgres:18.7-trixie` | A vulnerability in that image is not found by a scanner. | It runs only on the CI runner, with test data, no secret, and on loopback. | ADR 0005 | The image is used outside CI. |
 | §3, §14: Gitleaks 8.30.1 contains the brotli decoder of CVE-2026-111497 (CISA KEV) | A scan into archives, or another Gitleaks version, can run the decoder on fork input: a denial of service of the scan. | The scan reads no archive content (depth 0); `scripts/gitleaks-guard.sh` in `checks` fails on the literal archive depth flag in any tracked file (also a binary one), on a `git grep` error, and on a version other than 8.30.1; ADR 0011 lists the known limits. | ADR 0011 | A Gitleaks release with brotli 1.2.7 or later; any Gitleaks version change; a need to scan archives; or by 2027-01-25. |
-| §8: no readable development formatter (ingest and web server) | Developers read the logs with `jq`. | The JSON formatters and their redaction tests (`crates/ingest/src/logging.rs`, `crates/server/src/logging.rs`). | ADR 0009, ADR 0010 | A developer workflow needs readable logs. |
 | §1, §14: runtime tests on linux/amd64 before merge | A Linux-only fault in the container, as PID 1, behind the Railway proxy, or in a test that needs Neon shows only after deployment. | The Linux checks 1 to 6 of ADR 0001 ("To verify at first deployment"): CI, `image-check`, and the Railway checks of `docs/ingest-release.md`. Open: check 3 on Railway, check 4, and check 5. | ADR 0008 | Ends when the release records checks 1 to 5 and check 6 has CI evidence. Reassess on 2027-02-28 if open, and when CI can run the tests that need Neon. |
 | §14: build and test of the ingest image before merge | The Railway build, settings, proxy, and healthcheck are unverified before the merge. | A green `image-check` job of the PR head; the post-release checks and the recovery of `docs/ingest-release.md`. | ADR 0008 | Railway documents its Dockerfile build, or the Railway builder can run before the merge. |
 | Web profile §2.1: TypeScript 6.0.3 for the generator | Two TypeScript versions in the lockfile; the generator runs on the older compiler API. | Only `telemetry-web-api-client` resolves it (dev dependency, `pnpm why`); every type check runs TypeScript 7.0.2; `contract-check` compares the output. | ADR 0010 | A Hey API release that supports TypeScript 7. |
@@ -601,8 +604,8 @@ local run does not replace CI; neither is a branch protection rule. Assign
 each check to before merge or after release: missing pre-merge evidence
 blocks the merge; missing post-release evidence blocks a claim of a
 successful release. A future production deployment is not required to
-approve its PR. `DOCTRINE.md` P9 states when the reviewer runs its own
-full verification.
+approve its PR. `DOCTRINE.md` P9 states who runs the one full
+verification.
 
 | Doctrine / applicability | Required evidence | Environment / gap |
 | ------------------------ | ----------------- | ----------------- |
@@ -611,7 +614,7 @@ full verification.
 | P5–P6: data meaning | Conversion and property or challenge cases; partial versus atomic failure tests | Preserve missing, null, and zero, units, precision, and uncertainty |
 | P5–P7: storage | Migrated-schema metadata check; constraint, competing-write, and upgrade tests; production and test server versions | §5. The tests that need Neon and the Neon TLS path have no Linux evidence before deployment (§13). Restore is not tested. |
 | P3, P7: security | Named scanner results and privacy checks | Scanners do not prove authorization |
-| P6, P7: release and platform | Before merge: `verify`, green `ci`, and for an image input a green `image-check`; after release: identity, health, and smoke evidence | A local build is not a verified deployment (§13) |
+| P6, P7: release and platform | During development: the fast checks and the tests of the changed parts. Before review: green `ci`. Before merge: one `verify` of the merged version on the current base (P9), green `ci`, and for an image input a green `image-check`; after release: identity, health, and smoke evidence | A local build is not a verified deployment (§13) |
 | P8–P9: material changes | Current docs, ADRs, independent review; independent integrated verification where P9 requires it | Separate reviewer context; exact tested revisions |
 
 ### Check configuration

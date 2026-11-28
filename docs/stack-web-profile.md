@@ -37,7 +37,7 @@ It does not grant authority beyond the adopted project contract.
 ## 0. Project shape: web parts
 
 - **Critical execution paths:** server request decode, domain conversion, use case, and response; browser route, query/client boundary, view model, and render. Blocking work must not stall async I/O or the browser main thread.
-- **Applicable UI states:** initial loading, success, empty, stale usable data with refresh failure, unavailable data, offline, denied access, and product-specific states.
+- **Applicable UI states:** the states of `VISION.md` (Product Shape).
 - **Intended use:** interactive web applications. Durable data, accounts, background jobs, and real-time connections depend on `VISION.md`; they are not mandatory product features.
 - **Reassessment:** SEO-first, SSR-required, or offline-first products need an adapted design. A small integration or CRUD product may cost less to maintain as one TypeScript system; record the product reason for Rust.
 
@@ -136,10 +136,9 @@ set; pinning its package version alone does not prove reproducible tool builds.
 2. Export to an explicit file path without production configuration, a database connection, or pre-built SPA assets. SQLx macro compilation uses committed offline metadata where applicable.
 3. Generate the SDK, wire types, and Zod validators from the local specification into `packages/api-client`. No hosted generation service is required.
 4. Commit the OpenAPI document and generated client artifacts. Pin the generator and plugins. `contract:check` regenerates in scratch space and compares complete trees, including added/deleted files. It MUST NOT repair the working tree. A plain tracked-file diff is insufficient.
-5. Enable runtime validation explicitly in the executed client path. Test rejection of an invalid success response and separately test error-body validation. A generated unused schema is not protection.
-6. Test real responses from changed operations against the declared contract: status, content type, body, and failure paths. Keep expected outcomes traced to requirements, not only to the same generator.
+5. For a high-class route (`DOCTRINE.md`, introduction) and for problem bodies, enable runtime validation in the executed client path. Test rejection of an invalid success response and separately test error-body validation. A generated unused schema is not protection. A read-only data response MAY rely on the generated types only.
+6. Test real responses from changed high-class operations against the declared contract: status, content type, body, and failure paths. Keep expected outcomes traced to requirements, not only to the same generator.
 7. Define handling of optional/null fields, unknown fields and enum values, tagged unions, numeric bounds, and temporal precision. Do not silently coerce or invent facts.
-8. Preserve a declared client/server compatibility window. An old browser tab remains an old client after a combined deployment. Define safe upgrade behaviour that preserves unsaved input.
 
 Generator configuration, checked with Hey API 0.99:
 
@@ -195,8 +194,7 @@ before other code sees it.
 | Durable business data                     | Backend and selected storage    |
 
 Set stale times, refetch triggers, retries, and cache lifetimes explicitly.
-Scope query keys/data to authorization context. Remove or isolate cached data
-on logout and tenant changes. Forward cancellation signals where supported;
+Remove cached data on logout. Forward cancellation signals where supported;
 client cancellation does not prove server-side rollback. Avoid copying query
 data into another global store. Use typed view states rather than unrelated
 optional flags. A failed fetch MUST NOT become an empty successful result.
@@ -383,9 +381,8 @@ state frameworks require a current reason rather than an automatic prohibition.
 
 ## 8. Logging & privacy
 
-Use tracing with tracing-subscriber JSON output in production and a readable
-development formatter. Carry safe request correlation through async spans.
-Allowlist fields. Apply the allowlist to span fields as well as event fields,
+Use tracing with tracing-subscriber JSON output. Carry safe request
+correlation through async spans. Allowlist fields. Apply the allowlist to span fields as well as event fields,
 because request correlation puts data on spans. Avoid automatic Debug output of complete arguments, DTOs,
 configuration, headers, and payloads. Redact secret types and test redaction.
 Create the request identifier inside the panic containment of the request: a
@@ -393,10 +390,8 @@ random identifier generator can panic when the operating system gives no
 random bytes. Work that several requests share has no single request
 identifier; record that gap instead of borrowing the first caller's span.
 
-Define diagnostic access, retention, cardinality, and resource limits. Select
-a browser diagnostic mechanism explicitly; the Rust logger does not cover
-browser failures. No external crash reporter or telemetry exporter is enabled
-by default. Assess new data flows and obtain required authority before adding
+Define diagnostic access, retention, cardinality, and resource limits. No
+external crash reporter or telemetry exporter is enabled by default. Assess new data flows and obtain required authority before adding
 one. Keep secrets out of source history, images, generated files, and browser
 bundles. Validate configuration in one startup boundary.
 
@@ -454,9 +449,10 @@ may use other libraries; their presence does not require rewriting them.
 ## 11. Design guidelines & UX thresholds
 
 - **Design authority:** WCAG 2.2 AA and native HTML semantics. Semantic elements first; ARIA only where needed.
-- **Thresholds:** exercise text contrast at 4.5:1 for normal text and 3:1 for large text; pointer targets at the WCAG 2.5.8 24 by 24 CSS pixel threshold or a documented applicable exception; visible keyboard focus on interactive elements.
+- **Thresholds:** visible keyboard focus on interactive elements. The axe check of each page covers text contrast and target size; other contrast and target checks are optional.
 - **Inputs:** full keyboard operability, sensible DOM/focus order, accessible names, and announced validation/error states.
-- **Browser evidence:** Playwright journeys against the release service, axe checks on critical pages/states, and keyboard-only operation. Declare supported browsers and viewports.
+- **Browser evidence:** Playwright journeys against the release service, one axe check for each page, and keyboard-only operation. Declare supported browsers and viewports.
+- **View states:** test each state of `VISION.md` once for each view in Vitest, through the view model. Playwright covers one journey for each view: the data state and one failure state.
 - **Deterministic journeys:** when the service depends on external sources, run the journeys in `verify` against a test server binary that mounts the real router, the real middleware, and the built SPA with fake adapters for the external sources. A journey against live external services is a separate live check, not part of `verify`.
 
 A component or CSS library does not prove conformance. Automated checks miss
@@ -501,16 +497,16 @@ remain in GitHub.
 ## 14. Applicability and evidence: profile text
 
 Complete local environments, command wiring, scanner policies, and existing
-required CI checks on adoption. Run required tests and the full `$VERIFY_CMD`
-locally on the version to be merged against the current integration base.
-Missing or failed mandatory local evidence blocks merge. Existing required
-CI must also pass; CI itself is optional under P6. Never bypass existing gates.
+required CI checks on adoption. Run the full `$VERIFY_CMD` locally once on
+the version to be merged, integrated with the current base; `DOCTRINE.md` P9
+names who runs it. Missing or failed mandatory local evidence blocks merge.
+Existing required CI must also pass; CI itself is optional under P6. Never bypass existing gates.
 
 Assign each check to before merge or after release. Missing pre-merge evidence
 blocks merge; missing post-release evidence prevents claiming a successful
 release. A future production deployment is not required to approve its PR.
-DOCTRINE.md P9 states when the independent reviewer runs its own full
-verification and what it records.
+DOCTRINE.md P9 states who runs the full verification and what the reviewer
+records.
 
 Retain commands, safe fixtures or reconstruction steps, expected outcomes and
 their original sources, versions, environments, and results. Challenge material
@@ -544,24 +540,8 @@ surfaces. External audit endpoints may receive dependency metadata; assess the
 data flow and obtain required authorization before using a new provider.
 An unavailable scanner is a gap, not a pass. Property tests, mutation analysis,
 snapshots, and coverage address named risks; scores do not replace correctness.
+Mutation analysis is for high-class surfaces only.
 Do not accept snapshots without reviewing their expected meaning.
-
-### Adoption trial
-
-Before calling the application profile validated, retain evidence for:
-
-1. A browser request through the generated client, Rust conversion, and a real domain rule.
-2. SQLx persistence where applicable, including data constraints and query checks.
-3. Invalid input rejected through the public problem contract.
-4. A deliberately invalid success response and an invalid error body rejected safely by the client.
-5. Concurrent changes, repeated writes, cancellation, and shutdown behaviour relevant to the product.
-6. Migration from a supported prior schema and a tested recovery path where persistence applies.
-7. Full verification from a clean checkout with isolated services and pinned tools.
-8. The actual deployment-target artifact and a critical browser smoke journey.
-
-An item may be not applicable with a reason tied to product purpose. An
-unsupported tool is not an applicability exemption. Identify what static
-checks, the trial, and agent reviews still do not prove.
 
 ### Live checks of external sources
 
@@ -578,7 +558,7 @@ live check with a user's credential unless the owner runs it.
 - **Configuration:** validate settings at startup, with safe diagnostics on failure. Secrets come from the declared secret mechanism, not the image or frontend bundle.
 - **Migrations:** run the declared SQLx migration step before routing traffic to code that needs it. Maintain compatibility with still-running versions. Perform destructive contract steps only under approved policy after compatibility is no longer required.
 - **Observe:** expose a safe version identifier, liveness, and dependency-aware readiness. Verify expected deployed revision/digest, health, and one critical journey. Define observation duration, diagnostic source, latency/error/resource signals, and readiness behaviour during dependency failure.
-- **Compatibility:** declare the old-client support window and a safe upgrade path. An automatic reload alone does not preserve unsaved input or prove compatibility. Confirm Jiff timezone data source and update behaviour.
+- **Time zone data:** confirm the Jiff timezone data source and update behaviour.
 - **Recover:** keep a known working image and use a declared rollback or roll-forward command. Confirm schema compatibility before rolling back code. Test data restoration; a backup file or a down migration alone is not recovery evidence.
 - **Data:** document each store's purpose, retention, deletion policy, credentials, and access boundary. Cache removal is not recovery for durable data.
 - **Maintenance:** apply `DOCTRINE.md` P7. Record each infrastructure component, for example a database, cache, message broker, object storage, or container base image, with its version in each environment. Keep test and production on the same major version. Set pnpm `minimumReleaseAge` (for example 1440 minutes). Exclude a version from it only for a security fix. Cargo has the same minimum release age of 1440 minutes (ADR 0006): a crate release that is younger is not due in the dependency freshness check (§3), except a security fix. Review toolchain and dependency upgrades with the same evidence rules. Utoipa and Hey API need integration checks, not mandatory simultaneous upgrades. Recheck session adapters and pre-1.0 library compatibility when affected.

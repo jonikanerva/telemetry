@@ -8,6 +8,18 @@ Apply P1–P9 from technology selection through maintenance. Scale the evidence
 to uncertainty and the consequences of failure. Passing checks is necessary
 where required. It does not establish that the right problem was solved.
 
+Each changed surface has one of two risk classes. The high class covers
+harm that is hard to reverse: the ingest data path (ingest, gate, queue,
+writer), secrets and access control (login, sessions, TLS, privileges),
+the privacy of location and the VIN, the vehicle telemetry configuration
+and the Tesla usage, the database schema and roles, the vulnerability
+tooling, and the release path (image, entrypoint, Railway settings, CI
+gates). Every other surface has the light class, for example a read-only
+view, a chart, or a derived display value. The changed surface sets the
+class, not the file type. In a mixed change, only the affected part has the
+high class. Light-class work uses the simplest solution that works and at
+most one review round. The next release corrects a wrong light-class result.
+
 MUST and MUST NOT define requirements. SHOULD defines a default that needs a
 reason to depart from. MAY permits a choice within established authority.
 Derive concrete checks from these principles in `STACK.md`. State their
@@ -23,6 +35,11 @@ material constraints, and important failure cases. Use the existing issue or
 task summary, then preserve the criteria in the PR. A small task needs only a
 short record. Trace derived criteria to the original request or source
 evidence. Distinguish given requirements, observed facts, and assumptions.
+Before the work starts, the lead states the expected size of the slice:
+the files that it touches and the review rounds. When a slice reaches a
+third review round or grows well past the estimate, the lead stops and asks
+the owner to choose: simplify, continue, or drop. The lead does not start
+that round by itself.
 
 Resolve uncertainty that could change the solution. Use bounded experiments
 when they can answer the question. Proceed without a new approval when the
@@ -71,6 +88,8 @@ class. Add prose rules only when a stronger mechanism is not practical.
 ## P4. Evolve architecture with understanding
 
 Choose the simplest structure that meets current needs and quality criteria.
+Time, machine resources, and review rounds are costs. When two solutions
+meet the need, choose the one that is cheaper to build and verify.
 Declare responsibilities, interfaces, and permitted dependency directions.
 Use ecosystem conventions. Enforce important boundaries mechanically where
 possible. A fixed layer count or framework-free domain is not universal.
@@ -126,8 +145,10 @@ among valid items and the whole-operation failure where each can occur.
 ## P6. Demonstrate quality and challenge the evidence
 
 Derive checks from acceptance criteria and risks. Automate verification where
-practical. Run required project tests and `$VERIFY_CMD` locally before merge
-on the version to be merged and the current integration base. Missing or
+practical. During development, run the fast checks and the tests of the
+changed parts (`STACK.md` §3). Before merge, run `$VERIFY_CMD` locally once
+on the version to be merged, integrated with the current base; P9 names who
+runs it. Missing or
 failed mandatory local checks block merge. Existing required CI checks must
 also pass and must not be bypassed. CI is optional: its absence does not block
 autonomous merge when local verification and other acceptance conditions pass.
@@ -247,14 +268,16 @@ clause.
 Keep backlog and change history in GitHub issues, commits, PRs, and reviews.
 Do not create roadmap, backlog, ledger, or changelog files. Only ADRs in
 `docs/adr/` record dates, context, deciders, and rejected alternatives; they
-do not narrate review rounds or how a fact was found. A significant durable
-decision gets a short ADR: an owner decision, an accepted risk, a grant of
-authority to the lead, an architecture choice, or a scoped exception. Each
+do not narrate review rounds or how a fact was found. A short ADR records
+only a decision that is hard to reverse, an owner decision, an accepted
+risk, a grant of authority to the lead, or a scoped exception. The commit
+message holds the reason of any other choice. Each
 ADR states status, context, decision, key alternatives, consequences, cost
 of reversal, and a reassessment condition. `STACK.md` cites that ADR, and
-cited text changes only through a change of the ADR. A routine choice, such
-as a version pin or a CI detail, needs no ADR; its commit message holds the
-reason. Mark superseded decisions and retain their rationale.
+cited text changes only through a change of the ADR. Mark superseded
+decisions and retain their rationale. A document states only what a reader
+needs to operate or change the system. No text is better than text that
+review must keep true.
 Search ADR titles and read relevant records as needed, including known fixes.
 Do not load the whole decision history for every task.
 
@@ -282,24 +305,33 @@ derived criteria and assumptions against the original task and source evidence.
 Review tests and exceptions too. Challenge critical assumptions. Agreement
 among agents is not evidence of correctness.
 
-Apply this boundary by impact, not file type. A typo, clarifying documentation,
-or another low-impact change does not require a separate reviewer unless the
-owner or local rules require it. Required automated checks still apply.
+A blocking finding is a defect in behaviour, privacy, or data, a broken
+owner rule, or a failed or missing required check. A false or stale
+statement in a document or comment, a missing test of a low-risk branch,
+and a hardening idea do not block. The lead has them fixed and checks the
+delta itself, without a new review round. Mutation tables, history tables,
+and a line-by-line reading are tools for the high class, not default
+demands.
 
-The reviewer's own verification run is required only for a change to the data
-path (ingest, gate, queue, writer), the database schema or roles, security (secrets,
-access, TLS, privileges, the vulnerability tooling), or the release path
-(image, entrypoint, Railway settings, CI gates). For such a change, the
-reviewer must run the full `$VERIFY_CMD` and required tests on the PR head
-integrated with the current base in an isolated checkout before PASS.
-Record both input revisions and the tested integration commit or tree. A
-missing or failed independent run is FAIL; the implementer's report cannot
-replace it. Reuse of other evidence under P6 does not waive this run.
-Other material changes still need independent review in a separate context,
-but the reviewer may rely on the implementer's recorded local `verify`
-evidence and the CI result for the reviewed head. This does not add a
-reviewer to low-impact changes that do not otherwise require independent
-review.
+Apply this boundary by risk class and impact, not file type. A typo,
+clarifying documentation, or another low-impact change does not require a
+separate reviewer unless the owner or local rules require it. Required
+automated checks still apply.
+
+The full `$VERIFY_CMD` runs once for each version to be merged. Before
+review, the implementer runs the fast checks and the tests of the changed
+parts, and waits for a green required CI result. When a change touches
+database code, migrations, queries, roles, or SQLx metadata, the
+implementer also runs the database tests (`STACK.md` §3), because CI does
+not run the tests that need Neon. For a high-class change, the reviewer
+runs the full `$VERIFY_CMD` once, in an isolated clean checkout of the PR
+head integrated with the current base, on the version that it would
+otherwise pass. The reviewer records both input revisions and the tested
+integration commit or tree. A missing or failed run is FAIL; the
+implementer's report cannot replace it. Reuse of other evidence under P6
+does not waive this run. For any other change, the lead, or the implementer
+on the lead's instruction, runs the full `$VERIFY_CMD` once on the
+integrated version before merge.
 
 Verify the integrated result. The lead owns acceptance and release even when
 other agents approve parts. Continue within the agreed goal and authority.
