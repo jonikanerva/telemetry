@@ -1,6 +1,9 @@
 # ADR 0004: Lead authority granted by the owner
 
 - Status: Accepted. Decided by: owner, 26 November 2026.
+  - Decision 1 superseded by ADR 0018 (28 November 2026): the lead may
+    send a config whose estimated usage stays below 8 USD each month in
+    the highest modelled month.
 - Scope: three kinds of change that the lead may make without a separate
   owner approval. `STACK.md` §15 states the current grants.
 
