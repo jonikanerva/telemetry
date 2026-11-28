@@ -38,7 +38,10 @@ run = [
   # The browsers of the Playwright tests. In CI (GitHub sets CI=true), also
   # the system packages that the browsers need.
   "if [ \"${CI:-}\" = true ]; then pnpm exec playwright install --with-deps chromium firefox webkit; else pnpm exec playwright install chromium firefox webkit; fi",
-  "echo 'setup: the database tests need TEST_DATABASE_URL, the URL of the Neon branch test (README.md, Verification).'",
+  # The local test server (scripts/test-postgres.sh): checks Apple
+  # `container` and its service, and pulls the image. CI has no Apple
+  # `container`; there scripts/test-postgres.sh ci starts the server.
+  "if [ \"${CI:-}\" != true ]; then scripts/test-postgres.sh setup; fi",
 ]
 
 [tasks.format]
@@ -79,14 +82,34 @@ description = "Check that the committed contract and client equal a new export a
 run = "scripts/contract-check.sh"
 
 [tasks.test]
-description = "Run all tests and the doctests; the database tests need TEST_DATABASE_URL"
+description = "Run the tests (without the tests that need Neon) and the doctests against a new local test server"
+# scripts/test-postgres.sh starts a server for this run and removes it at
+# the end; inside `verify`, it uses the server of `verify`.
+run = "scripts/test-postgres.sh local -- mise run test-db"
+
+[tasks.test-db]
+description = "Run the tests (without the tests that need Neon) and the doctests against TEST_DATABASE_URL"
+hide = true
+# `test` and the `ci` task use this task. The filter excludes the two role
+# tests that read the membership of the Neon role `neon_superuser`
+# (STACK.md §3); `test-neon` runs exactly these two.
 run = [
   # A missing URL is a failure, not a skipped check (STACK.md §3).
-  "test -n \"${TEST_DATABASE_URL:-}\" || { echo 'test: TEST_DATABASE_URL is not set. Export the URL of the Neon branch test (README.md, Verification).' >&2; exit 1; }",
-  "cargo nextest run --workspace --locked",
-  "cargo nextest run -p telemetry-web-server --locked --features test-server",
+  "test -n \"${TEST_DATABASE_URL:-}\" || { echo 'test-db: TEST_DATABASE_URL is not set. Run mise run test, or in CI scripts/test-postgres.sh ci.' >&2; exit 1; }",
+  "cargo nextest run --workspace --locked --no-fail-fast -E 'not (binary_id(ingest::storage) and (test(=roles::the_roles_get_the_privileges_of_adr_0002) or test(=roles::the_role_script_is_idempotent)))'",
+  "cargo nextest run -p telemetry-web-server --locked --no-fail-fast --features test-server",
   { task = "doctest" },
   { task = "test-web" },
+]
+
+[tasks.test-neon]
+description = "Run the tests that need Neon against the Neon branch test (NEON_TEST_DATABASE_URL)"
+# Not part of `verify` (STACK.md §3, ADR 0017). Run it after a change of
+# crates/ingest/src/storage/, db/, migrations/, or a TLS crate in
+# Cargo.lock, and before an ingest release.
+run = [
+  "test -n \"${NEON_TEST_DATABASE_URL:-}\" || { echo 'test-neon: NEON_TEST_DATABASE_URL is not set. Export the URL of the Neon branch test (README.md, Verification).' >&2; exit 1; }",
+  "TEST_DATABASE_URL=\"$NEON_TEST_DATABASE_URL\" TEST_POSTGRES_SERVER= cargo nextest run -p ingest --locked --no-fail-fast -E 'binary_id(ingest::storage) and (test(=roles::the_roles_get_the_privileges_of_adr_0002) or test(=roles::the_role_script_is_idempotent))'",
 ]
 
 [tasks.test-web]
@@ -98,22 +121,6 @@ run = [
   "cargo build --locked -p telemetry-web-server --features test-server",
   "pnpm run build:web",
   "pnpm run test:e2e",
-]
-
-[tasks.test-ci]
-description = "Run the tests of CI against the PostgreSQL server of the runner, and the doctests"
-# Only the `ci` task uses this task; `verify` uses `test`, which runs all
-# tests against the Neon branch `test`. scripts/ci-postgres.sh sets
-# TEST_DATABASE_URL. The filter excludes the database tests that need Neon
-# (STACK.md §3): the end-to-end tests of `tests/storage/pipeline.rs` (the
-# binary trusts only the Mozilla roots, not the test CA), and the two role
-# tests that read the membership of the Neon role `neon_superuser`.
-run = [
-  "test -n \"${TEST_DATABASE_URL:-}\" || { echo 'test-ci: TEST_DATABASE_URL is not set. In CI, scripts/ci-postgres.sh sets it.' >&2; exit 1; }",
-  "cargo nextest run --workspace --locked --no-fail-fast -E 'not (binary_id(ingest::storage) and (test(/^pipeline::/) or test(=roles::the_roles_get_the_privileges_of_adr_0002) or test(=roles::the_role_script_is_idempotent)))'",
-  "cargo nextest run -p telemetry-web-server --locked --no-fail-fast --features test-server",
-  { task = "doctest" },
-  { task = "test-web" },
 ]
 
 [tasks.doctest]
@@ -138,6 +145,10 @@ run = [
   "jq empty ingest/server_config.json config/telemetry_config.json contract/openapi.json",
   "sh -n ingest/entrypoint.sh",
   "sh -n scripts/sqlx-metadata.sh",
+  "sh -n scripts/test-postgres.sh",
+  "sh -n scripts/test-postgres-test.sh",
+  # The clean-up rules of the test server script, with stub programs.
+  "sh scripts/test-postgres-test.sh",
   "sh -n scripts/image-check.sh",
   "sh -n scripts/image-check-web.sh",
   "sh -n scripts/contract-check.sh",
@@ -148,40 +159,40 @@ run = [
 
 [tasks.sqlx-check]
 description = "Check the committed SQLx query metadata against a migrated, isolated test database"
-run = "scripts/sqlx-metadata.sh check"
+run = "scripts/test-postgres.sh local -- scripts/sqlx-metadata.sh check"
 
 [tasks.sqlx-prepare]
 description = "Write the SQLx query metadata in crates/<crate>/.sqlx/ after a query or migration change"
-run = "scripts/sqlx-metadata.sh prepare"
+run = "scripts/test-postgres.sh local -- scripts/sqlx-metadata.sh prepare"
 
 [tasks.verify]
 description = "Run every required local check; stops at the first failure"
+# One local test server for the SQLx check and the tests
+# (scripts/test-postgres.sh). The nested calls of `sqlx-check` and `test`
+# use it.
 run = [
-  "test -n \"${TEST_DATABASE_URL:-}\" || { echo 'verify: TEST_DATABASE_URL is not set. Export the URL of the Neon branch test (README.md, Verification).' >&2; exit 1; }",
   { task = "checks" },
-  { task = "sqlx-check" },
   { task = "build" },
-  { task = "test" },
+  "scripts/test-postgres.sh local -- sh -c 'mise run sqlx-check && mise run test'",
 ]
 
 [tasks.ci]
 description = "Run the checks of the GitHub Actions workflow; stops at the first failure"
-# The same checks as `verify`, against the PostgreSQL server of the runner
-# instead of Neon, without the tests that need Neon (STACK.md §3). `ci`
+# The same checks as `verify`, against the server that
+# `scripts/test-postgres.sh ci` starts on the runner (STACK.md §3). `ci`
 # does not replace the local `verify`.
 run = [
   { task = "checks" },
-  { task = "sqlx-check" },
+  "scripts/sqlx-metadata.sh check",
   { task = "build" },
-  { task = "test-ci" },
+  { task = "test-db" },
 ]
 
 [tasks.image-check]
 description = "Build the ingest image and the web image and check each running container (needs Docker; the CI job image-check runs it)"
-# STACK.md §3. The development machine has no container runtime, so this
-# task runs in CI on linux/amd64. It pushes no image and uses no secret.
-# Each script has its own containers, ports, and cleanup. The task stops
-# at the first failure.
+# STACK.md §3. The task needs Docker, so it runs in CI on linux/amd64.
+# It pushes no image and uses no secret. Each script has its own
+# containers, ports, and cleanup. The task stops at the first failure.
 run = ["scripts/image-check.sh", "scripts/image-check-web.sh"]
 
 [tasks.deps]
@@ -240,6 +251,15 @@ run = [
   printf '%s\n' "$outdated" | jq -r 'to_entries[] | "outdated JS package: \(.key) \(.value.current) (latest: \(.value.latest), \(.value.dependencyType))"'
   ''',
   "curl -fsS https://deb.debian.org/debian/dists/stable/Release | grep -E '^(Codename|Version):'",
+  # Apple `container` of the local test server (scripts/test-postgres.sh):
+  # mise cannot pin it, so the task prints the installed version and the
+  # newest release tag (STACK.md §15).
+  '''
+  installed="$(container --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p')"
+  latest="$(git ls-remote --tags https://github.com/apple/container | sed -n 's#^[0-9a-f]*[[:space:]]refs/tags/\([0-9]*[.][0-9]*[.][0-9]*\)$#\1#p' | sort -V | tail -1)"
+  [ -n "$latest" ] || { echo "deps: cannot read the apple/container tags"; exit 1; }
+  echo "Apple container: installed ${installed:-none}; latest release: $latest"
+  ''',
   # Pins of the CI workflow (STACK.md §15): each action, the mise version,
   # and the runner label, with the newest release tags. git ls-remote reads
   # the public tags; no token is needed. The step fails when it cannot read a tag

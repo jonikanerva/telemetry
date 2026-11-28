@@ -5,7 +5,8 @@
   "Lead decisions"). Amended by the storage change (issue #12): column
   types of the wire numbers, keys of unknown length, the topic as bytes,
   data errors through the batch split, the privileges through default
-  privileges, and the measured size.
+  privileges, and the measured size. Partly superseded by ADR 0017: the
+  location of the tests in "Test databases".
 - Scope: the PostgreSQL schema for raw records, the database roles, and the
   migration step. ADR 0001 owns the path to the database.
 
@@ -451,6 +452,11 @@ cannot create objects in `raw` or `public`.
   approval when it deletes data.
 
 ### Test databases
+
+> Superseded in part by ADR 0017 (28 November 2026). The local tests and
+> CI use a local PostgreSQL test server. Only the tests that need Neon use
+> the Neon branch `test` (`mise run test-neon`). The rules on schemas,
+> roles, guards, and the budget of the branch stay in force for that use.
 
 - Tests that need PostgreSQL use the Neon branch `test` of project
   `telemetry`. The lead created it on 26 November 2026 from `production`,

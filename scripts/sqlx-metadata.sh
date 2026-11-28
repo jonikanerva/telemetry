@@ -1,7 +1,7 @@
 #!/bin/sh
 # Checks or writes the SQLx query metadata against a migrated, isolated
-# database (STACK.md §3 and §5): on the Neon branch `test` locally, on the
-# PostgreSQL server of the runner in CI. Each crate that depends on SQLx
+# database (STACK.md §3 and §5): on the test server of
+# `scripts/test-postgres.sh` (local or CI). Each crate that depends on SQLx
 # keeps its own metadata in `crates/<crate>/.sqlx/`. The script runs
 # `cargo sqlx prepare [--check]` once in the directory of each such crate,
 # without `--workspace`, so that each image build reads only the metadata
@@ -11,8 +11,8 @@
 #   scripts/sqlx-metadata.sh prepare   # writes the metadata after a query change
 #
 # The script needs Cargo, the SQLx CLI, and jq (the pins of mise.toml).
-# TEST_DATABASE_URL must point to the test database (README.md,
-# "Verification"; in CI, `scripts/ci-postgres.sh` sets it). The script:
+# TEST_DATABASE_URL must point to the test database; `mise run sqlx-check`
+# starts a local test server and sets it (README.md, "Verification"). The script:
 #
 # 1. refuses the production endpoint;
 # 2. refuses a `.sqlx/` directory at the workspace root: the macros read
@@ -37,7 +37,7 @@ case $mode in
 esac
 
 if [ -z "${TEST_DATABASE_URL:-}" ]; then
-  echo "sqlx-metadata: TEST_DATABASE_URL is not set. Export the URL of the test database (README.md, Verification)." >&2
+  echo "sqlx-metadata: TEST_DATABASE_URL is not set. Run mise run sqlx-check, which starts a local test server (README.md, Verification)." >&2
   exit 1
 fi
 # Host names are case-insensitive, so compare in lower case.
@@ -82,7 +82,7 @@ export DATABASE_URL
 
 cleanup() {
   if ! sqlx database drop --no-dotenv -y --force >/dev/null 2>&1; then
-    echo "sqlx-metadata: could not drop database $name; the test sweep drops it after 6 hours" >&2
+    echo "sqlx-metadata: could not drop database $name; it goes away with the test server" >&2
   fi
 }
 trap cleanup EXIT
