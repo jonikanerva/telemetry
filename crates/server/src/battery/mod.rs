@@ -41,6 +41,7 @@ use self::postgres::{DatabaseOptions, PostgresSource};
 use self::source::BatterySource;
 use crate::app::AppState;
 use crate::config::{ConfigError, Vars};
+use crate::consumption;
 
 /// The variable of the database URL of the role `telemetry_web`.
 pub const DATABASE_URL: &str = "DATABASE_URL";
@@ -107,16 +108,25 @@ pub struct State {
 }
 
 impl State {
-    /// The state of `serve`.
+    /// The states of `serve`: the battery API and the consumption API
+    /// share one source, so they share its read slots.
     #[must_use]
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &Config) -> (Self, consumption::State) {
         match config {
             Config::Database(options) => {
-                Self::with_source(Arc::new(PostgresSource::new((**options).clone())))
+                let source = Arc::new(PostgresSource::new((**options).clone()));
+                (
+                    Self::with_source(source.clone()),
+                    consumption::State::with_source(source),
+                )
             }
             #[cfg(feature = "test-server")]
             Config::Scenarios(dir) => {
-                Self::with_source(Arc::new(fake::FakeSource::new(dir.clone())))
+                let source = Arc::new(fake::FakeSource::new(dir.clone()));
+                (
+                    Self::with_source(source.clone()),
+                    consumption::State::with_source(source),
+                )
             }
         }
     }
@@ -144,15 +154,19 @@ impl FromRef<AppState> for State {
 /// without `DATABASE_URL`, else the database.
 #[cfg(feature = "test-server")]
 #[must_use]
-pub fn test_state(config: &Config) -> State {
+pub fn test_state(config: &Config) -> (State, consumption::State) {
     State::new(config)
 }
 
-/// The state of the unit tests of the router (`crate::app`): a source
+/// The states of the unit tests of the router (`crate::app`): a source
 /// that is never reached in those tests answers `internal_error`.
 #[cfg(test)]
-pub(crate) fn unit_test_state() -> State {
-    State::with_source(Arc::new(tests::Unreachable))
+pub(crate) fn unit_test_state() -> (State, consumption::State) {
+    let source = Arc::new(tests::Unreachable);
+    (
+        State::with_source(source.clone()),
+        consumption::State::with_source(source),
+    )
 }
 
 /// The routes of the battery API: `GET /battery` under `/api/v1`.

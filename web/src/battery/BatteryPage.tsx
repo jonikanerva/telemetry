@@ -95,7 +95,7 @@ function ViewBody({ view, range }: { readonly view: BatteryView; readonly range:
 
 // Not a live region: the status line above announces the outcome
 // (refreshStatus), so the failure is announced once.
-function FailureNotice({ reason, title }: { readonly reason: FailureReason; readonly title: string }) {
+export function FailureNotice({ reason, title }: { readonly reason: FailureReason; readonly title: string }) {
   return (
     <div className="notice notice-error" data-testid="failure" data-reason={reason}>
       <p className="notice-title">{title}</p>

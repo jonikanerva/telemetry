@@ -214,9 +214,164 @@ export type Connection = {
 };
 
 /**
+ * The range of a response.
+ */
+export type ConsumptionRange = {
+    /**
+     * The start, inclusive (server clock).
+     */
+    from: Instant;
+    /**
+     * The requested range.
+     */
+    key: RangeKey;
+    /**
+     * The end, exclusive (server clock). Equal to `generated_at`.
+     */
+    to: Instant;
+};
+
+/**
+ * The totals of the ended drives of the range. `distance`,
+ * `energy_used`, and `consumption` cover the same drives: those with a
+ * consumption value.
+ */
+export type ConsumptionTotals = {
+    /**
+     * The energy over the distance of the same drives.
+     */
+    consumption: number | null;
+    /**
+     * The distance of the drives with a consumption, or `null` without one.
+     */
+    distance: number | null;
+    /**
+     * The ended drives.
+     */
+    drives: number;
+    /**
+     * The ended drives without a consumption value.
+     */
+    drives_without_consumption: number;
+    /**
+     * The energy of the same drives.
+     */
+    energy_used: number | null;
+};
+
+/**
+ * Watt-hours for each kilometre.
+ */
+export type ConsumptionUnit = 'Wh/km';
+
+/**
+ * The units of the quantities. Each has one value.
+ */
+export type ConsumptionUnits = {
+    /**
+     * The consumption.
+     */
+    consumption: ConsumptionUnit;
+    /**
+     * The distance: miles, as the vehicle sends the Odometer.
+     */
+    distance: DistanceUnit;
+    /**
+     * The energy: kWh, as the vehicle sends `EnergyRemaining`.
+     */
+    energy: EnergyUnit;
+    /**
+     * The mean speed.
+     */
+    speed: SpeedUnit;
+    /**
+     * The temperature: °C, an assumption (Tesla states no unit).
+     */
+    temperature: TemperatureUnit;
+};
+
+/**
+ * The body of a successful `GET /api/v1/consumption`.
+ */
+export type ConsumptionView = {
+    /**
+     * The drives that start in the range, newest first. Empty when no
+     * drive exists.
+     */
+    drives: Array<Drive>;
+    /**
+     * The time of the response (server clock). Equal to `range.to`.
+     */
+    generated_at: Instant;
+    /**
+     * The requested range.
+     */
+    range: ConsumptionRange;
+    /**
+     * The totals of the ended drives.
+     */
+    totals: ConsumptionTotals;
+    /**
+     * True when a row limit left out the older drives of the range.
+     */
+    truncated: boolean;
+    /**
+     * The unit of each quantity.
+     */
+    units: ConsumptionUnits;
+};
+
+/**
  * What a gap count counts.
  */
 export type CountUnit = 'records' | 'messages';
+
+/**
+ * Miles.
+ */
+export type DistanceUnit = 'mi';
+
+/**
+ * One drive: from the first R, N, or D after a P to the next P. A `null`
+ * value is unknown, never 0.
+ */
+export type Drive = {
+    /**
+     * The consumption; only for a distance of at least 1 km.
+     */
+    consumption: number | null;
+    /**
+     * The distance (the last minus the first Odometer in the drive).
+     */
+    distance: number | null;
+    /**
+     * The duration in seconds.
+     */
+    duration_seconds: number | null;
+    end: Instant | null;
+    /**
+     * The energy used (the first minus the last `EnergyRemaining` in the
+     * drive). Negative when the battery gained energy.
+     */
+    energy_used: number | null;
+    /**
+     * The mean of the `OutsideTemp` samples in the drive.
+     */
+    mean_outside_temp: number | null;
+    /**
+     * The distance divided by the duration.
+     */
+    mean_speed: number | null;
+    /**
+     * The start.
+     */
+    start: Instant;
+};
+
+/**
+ * Kilowatt-hours.
+ */
+export type EnergyUnit = 'kWh';
 
 /**
  * Counts of rows that are not usable, by reason.
@@ -493,6 +648,16 @@ export type Session = {
 };
 
 /**
+ * Kilometres for each hour.
+ */
+export type SpeedUnit = 'km/h';
+
+/**
+ * Degrees Celsius.
+ */
+export type TemperatureUnit = '°C';
+
+/**
  * The unit of a field. The vehicle sends no unit; the server knows it
  * from the documentation of the field.
  */
@@ -562,6 +727,52 @@ export type GetBatteryResponses = {
 };
 
 export type GetBatteryResponse = GetBatteryResponses[keyof GetBatteryResponses];
+
+export type GetConsumptionData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * The time range that ends now. Required.
+         */
+        range: RangeKey;
+    };
+    url: '/api/v1/consumption';
+};
+
+export type GetConsumptionErrors = {
+    /**
+     * The query is not valid, or the request carries more than one session cookie (`invalid_request`).
+     */
+    400: Problem;
+    /**
+     * The request has no valid session.
+     */
+    401: Problem;
+    /**
+     * The request body is larger than the limit.
+     */
+    413: Problem;
+    /**
+     * Stored data breaks an assumption (`data_contract_violation`), or an unexpected failure (`internal_error`).
+     */
+    500: Problem;
+    /**
+     * The database is not available (`database_unavailable`), the server is busy (`service_busy`), or the request took too long (`timeout`).
+     */
+    503: Problem;
+};
+
+export type GetConsumptionError = GetConsumptionErrors[keyof GetConsumptionErrors];
+
+export type GetConsumptionResponses = {
+    /**
+     * The drives of the range.
+     */
+    200: ConsumptionView;
+};
+
+export type GetConsumptionResponse = GetConsumptionResponses[keyof GetConsumptionResponses];
 
 export type LogoutData = {
     body?: never;

@@ -19,7 +19,6 @@ export function RootLayout() {
       </a>
       <header className="app-header">
         <span className="app-name">{fi.appName}</span>
-        {/* The battery view is the only view now. Add a link only for a view that exists. */}
         {session === undefined ? null : (
           <nav className="app-nav" aria-label={fi.navLabel}>
             <Link
@@ -29,6 +28,14 @@ export function RootLayout() {
               className="app-nav-link"
             >
               {fi.navBattery}
+            </Link>
+            <Link
+              to="/consumption"
+              search={{ range: DEFAULT_RANGE }}
+              activeOptions={{ includeSearch: false }}
+              className="app-nav-link"
+            >
+              {fi.navConsumption}
             </Link>
           </nav>
         )}

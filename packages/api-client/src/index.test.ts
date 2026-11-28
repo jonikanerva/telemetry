@@ -407,3 +407,27 @@ describe('getBattery', () => {
     expect(result.ok ? null : result.error.kind).toBe('problem');
   });
 });
+
+describe('getConsumption', () => {
+  const body = {
+    generated_at: '2026-11-27T12:00:00Z',
+    range: { key: '7d', from: '2026-11-20T12:00:00Z', to: '2026-11-27T12:00:00Z' },
+    units: { distance: 'mi', energy: 'kWh', consumption: 'Wh/km', temperature: '°C', speed: 'km/h' },
+    drives: [],
+    totals: { drives: 0, distance: null, energy_used: null, consumption: null, drives_without_consumption: 0 },
+    truncated: false,
+  };
+
+  it('sends the range as a query parameter and returns a valid body', async () => {
+    const { client, requests } = clientWith(() => Promise.resolve(json(200, body)));
+    expect(await client.getConsumption('7d')).toEqual({ ok: true, data: body });
+    expect(requests[0]?.url).toBe(`${BASE_URL}/api/v1/consumption?range=7d`);
+  });
+
+  it('rejects a body with another distance unit, never shows it as data', async () => {
+    const { client } = clientWith(() =>
+      Promise.resolve(json(200, { ...body, units: { ...body.units, distance: 'km' } })),
+    );
+    expect(await client.getConsumption('7d')).toEqual({ ok: false, error: { kind: 'invalid_response', status: 200 } });
+  });
+});

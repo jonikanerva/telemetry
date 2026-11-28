@@ -7,13 +7,15 @@
 //   the server did not confirm.
 // - `protected` (routes/protected.tsx): a pathless layout that checks the
 //   session. Its children: `/` (routes/index.tsx, a redirect to
-//   `/battery`) and `/battery` (routes/battery.tsx, with battery/, chart/,
-//   and format/).
+//   `/battery`), `/battery` (routes/battery.tsx, with battery/, chart/,
+//   and format/), and `/consumption` (routes/consumption.tsx, with
+//   consumption/).
 import type { QueryClient } from '@tanstack/react-query';
 import { createRouter } from '@tanstack/react-router';
 
 import { RouteUnavailable } from './auth/RouteUnavailable.js';
 import { batteryRoute } from './routes/battery.js';
+import { consumptionRoute } from './routes/consumption.js';
 import { indexRoute } from './routes/index.js';
 import { loginRoute } from './routes/login.js';
 import { logoutRoute } from './routes/logout.js';
@@ -23,7 +25,7 @@ import { rootRoute } from './routes/root.js';
 const routeTree = rootRoute.addChildren([
   loginRoute,
   logoutRoute,
-  protectedRoute.addChildren([indexRoute, batteryRoute]),
+  protectedRoute.addChildren([indexRoute, batteryRoute, consumptionRoute]),
 ]);
 
 export function createAppRouter(queryClient: QueryClient) {

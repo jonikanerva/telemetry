@@ -14,7 +14,8 @@
 //! - `vehicles` (required): the vehicle ids. `[]` gives `no_data_yet`;
 //!   two ids give 500 `data_contract_violation`.
 //! - `signals`: `vehicle_id`, `field` (8 `Soc`, 158 `EnergyRemaining`,
-//!   263 `NominalFullPackEnergyKwh`, 86 `OutsideTemp`; other fields are
+//!   263 `NominalFullPackEnergyKwh`, 86 `OutsideTemp`; the consumption
+//!   view also reads 10 `Gear` and 5 `Odometer`; other fields are
 //!   ignored), `created_at`, `received_at`, `value_type` (the proto field
 //!   number), and exactly one of `int_value`, `float_value` (a number, or
 //!   `"NaN"`, `"Infinity"`, `"-Infinity"`), `text_value`, `bool_value`:
@@ -90,6 +91,7 @@ use telemetry_web_domain::battery::{
 use tracing::warn;
 
 use super::source::{BatterySource, SnapshotFuture, SourceError, SourceRequest};
+use crate::consumption::{ConsumptionFuture, ConsumptionSource};
 use crate::wire::Instant;
 
 /// The cookie that names the scenario.
@@ -116,6 +118,27 @@ impl FakeSource {
     }
 
     async fn read(&self, request: &SourceRequest) -> Result<Snapshot, SourceError> {
+        let scenario = self.scenario(request).await?;
+        snapshot(&scenario, request).map_err(|reason| {
+            warn!(reason, "scenario_invalid");
+            SourceError::Internal("scenario_invalid")
+        })
+    }
+
+    async fn read_consumption(
+        &self,
+        request: &SourceRequest,
+    ) -> Result<telemetry_web_domain::consumption::Snapshot, SourceError> {
+        let scenario = self.scenario(request).await?;
+        consumption_snapshot(&scenario, request).map_err(|reason| {
+            warn!(reason, "scenario_invalid");
+            SourceError::Internal("scenario_invalid")
+        })
+    }
+
+    /// The scenario of a request after its delay, or the error of its
+    /// fault.
+    async fn scenario(&self, request: &SourceRequest) -> Result<Scenario, SourceError> {
         let scenario = load(self.dir.as_deref(), request.scenario.as_deref())
             .await
             .map_err(|reason| {
@@ -133,16 +156,19 @@ impl FakeSource {
                 Fault::InternalError => SourceError::Internal("scenario_fault"),
             });
         }
-        snapshot(&scenario, request).map_err(|reason| {
-            warn!(reason, "scenario_invalid");
-            SourceError::Internal("scenario_invalid")
-        })
+        Ok(scenario)
     }
 }
 
 impl BatterySource for FakeSource {
     fn snapshot<'a>(&'a self, request: &'a SourceRequest) -> SnapshotFuture<'a> {
         Box::pin(self.read(request))
+    }
+}
+
+impl ConsumptionSource for FakeSource {
+    fn consumption<'a>(&'a self, request: &'a SourceRequest) -> ConsumptionFuture<'a> {
+        Box::pin(self.read_consumption(request))
     }
 }
 
@@ -378,6 +404,87 @@ fn snapshot(scenario: &Scenario, request: &SourceRequest) -> Result<Snapshot, &'
         series,
         events,
         connectivity,
+    })
+}
+
+fn raw(signal: &SignalJson) -> RawValue<'_> {
+    RawValue {
+        value_type: signal.value_type,
+        int_value: signal.int_value,
+        float_value: signal.float_value.map(FloatJson::value),
+        text_value: signal.text_value.as_deref(),
+        bool_value: signal.bool_value,
+    }
+}
+
+/// The consumption snapshot of a scenario, through the rules of
+/// `telemetry_web_domain::consumption`, as the SQL of
+/// `crate::consumption::postgres` selects the rows.
+fn consumption_snapshot(
+    scenario: &Scenario,
+    request: &SourceRequest,
+) -> Result<telemetry_web_domain::consumption::Snapshot, &'static str> {
+    use telemetry_web_domain::consumption::{
+        GEAR_FIELD, MAX_DRIVE_SAMPLES, MAX_GEAR_ROWS, SampleInput, Snapshot, ValueField, gear,
+        gear_input, periods, sample, sample_input,
+    };
+    let window = Window::ending_at(request.key, scenario.now.timestamp()).map_err(|_| "bad_now")?;
+    check_rows(scenario)?;
+    let vehicles = match scenario.vehicles.as_slice() {
+        [] => VehicleCount::None,
+        [id] => VehicleCount::One(*id),
+        _ => VehicleCount::Many,
+    };
+    let VehicleCount::One(vehicle_id) = vehicles else {
+        return Ok(Snapshot {
+            window,
+            vehicles,
+            gears: gear_input(None, Vec::new(), MAX_GEAR_ROWS),
+            samples: SampleInput::default(),
+        });
+    };
+    let of_vehicle = || {
+        scenario
+            .signals
+            .iter()
+            .filter(move |signal| signal.vehicle_id == vehicle_id)
+    };
+    let mut readings: Vec<_> = of_vehicle()
+        .filter(|signal| signal.field == GEAR_FIELD && signal.created_at.timestamp() < window.to())
+        .filter_map(|signal| gear(&raw(signal)).map(|g| (signal.created_at.timestamp(), g)))
+        .collect();
+    readings.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    let before = readings
+        .iter()
+        .find(|(at, _)| *at < window.from())
+        .map(|(_, g)| *g);
+    let mut in_range: Vec<_> = readings
+        .into_iter()
+        .filter(|(at, _)| window.contains(*at))
+        .collect();
+    in_range.truncate(MAX_GEAR_ROWS + 1);
+    let gears = gear_input(before, in_range, MAX_GEAR_ROWS);
+    let ended: Vec<_> = periods(&gears)
+        .into_iter()
+        .filter_map(|period| period.end.map(|end| (period.start, end)))
+        .collect();
+    let mut rows: Vec<_> = of_vehicle()
+        .filter_map(|signal| {
+            let field = ValueField::from_number(signal.field)?;
+            let at = signal.created_at.timestamp();
+            ended
+                .iter()
+                .any(|(start, end)| *start <= at && at <= *end)
+                .then(|| (at, sample(field, at, &raw(signal))))
+        })
+        .collect();
+    rows.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    rows.truncate(MAX_DRIVE_SAMPLES + 1);
+    Ok(Snapshot {
+        window,
+        vehicles,
+        gears,
+        samples: sample_input(rows, MAX_DRIVE_SAMPLES),
     })
 }
 

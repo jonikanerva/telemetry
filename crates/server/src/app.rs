@@ -68,7 +68,7 @@ use tracing::{Instrument, info, info_span, warn};
 use crate::config::{Config, StaticFiles, Version};
 use crate::openapi;
 use crate::problem::{PROBLEM_CONTENT_TYPE, Problem, ProblemCode, code_for_status};
-use crate::{auth, battery};
+use crate::{auth, battery, consumption};
 
 /// The longest time that a request can take before the 503 problem
 /// `timeout`.
@@ -116,16 +116,24 @@ pub struct AppState {
     pub auth: auth::State,
     /// The state of the battery API.
     pub battery: battery::State,
+    /// The state of the consumption API.
+    pub consumption: consumption::State,
 }
 
 impl AppState {
     /// The state of a server with this version and these slice states.
     #[must_use]
-    pub const fn new(version: Version, auth: auth::State, battery: battery::State) -> Self {
+    pub const fn new(
+        version: Version,
+        auth: auth::State,
+        battery: battery::State,
+        consumption: consumption::State,
+    ) -> Self {
         Self {
             version,
             auth,
             battery,
+            consumption,
         }
     }
 
@@ -133,10 +141,12 @@ impl AppState {
     /// configuration.
     #[must_use]
     pub fn from_config(config: &Config) -> Self {
+        let (battery, consumption) = battery::State::new(&config.battery);
         Self::new(
             config.version.clone(),
             auth::State::new(&config.auth),
-            battery::State::new(&config.battery),
+            battery,
+            consumption,
         )
     }
 
@@ -145,17 +155,20 @@ impl AppState {
     #[cfg(feature = "test-server")]
     #[must_use]
     pub fn for_test_server(config: &Config) -> Self {
+        let (battery, consumption) = battery::test_state(&config.battery);
         Self::new(
             config.version.clone(),
             auth::test_state(&config.auth),
-            battery::test_state(&config.battery),
+            battery,
+            consumption,
         )
     }
 
     /// The state of the unit tests of the router.
     #[cfg(test)]
     pub(crate) fn for_unit_tests(version: Version) -> Self {
-        Self::new(version, auth::unit_test_state(), battery::unit_test_state())
+        let (battery, consumption) = battery::unit_test_state();
+        Self::new(version, auth::unit_test_state(), battery, consumption)
     }
 
     /// The version of the server.

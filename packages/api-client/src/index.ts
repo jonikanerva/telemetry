@@ -29,6 +29,7 @@ import { createClient, createConfig } from './generated/client/index.js';
 import type { Client } from './generated/client/index.js';
 import {
   getBattery as generatedGetBattery,
+  getConsumption as generatedGetConsumption,
   getHealth as generatedGetHealth,
   getSession as generatedGetSession,
   login as generatedLogin,
@@ -44,7 +45,11 @@ import type {
   CapacityTile,
   ChangeUnknownReason,
   Connection,
+  ConsumptionTotals,
+  ConsumptionUnits,
+  ConsumptionView,
   CountUnit,
+  Drive,
   ExcludedRows,
   Freshness,
   Gap,
@@ -63,7 +68,7 @@ import type {
   UnitSource,
   UnitSymbol,
 } from './generated/types.gen.js';
-import { zBatteryView, zHealth, zProblem, zSession } from './generated/zod.gen.js';
+import { zBatteryView, zConsumptionView, zHealth, zProblem, zSession } from './generated/zod.gen.js';
 
 export type {
   BatteryCharts,
@@ -75,7 +80,11 @@ export type {
   CapacityTile,
   ChangeUnknownReason,
   Connection,
+  ConsumptionTotals,
+  ConsumptionUnits,
+  ConsumptionView,
   CountUnit,
+  Drive,
   ExcludedRows,
   Freshness,
   Gap,
@@ -152,6 +161,8 @@ export type ApiClient = {
   readonly logout: (options?: RequestOptions) => Promise<ApiResult<undefined>>;
   /** GET /api/v1/battery?range=<range>: the battery view of one range. */
   readonly getBattery: (range: RangeKey, options?: RequestOptions) => Promise<ApiResult<BatteryView>>;
+  /** GET /api/v1/consumption?range=<range>: the drives of one range. */
+  readonly getConsumption: (range: RangeKey, options?: RequestOptions) => Promise<ApiResult<ConsumptionView>>;
 };
 
 // The result shape of a generated SDK function with `throwOnError: false`.
@@ -172,6 +183,7 @@ type Parsed<T> = { readonly success: true; readonly data: T } | { readonly succe
 const healthBody: Success<Health> = { kind: 'json', schema: zHealth };
 const sessionBody: Success<Session> = { kind: 'json', schema: zSession };
 const batteryBody: Success<BatteryView> = { kind: 'json', schema: zBatteryView };
+const consumptionBody: Success<ConsumptionView> = { kind: 'json', schema: zConsumptionView };
 const noContent: Success<undefined> = { kind: 'no_content', value: undefined };
 
 export function createApiClient(options: ApiClientOptions = {}): ApiClient {
@@ -259,6 +271,10 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       run(request.signal, noContent, async (signal) => generatedLogout({ client, signal })),
     getBattery: async (range, request = {}) =>
       run(request.signal, batteryBody, async (signal) => generatedGetBattery({ client, signal, query: { range } })),
+    getConsumption: async (range, request = {}) =>
+      run(request.signal, consumptionBody, async (signal) =>
+        generatedGetConsumption({ client, signal, query: { range } }),
+      ),
   };
 }
 

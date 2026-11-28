@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        (\n            SELECT true AS \"before!\", created_at AS \"at!: jiff_sqlx::Timestamp\",\n                   value_type AS \"value_type!\", int_value\n            FROM vehicle_signal\n            WHERE vehicle_id = $1 AND field = $2::integer AND value_type = 9\n              AND int_value IN (2, 3, 4, 5) AND created_at < $3\n            ORDER BY created_at DESC\n            LIMIT 1\n        )\n        UNION ALL\n        (\n            SELECT false, created_at, value_type, int_value\n            FROM vehicle_signal\n            WHERE vehicle_id = $1 AND field = $2::integer AND value_type = 9\n              AND int_value IN (2, 3, 4, 5) AND created_at >= $3 AND created_at < $4\n            ORDER BY created_at DESC\n            LIMIT $5\n        )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "before!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "value_type!",
+        "type_info": "Int2",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "int_value",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int4",
+        "Timestamptz",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "1e74e730a4a5c9aa68a16807fb1258973c28b30a9d414c2d36a0f85c3779fd76"
+}

@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.field AS \"field!\", s.created_at AS \"at!: jiff_sqlx::Timestamp\",\n               s.value_type AS \"value_type!\", s.int_value, s.float_value, s.text_value\n        FROM unnest($2::timestamptz[], $3::timestamptz[]) AS d (start_at, end_at)\n        JOIN vehicle_signal AS s\n          ON s.vehicle_id = $1 AND s.field = ANY ($4::integer[])\n         AND s.created_at >= d.start_at AND s.created_at <= d.end_at\n        ORDER BY s.created_at DESC, s.field\n        LIMIT $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "field!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "field"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "value_type!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "value_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "int_value",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "int_value"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "float_value",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "float_value"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "text_value",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vehicle_signal",
+            "name": "text_value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "TimestamptzArray",
+        "TimestamptzArray",
+        "Int4Array",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "869753358b40f16557bc840552346ee88bcd56c582b40f8d4e08d1ed47517578"
+}

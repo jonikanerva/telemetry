@@ -8,9 +8,37 @@ import * as z from 'zod';
 export const zChangeUnknownReason = z.enum(['no_latest', 'no_baseline']);
 
 /**
+ * The totals of the ended drives of the range. `distance`,
+ * `energy_used`, and `consumption` cover the same drives: those with a
+ * consumption value.
+ */
+export const zConsumptionTotals = z.object({
+    consumption: z.number().nullable(),
+    distance: z.number().nullable(),
+    drives: z.int().gte(0).lte(4294967295),
+    drives_without_consumption: z.int().gte(0).lte(4294967295),
+    energy_used: z.number().nullable()
+});
+
+/**
+ * Watt-hours for each kilometre.
+ */
+export const zConsumptionUnit = z.enum(['Wh/km']);
+
+/**
  * What a gap count counts.
  */
 export const zCountUnit = z.enum(['records', 'messages']);
+
+/**
+ * Miles.
+ */
+export const zDistanceUnit = z.enum(['mi']);
+
+/**
+ * Kilowatt-hours.
+ */
+export const zEnergyUnit = z.enum(['kWh']);
 
 /**
  * Counts of rows that are not usable, by reason.
@@ -121,6 +149,21 @@ export const zBatteryStatus = z.object({
 });
 
 /**
+ * One drive: from the first R, N, or D after a P to the next P. A `null`
+ * value is unknown, never 0.
+ */
+export const zDrive = z.object({
+    consumption: z.number().nullable(),
+    distance: z.number().nullable(),
+    duration_seconds: z.int().gte(0).lte(4294967295).nullable(),
+    end: zInstant.nullable(),
+    energy_used: z.number().nullable(),
+    mean_outside_temp: z.number().nullable(),
+    mean_speed: z.number().nullable(),
+    start: zInstant
+});
+
+/**
  * One loss that the ingest process recorded: records or messages that it
  * received or should have received and did not store. A sleeping car, a
  * restart, or a refused connection is never a gap.
@@ -214,6 +257,15 @@ export const zBatteryRange = z.object({
 });
 
 /**
+ * The range of a response.
+ */
+export const zConsumptionRange = z.object({
+    from: zInstant,
+    key: zRangeKey,
+    to: zInstant
+});
+
+/**
  * The starts of the ingest process in the range. A start states only
  * that the process started there, not that data was lost.
  */
@@ -228,6 +280,39 @@ export const zRestarts = z.object({
 export const zSession = z.object({
     expires_at: zInstant,
     idle_expires_at: zInstant
+});
+
+/**
+ * Kilometres for each hour.
+ */
+export const zSpeedUnit = z.enum(['km/h']);
+
+/**
+ * Degrees Celsius.
+ */
+export const zTemperatureUnit = z.enum(['°C']);
+
+/**
+ * The units of the quantities. Each has one value.
+ */
+export const zConsumptionUnits = z.object({
+    consumption: zConsumptionUnit,
+    distance: zDistanceUnit,
+    energy: zEnergyUnit,
+    speed: zSpeedUnit,
+    temperature: zTemperatureUnit
+});
+
+/**
+ * The body of a successful `GET /api/v1/consumption`.
+ */
+export const zConsumptionView = z.object({
+    drives: z.array(zDrive),
+    generated_at: zInstant,
+    range: zConsumptionRange,
+    totals: zConsumptionTotals,
+    truncated: z.boolean(),
+    units: zConsumptionUnits
 });
 
 /**
@@ -344,6 +429,15 @@ export const zGetBatteryQuery = z.object({
  * The battery view of the range.
  */
 export const zGetBatteryResponse = zBatteryView;
+
+export const zGetConsumptionQuery = z.object({
+    range: zRangeKey
+});
+
+/**
+ * The drives of the range.
+ */
+export const zGetConsumptionResponse = zConsumptionView;
 
 /**
  * The session ended. The response removes the session cookie.
