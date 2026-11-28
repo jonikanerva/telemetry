@@ -258,8 +258,9 @@ server in [Apple `container`](https://github.com/apple/container) (version
 1 or later, with its service started: `container system start`). It needs
 no database URL. `mise run setup` checks the tool and pulls the image.
 
-`mise run verify` is the single local gate. [STACK.md](STACK.md) section 3
-lists the tasks and what each one checks. `mise run setup` also installs
+`mise run verify` is the single local gate. During development, run
+`mise run light`: the fast checks and the tests without a database.
+[STACK.md](STACK.md) section 3 lists the tasks and what each one checks. `mise run setup` also installs
 Node.js and pnpm (pinned in `mise.toml`), the npm packages, and the
 Playwright browser (Chromium).
 
@@ -288,11 +289,13 @@ PORT=4173 WEB_STATIC_DIR=web/dist WEB_TEST_TLS_CERT=e2e/.tls/cert.pem \
 Then open <https://localhost:4173> and accept the self-signed certificate.
 
 The GitHub Actions workflow `.github/workflows/ci.yml` also runs
-`mise run ci` and `mise run vuln` on linux/amd64 for each pull request and
+`mise run ci` on linux/amd64 for each pull request that is not a draft and
 each push to `main`. Its job `image-check` builds both images and checks
 the running containers (`scripts/image-check.sh`,
-`scripts/image-check-web.sh`) with Docker. CI does not replace the local
-gate.
+`scripts/image-check-web.sh`) with Docker, and its job `vuln` runs
+`mise run vuln`. On a pull request, these two jobs run only when one of
+their inputs changes (`scripts/ci-select.sh`). CI does not replace the
+local gate.
 
 `scripts/test-postgres.sh` starts the test server, locally and in CI
 (STACK.md section 3, ADR 0017). Each run gets a server of its own with a
