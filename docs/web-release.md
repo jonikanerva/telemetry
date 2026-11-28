@@ -16,9 +16,10 @@ Rules:
   `production` (`-s telemetry-web -e production`). The commands below
   leave out these two flags.
 - The web service has no TCP proxy and no `up.railway.app` domain. Its
-  only public address is the custom domain `tesla.calmdonut.com`, which
-  the lead attaches when the login exists (slice S5). Until then, the
-  service is not reachable from the internet.
+  only public address is the custom domain `tesla.calmdonut.com`. The
+  Railway edge ends TLS with a Let's Encrypt certificate. The Cloudflare
+  record `tesla` is DNS only: a proxied record lets Cloudflare read the
+  battery data and the session cookie (STACK.md section 15).
 - The web service reads the database as the role `telemetry_web`
   (ADR 0013). It runs no migration. A migration that the web
   needs ships in an ingest release first (`docs/ingest-release.md`).
@@ -88,8 +89,8 @@ Order of the steps:
 - With `DATABASE_URL`, `GET /api/v1/battery` answers only a request with
   a valid session (the session guard of ADR 0012); without a session it
   answers 401 and reads no database.
-- The service gets no public domain before the login works (STACK.md
-  section 15).
+- The custom domain stays attached during a release. Do not remove it
+  and do not proxy its record at Cloudflare (STACK.md section 15).
 
 ## 2. The merge
 
@@ -114,15 +115,15 @@ with its reason.
 | Check                  | Command                                                                                     | Expected                                                                                                     |
 | ---------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Deployed revision      | `railway ssh -- sh -c 'echo $RAILWAY_GIT_COMMIT_SHA'`, or the deployment view               | The merge commit SHA.                                                                                        |
-| Health and version     | `railway ssh -- perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new("127.0.0.1:$ENV{PORT}") or die; print $s "GET /health HTTP/1.0\r\n\r\n"; print <$s>'` | `200` and `{"status":"ok","version":"<merge commit SHA>"}`. Without a public domain, the check runs inside the container. |
+| Health and version     | `curl -s https://tesla.calmdonut.com/health`                                                | `200` and `{"status":"ok","version":"<merge commit SHA>"}`.                                                  |
 | User of the process    | `railway ssh -- grep -e ^Uid -e ^Gid /proc/1/status /proc/[0-9]*/status`                    | The server process has `Uid` and `Gid` 10001.                                                                |
 | No secret in the log   | `railway logs --since 1h`                                                                   | No line holds a variable value, a password, a hash, or a cookie. Record only the count of such lines.       |
-| API without a session  | `railway ssh -- perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new("127.0.0.1:$ENV{PORT}") or die; print $s "GET /api/v1/session HTTP/1.0\r\n\r\n"; print <$s>'` | `401` and a problem with the code `unauthenticated`. No database query runs. |
-| Battery API without a session | `railway ssh -- perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new("127.0.0.1:$ENV{PORT}") or die; print $s "GET /api/v1/battery HTTP/1.0\r\n\r\n"; print <$s>'` | `401` and a problem with the code `unauthenticated`. The session guard answers before the battery handler, so no database query runs. |
-| Back-forward cache (owner, S5) | After the login, the owner opens another site in the same tab, logs out in a second tab, and goes Back in the first tab | The login page, not the earlier data (the `pageshow` reload of ADR 0012, decision 14; no browser test covers this path). Pending until the domain exists. |
-| Login (owner, S5)      | After the custom domain exists, the owner opens `https://tesla.calmdonut.com/`, logs in, sees the start page (the battery view `/battery`), and logs out | The login page, the battery view after the login, and the login page after the logout. The log has one `login_succeeded` and one `logout` line. Pending until the domain exists; the release verification stays pending until the owner reports the result. |
-| Public checks (S5)     | After the custom domain exists: `curl -sI https://tesla.calmdonut.com/` and `/health`        | TLS, the security headers of ADR 0010, `200` for `/health`, and the SPA. Pending until the domain exists.     |
-| Battery API read time  | Section 4                                                                                   | The read times are in the budgets of STACK.md section 4. Pending until the domain and the login exist.        |
+| API without a session  | `curl -s -i https://tesla.calmdonut.com/api/v1/session`                                     | `401` and a problem with the code `unauthenticated`. No database query runs.                                 |
+| Battery API without a session | `curl -s -i https://tesla.calmdonut.com/api/v1/battery`                              | `401` and a problem with the code `unauthenticated`. The session guard answers before the battery handler, so no database query runs. |
+| Back-forward cache (owner) | After the login, the owner opens another site in the same tab, logs out in a second tab, and goes Back in the first tab | The login page, not the earlier data (the `pageshow` reload of ADR 0012, decision 14; no browser test covers this path). |
+| Login (owner)          | The owner opens `https://tesla.calmdonut.com/`, logs in, sees the start page (the battery view `/battery`), and logs out | The login page, the battery view after the login, and the login page after the logout. The log has one `login_succeeded` and one `logout` line. The release verification stays pending until the owner reports the result. |
+| Public checks          | `curl -sI https://tesla.calmdonut.com/` and `curl -sI https://tesla.calmdonut.com/assets/missing.js` | A valid TLS certificate, `200` with `content-type: text/html` for `/`, the security headers of ADR 0010 (with HSTS and the CSP), and `404` for the missing asset. |
+| Battery API read time  | Section 4                                                                                   | The read times are in the budgets of STACK.md section 4.                                                     |
 
 ## 4. Battery API read time
 
@@ -140,11 +141,8 @@ Privacy rules of the measurement:
   and the times.
 
 Who and when: the owner runs the measurement, because only the owner
-can log in with the owner password. The service holds a placeholder hash
-until the owner sets the real `WEB_PASSWORD_HASH` (README, "Web
-password"). Run the measurement after the owner has set the hash, the
-custom domain works, and the first release that reads the database is
-live. The lead prepares the commands and records the result.
+can log in with the owner password. The lead prepares the commands and
+records the result.
 
 Make each request in one of two ways:
 

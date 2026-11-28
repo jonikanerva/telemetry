@@ -35,13 +35,26 @@ const FAKE_VIN: &str = "0FAKEVXN000000001";
 /// instead of hanging.
 const WAIT: Duration = Duration::from_secs(10);
 
-/// A loopback port that is free now.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// `N` loopback ports that are free now and differ from each other.
+///
+/// All listeners stay open until each port is read, so the operating
+/// system cannot give one port twice. After the return, another process
+/// can still take a port before `ingest` binds it.
+fn free_ports<const N: usize>() -> [u16; N] {
+    let listeners: [std::net::TcpListener; N] =
+        std::array::from_fn(|_| std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap());
+    listeners.map(|listener| listener.local_addr().unwrap().port())
+}
+
+#[test]
+fn the_free_ports_of_one_set_differ() {
+    for _ in 0..2000 {
+        let [upstream, zmq, metrics] = free_ports::<3>();
+        assert!(
+            upstream != zmq && upstream != metrics && zmq != metrics,
+            "{upstream} {zmq} {metrics}"
+        );
+    }
 }
 
 /// The variables of a valid `run` configuration with the fake child in the
@@ -53,12 +66,13 @@ fn free_port() -> u16 {
 /// store the events, and its bound is short (a debug build reads
 /// `INGEST_TEST_FLUSH_DEADLINE_MS`).
 fn run_vars(mode: &str) -> Vec<(&'static str, String)> {
+    let [upstream, zmq, metrics] = free_ports::<3>();
     vec![
         ("PORT", "0".to_owned()),
         ("INGEST_GATE_PORT", "0".to_owned()),
-        ("INGEST_UPSTREAM_PORT", free_port().to_string()),
-        ("INGEST_ZMQ_PORT", free_port().to_string()),
-        ("INGEST_METRICS_PORT", free_port().to_string()),
+        ("INGEST_UPSTREAM_PORT", upstream.to_string()),
+        ("INGEST_ZMQ_PORT", zmq.to_string()),
+        ("INGEST_METRICS_PORT", metrics.to_string()),
         ("INGEST_CHILD_PROGRAM", FAKE_CHILD.to_owned()),
         ("INGEST_CHILD_CONFIG", format!("/fake-config/{mode}")),
         (
