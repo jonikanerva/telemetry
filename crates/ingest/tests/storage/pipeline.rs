@@ -1,4 +1,4 @@
-//! End-to-end tests of `ingest run` against the Neon branch `test`: the
+//! End-to-end tests of `ingest run` against the test server: the
 //! real binary, the fake `fleet-telemetry` (`examples/fake_fleet_telemetry.rs`),
 //! the roles and the migrations of the production procedure, and a TCP
 //! proxy that the test controls.
@@ -8,8 +8,9 @@
 //!   the binary connects as the ingest role. A debug build reads
 //!   `INGEST_TEST_SCHEMA` (`ingest::config`, "Test overrides").
 //! - **Outage.** The binary connects to the proxy on the loopback
-//!   interface: the URL has the Neon host name, the port of the proxy, and
-//!   `hostaddr=127.0.0.1`. `SQLx` sends the host name for SNI and checks
+//!   interface: the URL has the host name of the server, the port of the
+//!   proxy, `hostaddr=127.0.0.1`, and the `sslrootcert` of the test URL.
+//!   `SQLx` sends the host name for SNI and checks
 //!   the certificate against it (`sslmode=verify-full`), so the proxy only
 //!   copies the TLS bytes. [`Proxy::cut`] closes every connection and
 //!   refuses new ones: for the binary, the database gives no answer.
@@ -32,7 +33,7 @@ use tokio::task::JoinSet;
 use crate::harness::{Ingest, VEHICLE_SENTINELS, WAIT};
 use crate::support::{TestDb, TestRoles, count, test_url, with_roles};
 
-/// A TCP proxy to the Neon endpoint that the test can cut.
+/// A TCP proxy to the test server that the test can cut.
 struct Proxy {
     port: u16,
     open: Arc<AtomicBool>,
@@ -134,8 +135,20 @@ async fn start(db: &TestDb, roles: &TestRoles, open: bool, extra: &[(&str, &str)
     let proxy = Proxy::start(host.clone(), neon.get_port(), open);
     let password = roles.ingest_password.expose().to_owned();
     let role = roles.setup.ingest_role.clone();
+    // The test CA of a local or CI server: the binary adds it to the
+    // Mozilla roots, as the tests do. The value stays URL-encoded.
+    let root_cert = test_url()
+        .expose()
+        .split_once('?')
+        .and_then(|(_, query)| {
+            query
+                .split('&')
+                .find(|pair| pair.starts_with("sslrootcert="))
+                .map(|pair| format!("&{pair}"))
+        })
+        .unwrap_or_default();
     let url = format!(
-        "postgresql://{role}:{password}@{host}:{}/{database}?hostaddr=127.0.0.1",
+        "postgresql://{role}:{password}@{host}:{}/{database}?hostaddr=127.0.0.1{root_cert}",
         proxy.port
     );
     let mut vars = vec![
@@ -178,6 +191,14 @@ impl Run {
         secrets.extend(self.secrets.iter().map(String::as_str));
         self.ingest.assert_log_holds_none_of(&secrets);
     }
+}
+
+/// A connection of the migrator role, which owns the tables of the test
+/// schema. The owner role has no privilege on that schema by itself
+/// (`db/roles.sql`); on Neon, only its membership of `neon_superuser`
+/// gives it one, and a local server has no such role.
+async fn reader(roles: &TestRoles) -> PgConnection {
+    PgConnection::connect_with(&roles.migrator).await.unwrap()
 }
 
 /// Waits until `query` returns `expected`.
@@ -229,7 +250,7 @@ async fn records_reach_the_tables_once_and_sigterm_stores_the_stopped_event() {
             }
             assert_eq!(vehicle.command("junk 1 64"), "ok 1");
         });
-        let mut conn = db.owner().await;
+        let mut conn = reader(&roles).await;
         // The flush interval of 1 s writes them while the process runs.
         wait_for(&mut conn, "SELECT count(*) FROM vehicle_signal", 30).await;
         wait_for(&mut conn, "SELECT count(*) FROM unprocessed_record", 2).await;
@@ -320,7 +341,7 @@ async fn an_outage_closes_the_gate_at_the_high_mark_and_the_recovery_writes_ever
                 .iter()
                 .all(|kind| *kind != "records_dropped")
         );
-        let mut conn = db.owner().await;
+        let mut conn = reader(&roles).await;
         assert_eq!(
             count(&mut conn, "vehicle_signal").await,
             i64::try_from(published * 3).unwrap()
@@ -348,7 +369,7 @@ async fn a_restart_during_an_outage_enters_degraded_mode_and_stores_its_events_a
             run.proxy.restore();
             run.ingest.wait_for_health(200);
         });
-        let mut conn = db.owner().await;
+        let mut conn = reader(&roles).await;
         wait_for(&mut conn, "SELECT count(*) FROM vehicle_signal", 15).await;
         run.stop();
         let kinds = stored_kinds(&mut conn).await;
@@ -381,7 +402,7 @@ async fn a_full_queue_and_a_shortfall_are_stored_as_gaps() {
             run.ingest.wait_for_vehicle();
         });
         run.stop();
-        let mut conn = db.owner().await;
+        let mut conn = reader(&roles).await;
         let dropped: Vec<(String, i64)> = sqlx::query_as(
             "SELECT kind, dropped_count FROM ingest_event WHERE dropped_count IS NOT NULL ORDER BY kind",
         )

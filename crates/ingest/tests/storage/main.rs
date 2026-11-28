@@ -1,4 +1,6 @@
-//! Tests of the storage against PostgreSQL 18 on the Neon branch `test`.
+//! Tests of the storage against PostgreSQL 18: a local or CI test server
+//! (`scripts/test-postgres.sh`), or the Neon branch `test` for the tests
+//! that need Neon (`mise run test-neon`).
 //!
 //! The tests need `TEST_DATABASE_URL` (`README.md`, "Verification"). Each
 //! test works in a schema of its own and removes it (`support.rs`). Every

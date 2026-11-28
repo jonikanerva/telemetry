@@ -1,9 +1,9 @@
 //! The test database: guard, isolation, cleanup, and fixtures.
 //!
-//! Every test runs in a schema of its own on the Neon branch `test`, named
+//! Every test runs in a schema of its own on the test server, named
 //! `itest_<unix seconds>_<random>`. A test that needs roles gets two roles
 //! with the same prefix, because roles are shared by every database of the
-//! branch. The harness:
+//! server. The harness:
 //!
 //! - reads `TEST_DATABASE_URL` and stops with a clear message when it is
 //!   missing;
@@ -54,8 +54,8 @@ pub const VIN: &str = "TESTVIN0000000001";
 pub fn test_url() -> SecretString {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
         panic!(
-            "TEST_DATABASE_URL is not set. The database tests need the URL of the Neon \
-             branch 'test' (README.md, Verification)."
+            "TEST_DATABASE_URL is not set. Run the database tests with mise run test, \
+             or mise run test-neon for the tests that need Neon (README.md, Verification)."
         );
     };
     assert!(

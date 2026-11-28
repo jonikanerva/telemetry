@@ -1,7 +1,7 @@
 # Linux checks on the production platform, linux/amd64 (STACK.md §3, §13).
 # The workflow runs the mise tasks that a developer runs. It uses no
 # repository secret, and its token can only read. The database tests use a
-# PostgreSQL server on the runner, not Neon.
+# PostgreSQL server on the runner.
 name: ci
 
 on:
@@ -38,7 +38,9 @@ jobs:
       # secret, so a trusted mise.toml grants nothing more.
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
       # PostgreSQL of the database tests: the major version of production,
-      # pinned by tag and index digest (mise run deps checks both).
+      # pinned by tag and index digest (mise run deps checks both). The one
+      # pin of the test server: the local server reads this line too
+      # (scripts/test-postgres.sh).
       postgres_image: postgres:18.7-trixie@sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,7 +56,7 @@ jobs:
         run: mise run setup
       # Sets TEST_DATABASE_URL for the next step.
       - name: Start PostgreSQL with TLS
-        run: scripts/ci-postgres.sh
+        run: scripts/test-postgres.sh ci
       - name: mise run ci
         run: mise run ci
 
