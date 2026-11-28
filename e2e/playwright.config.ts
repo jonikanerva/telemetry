@@ -6,9 +6,9 @@
 //   `cargo build --locked -p telemetry-web-server --features test-server`
 // - web/dist, from `pnpm run build:web`
 //
-// The server listens on 127.0.0.1 and serves HTTPS. The tests open
-// https://localhost, because the `__Host-` session cookie needs the host
-// name `localhost` and TLS in all three engines (e4-cookie.spec.ts).
+// The server listens on 127.0.0.1 and serves HTTPS, as production does
+// behind the Railway proxy. The tests open https://localhost, the host
+// name of the certificate.
 // Before the server starts, e2e/tls-cert.sh makes a new self-signed
 // certificate in e2e/.tls/ (ignored by Git). The browsers and the readiness
 // check do not trust that certificate, so both ignore HTTPS errors:
@@ -63,11 +63,8 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
     trace: 'retain-on-failure',
   },
-  projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
-    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
-  ],
+  // The supported browser: Chrome on a desktop viewport (ADR 0010).
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
     // Playwright runs the command in a shell. `exec` makes the server the
     // process that Playwright stops.

@@ -1,14 +1,10 @@
-// Experiment E4: each browser engine keeps a `__Host-` cookie with the
-// Secure attribute on the test server. The session cookie of the login
-// (S2) depends on it.
-//
-// Over plain http://localhost, the webkit engine drops the cookie, so the
-// test server serves HTTPS (playwright.config.ts). Every engine must keep
-// the cookie over https://localhost.
+// Experiment E4: the browser keeps a `__Host-` cookie with the Secure
+// attribute on the test server over https://localhost. The session cookie
+// of the login depends on it.
 //
 // The requests run inside the page with fetch, so the cookie store of the
-// engine decides. The `request` fixture of Playwright has its own cookie
-// store and would give the same answer in every engine.
+// browser decides. The `request` fixture of Playwright has its own cookie
+// store.
 import { expect, test } from './support.js';
 
 type Outcome = { readonly setStatus: number; readonly checkStatus: number; readonly body: unknown };
