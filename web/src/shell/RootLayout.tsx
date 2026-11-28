@@ -1,10 +1,11 @@
-// The layout of every page: a skip link, the header with the logout
-// button while a session exists, the main landmark, and the footer with
-// the time zone of all times.
-import { Outlet } from '@tanstack/react-router';
+// The layout of every page: a skip link, the header, the main landmark,
+// and the footer with the time zone of all times. While a session exists,
+// the header has the navigation and the logout button.
+import { Link, Outlet } from '@tanstack/react-router';
 
 import { LogoutButton } from '../auth/LogoutButton.js';
 import { useSession } from '../auth/session-snapshot.js';
+import { DEFAULT_RANGE } from '../battery/range.js';
 import { fi } from '../i18n/fi.js';
 import { ReloadBanner } from './ReloadBanner.js';
 
@@ -18,7 +19,19 @@ export function RootLayout() {
       </a>
       <header className="app-header">
         <span className="app-name">{fi.appName}</span>
-        {/* Mount point: S4 adds the navigation here. */}
+        {/* The battery view is the only view now. Add a link only for a view that exists. */}
+        {session === undefined ? null : (
+          <nav className="app-nav" aria-label={fi.navLabel}>
+            <Link
+              to="/battery"
+              search={{ range: DEFAULT_RANGE }}
+              activeOptions={{ includeSearch: false }}
+              className="app-nav-link"
+            >
+              {fi.navBattery}
+            </Link>
+          </nav>
+        )}
         {session === undefined ? null : <LogoutButton />}
       </header>
       <ReloadBanner />
