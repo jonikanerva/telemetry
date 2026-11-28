@@ -27,6 +27,8 @@ export const fi = {
   loginThrottled: (seconds: number): string =>
     `Liian monta kirjautumisyritystä. Yritä uudelleen ${String(seconds)} sekunnin kuluttua.`,
   loginThrottledNoTime: 'Liian monta kirjautumisyritystä. Yritä hetken kuluttua uudelleen.',
+  conflictingCookies:
+    'Selaimessa on tälle sivustolle kaksi ristiriitaista istuntoevästettä, joten palvelu hylkää pyynnöt. Poista tämän sivuston evästeet selaimen asetuksista ja kirjaudu sitten uudelleen.',
   loginUnavailable: 'Kirjautuminen ei onnistunut. Palvelu ei vastannut. Yritä hetken kuluttua uudelleen.',
   logout: 'Kirjaudu ulos',
   logoutPending: 'Kirjaudutaan ulos…',

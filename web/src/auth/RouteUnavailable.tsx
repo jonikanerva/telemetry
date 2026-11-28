@@ -1,32 +1,23 @@
 // The unavailable state of a route whose `beforeLoad` failed, for example
 // when the session check got no valid answer. It never shows the error
 // text, and it never looks like an empty result. The retry button runs
-// the route checks again.
+// the route checks again. When the session read got 400
+// `invalid_request`, the browser holds two session cookies, and the page
+// says how to fix that (auth/conflicting-cookies.ts).
 import { useRouter } from '@tanstack/react-router';
 
 import { fi } from '../i18n/fi.js';
+import { isConflictingCookies } from './conflicting-cookies.js';
+import { RouteUnavailableView } from './RouteUnavailableView.js';
 
-export function RouteUnavailable() {
+export function RouteUnavailable({ error }: { readonly error?: unknown }) {
   const router = useRouter();
   return (
-    // No `aria-labelledby`: with a named region, axe crashed the Firefox
-    // content process of the browser tests (see auth/LoginFormView.tsx).
-    <section>
-      <div role="status" data-state="unavailable" className="notice notice-error">
-        <h1 id="unavailable-title" className="notice-title">
-          {fi.unavailableTitle}
-        </h1>
-        <p>{fi.unavailableBody}</p>
-      </div>
-      <button
-        type="button"
-        className="retry-button"
-        onClick={() => {
-          void router.invalidate();
-        }}
-      >
-        {fi.retry}
-      </button>
-    </section>
+    <RouteUnavailableView
+      body={isConflictingCookies(error) ? fi.conflictingCookies : fi.unavailableBody}
+      onRetry={() => {
+        void router.invalidate();
+      }}
+    />
   );
 }

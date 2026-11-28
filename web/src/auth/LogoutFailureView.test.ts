@@ -27,8 +27,7 @@ describe('LogoutFailureView', () => {
       '<div role="alert" class="logout-failure-alert"><p class="notice notice-error">Palvelin ei vahvistanut uloskirjautumista. Istunto voi olla yhä voimassa tällä laitteella.</p></div>',
     );
     expect(html).toContain('<button type="button">Yritä uloskirjautumista uudelleen</button>');
-    expect(html).not.toContain('aria-labelledby');
-    expect(html).toMatch(/^<section class="logout-failure">/);
+    expect(html).toMatch(/^<section class="logout-failure" aria-labelledby="logout-failure-title">/);
   });
 
   it('keeps an empty alert region while a retry runs', () => {

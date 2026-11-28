@@ -19,9 +19,7 @@ export type LogoutFailureViewProps = {
 
 export function LogoutFailureView(props: LogoutFailureViewProps) {
   return (
-    // No `aria-labelledby`: with a named region, axe crashed the Firefox
-    // content process of the browser tests (see auth/LoginFormView.tsx).
-    <section className="logout-failure">
+    <section className="logout-failure" aria-labelledby="logout-failure-title">
       <h1 id="logout-failure-title">{fi.logoutFailedTitle}</h1>
       <div role="alert" className="logout-failure-alert">
         {props.message === null ? null : <p className="notice notice-error">{props.message}</p>}
