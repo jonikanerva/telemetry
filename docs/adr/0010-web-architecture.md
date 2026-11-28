@@ -4,6 +4,8 @@
   delegated technical authority of `DOCTRINE.md` and ADR 0004. The
   exceptions in decision 9 are approved by the independent reviewer
   (qa-enforcer) in PR #46: <https://github.com/jonikanerva/telemetry/pull/46#pullrequestreview-6092253490>.
+  Decision 9, the JSON-only formatter as an exception: superseded in part
+  by ADR 0016 (28 November 2026); decision 8 stays as a rule.
 - Scope: the layout, the boundaries, the HTTP contract, the serving, and
   the image of the web application. Not in scope: the login and the
   sessions (the session ADR of the login slice), the derivation of the
