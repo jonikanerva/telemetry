@@ -49,7 +49,11 @@ Use `$FORMAT_CMD`, `$LINT_CMD`, `$BUILD_CMD`, `$TEST_CMD`, and `$VERIFY_CMD`
 from `STACK.md → Build & verify commands`. Additional checks must also have a
 named entry there. For a repository without an application stack, use its
 explicit local verification contract. Never invent a successful command.
-Run relevant fast checks during development.
+During development, run the fast checks and the tests of the changed parts
+(`STACK.md` §3). Wait for a green required CI result before review. Run the
+full `$VERIFY_CMD` once for each version to be merged, as `DOCTRINE.md` P9
+assigns it: the reviewer for a change with a high-class part, otherwise
+the lead.
 
 A review PASS covers the reviewed version only. Before merge, confirm the
 current PR head, current base, required checks, required independent review,

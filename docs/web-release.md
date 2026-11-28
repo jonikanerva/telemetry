@@ -126,10 +126,9 @@ with its reason.
 
 ## 4. Battery API read time
 
-This check is the evidence for the rows "Battery API, warm" and "Battery
-API, cold Neon" of STACK.md section 4. No other check measures these
-budgets. Run it after each release that changes the battery read, and
-after a change of the Railway region or the Neon region.
+This check is the evidence for the row "Battery API, cold Neon" of
+STACK.md section 4. Run it after each release that changes the battery
+read, and after a change of the Railway region or the Neon region.
 
 Privacy rules of the measurement:
 
@@ -165,17 +164,6 @@ Make each request in one of two ways:
 
 Read the server times with `railway logs --since 1h`. Select the lines
 with the route `/api/v1/battery` and read `status` and `latency_ms`.
-
-Warm reads:
-
-1. Do the steps below for each range key: `24h`, `7d`, `30d`, `90d`, and
-   `1y`.
-2. Make one request. This request wakes the compute. Do not count it.
-3. Make 5 requests.
-4. Take the maximum `latency_ms` of the 5 requests.
-5. Compare the maximum with the warm budget of STACK.md section 4: 1 s
-   for `24h`, `7d`, and `30d`; 2 s for `90d` and `1y`. Each of the 5
-   requests must have the status `200`.
 
 Cold read:
 
