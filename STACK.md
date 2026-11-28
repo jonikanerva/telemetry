@@ -45,7 +45,7 @@ repo/
   webapp/                # Dockerfile of the web image (ADR 0010)
   migrations/            # SQLx migrations (ADR 0002)
   db/roles.sql           # Roles, schema, and privileges (ADR 0002); run once by the owner role
-  scripts/               # Check scripts: SQLx metadata, image check, contract check, bundle size, CI PostgreSQL, Gitleaks guard
+  scripts/               # Check scripts: SQLx metadata, image check, contract check, bundle size, test PostgreSQL server, Gitleaks guard
   Cargo.toml  Cargo.lock  rust-toolchain.toml  clippy.toml  deny.toml  mise.toml
   package.json  pnpm-workspace.yaml  pnpm-lock.yaml  .npmrc  tsconfig*.json
 ```
@@ -204,7 +204,11 @@ TLS with a new test CA, the role `neondb_owner` (not a superuser), and
 (data in tmpfs, `127.0.0.1` with a random port in 10000-18999), which goes
 away at the end of the run. Each start removes the servers whose owner
 process is gone; at most 4 run at the same time. A nested call uses the
-server of the outer call. `verify`, `test`, `sqlx-check`, and
+server of the outer call. A delete of the script acts only on a container
+with the label of this project and the owner of the run;
+`scripts/test-postgres-test.sh` (in `checks`) tests these rules with stub
+programs. The passwords go to the tools through the environment or
+standard input, not on the command line. `verify`, `test`, `sqlx-check`, and
 `sqlx-prepare` need no URL and make no Neon connection. A missing Apple
 `container` or a stopped service fails the task; an agent sandbox that
 blocks its XPC service fails it the same way, so run these tasks outside
@@ -235,7 +239,8 @@ Scope and gaps of `verify`:
 - The end-to-end tests need a debug build, because only a debug build
   reads the test overrides (ADR 0001). The ignored test
   `measure_the_size_of_a_signal_row` runs only on request (ADR 0002).
-- Each task stops at the first failure.
+- Each task stops at the first failing step. Inside a step, `test-db` runs
+  every test (`--no-fail-fast`) before it reports the failures.
 - The journeys need the host tool `openssl` (LibreSSL on macOS, OpenSSL on
   the runner) for the test certificate (`e2e/tls-cert.sh`). It is not
   pinned; a missing tool fails `test-web`.
@@ -265,7 +270,8 @@ Merge conditions (`CLAUDE.md`, ADR 0008, ADR 0016):
   checks and the tests of the changed parts (for example `mise run checks`
   and `cargo nextest run` of the changed crates). For a change of database
   code, migrations, queries, roles, or `.sqlx/`, the implementer also runs
-  `mise run sqlx-check` and the database tests with `TEST_DATABASE_URL`.
+  `mise run sqlx-check` and `mise run test` (both on a local test server),
+  and `mise run test-neon` for a change that the `test-neon` row names.
 - A green `ci` job for the current head. When the base changes after the
   run, update the PR branch so that a new run tests the current base.
 - A green `image-check` job of the current head for a change of an image
@@ -627,7 +633,7 @@ verification.
 | P1, P6: each task | Criteria, failures, assumptions, and check mapping | Lead records; independent review for material changes |
 | P2–P4: types and dependencies | Strict checks, dependency rationale, crate boundaries | Manifest edits and ambient effects need review |
 | P5–P6: data meaning | Conversion and property or challenge cases; partial versus atomic failure tests | Preserve missing, null, and zero, units, precision, and uncertainty |
-| P5–P7: storage | Migrated-schema metadata check; constraint, competing-write, and upgrade tests; production and test server versions | §5. The tests that need Neon and the Neon TLS path have no Linux evidence before deployment (§13). Restore is not tested. |
+| P5–P7: storage | Migrated-schema metadata check; constraint, competing-write, and upgrade tests; production and test server versions | §5. The two role tests that need Neon run only on macOS in `test-neon`; the Neon TLS path has no Linux evidence before deployment (§13, ADR 0017). Restore is not tested. |
 | P3, P7: security | Named scanner results and privacy checks | Scanners do not prove authorization |
 | P6, P7: release and platform | During development: the fast checks and the tests of the changed parts. Before review: green `ci`. Before merge: one `verify` of the merged version on the current base (P9), green `ci`, and for an image input a green `image-check`; after release: identity, health, and smoke evidence | A local build is not a verified deployment (§13) |
 | P8–P9: material changes | Current docs, ADRs, independent review; independent integrated verification where P9 requires it | Separate reviewer context; exact tested revisions |
@@ -662,7 +668,8 @@ assessment and authorization. An unavailable scanner is a gap, not a pass.
 ### Infrastructure and environments
 
 One deployment environment: production. CI (§3) is a verification
-environment; its pins are the rows that start with "CI".
+environment; its pins are the rows that start with "CI" and the row "Test
+PostgreSQL image".
 
 | Component | Version or value | Notes |
 | --------- | ---------------- | ----- |

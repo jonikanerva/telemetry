@@ -52,6 +52,14 @@
 
 ## Consequences
 
+- The exception of ADR 0005 for the unscanned test image
+  `postgres:18.7-trixie` now covers the image on the Mac too. Scope: the
+  CI runner and the local test server. Compensating evidence: the server
+  publishes only on `127.0.0.1`, holds only test data, and gets no
+  secret. Reassessment: when the image is used outside the tests.
+  STACK.md §13 holds the row. The independent reviewer of PR #53 approved
+  the wider scope.
+
 - A local `verify` runs the database tests in about 18 s of test time
   and uses no CU-hours. It needs Apple `container` and its service; a
   missing tool or a stopped service fails `setup` and `verify`.

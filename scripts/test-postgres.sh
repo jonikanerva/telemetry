@@ -100,7 +100,8 @@ server_command() {
 # for its set-up. $1 is the runtime (docker or container), $2 the name.
 wait_inside() {
   for _ in $(seq 1 60); do
-    if "$1" exec --env PGPASSWORD="$superuser_password" "$2" \
+    # The password goes by name through the environment, not on argv.
+    if PGPASSWORD=$superuser_password "$1" exec --env PGPASSWORD "$2" \
         psql "host=localhost user=postgres dbname=postgres sslmode=require" -tAc 'SELECT 1' > /dev/null 2>&1; then
       return 0
     fi
@@ -110,10 +111,12 @@ wait_inside() {
   die "the server $2 did not start in 60 s"
 }
 
+# The password reaches psql on standard input, not on argv. It is hex, so
+# it needs no quoting.
 create_owner() { # $1 = runtime, $2 = name
-  "$1" exec --interactive "$2" psql -v ON_ERROR_STOP=1 -v password="$password" \
-    -U postgres -d postgres -q -tA > /dev/null <<'EOF'
-CREATE ROLE neondb_owner LOGIN CREATEROLE CREATEDB NOSUPERUSER PASSWORD :'password';
+  "$1" exec --interactive "$2" psql -v ON_ERROR_STOP=1 \
+    -U postgres -d postgres -q -tA > /dev/null <<EOF
+CREATE ROLE neondb_owner LOGIN CREATEROLE CREATEDB NOSUPERUSER PASSWORD '$password';
 CREATE DATABASE neondb OWNER neondb_owner;
 EOF
 }
@@ -133,8 +136,8 @@ cmd_ci() {
   echo "::add-mask::$superuser_password"
   echo "::add-mask::$password"
   # Host network: the server listens on 127.0.0.1 and ::1 of the runner.
-  docker run --detach --name postgres --network host \
-    --env POSTGRES_PASSWORD="$superuser_password" \
+  POSTGRES_PASSWORD=$superuser_password docker run --detach --name postgres --network host \
+    --env POSTGRES_PASSWORD \
     --volume "$dir:/certs:ro" \
     --entrypoint sh "$image" -c "$(server_command localhost)" > /dev/null
   wait_inside docker postgres
@@ -181,18 +184,38 @@ owner_gone() { # $1 = owner token
   esac
 }
 
-# Lines of "name<TAB>state<TAB>owner" for each container of this project.
+# Lines of "name<TAB>state<TAB>owner<TAB>directory" for each container
+# with the label of this project.
 list_servers() {
   container list --all --format json |
     jq -r --arg l "$label" '.[] | select(.configuration.labels[$l] != null)
-      | [.configuration.id, .status.state, .configuration.labels[$l]] | @tsv'
+      | [.configuration.id, .status.state, .configuration.labels[$l],
+         (.configuration.labels[$l + ".dir"] // "-")] | @tsv'
+}
+
+# Deletes the container $1 only when it has the label of this project with
+# the owner $2. Every delete of this script goes through here, so the
+# script never removes a container that another project or run owns.
+delete_server() { # $1 = name, $2 = owner token
+  if [ -n "$1" ] && list_servers | awk -F '\t' -v n="$1" -v o="$2" '$1 == n && $3 == o { f = 1 } END { exit !f }'; then
+    container delete --force "$1" > /dev/null 2>&1
+  fi
+}
+
+# Removes the temporary directory $1 of a run (it holds a test key), only
+# when its name has the form that this script gives it.
+remove_run_dir() { # $1 = directory
+  case ${1##*/} in
+    telemetry-test-postgres.??????) if [ -d "$1" ]; then rm -rf "$1"; fi ;;
+  esac
 }
 
 remove_stale() {
-  list_servers | while IFS="$(printf '\t')" read -r name _ owner; do
-    if owner_gone "$owner"; then
-      say "removing $name: its owner process is gone"
-      container delete --force "$name" > /dev/null 2>&1 || true
+  list_servers | while IFS="$(printf '\t')" read -r stale _ stale_owner stale_dir; do
+    if owner_gone "$stale_owner"; then
+      say "removing $stale: its owner process is gone"
+      delete_server "$stale" "$stale_owner" || true
+      remove_run_dir "$stale_dir"
     fi
   done
 }
@@ -211,14 +234,17 @@ wait_for_place() {
   done
 }
 
+# Removes only what this run made: cmd_local sets `name` and `dir` to empty
+# before it sets the trap, so a value from the environment of the caller
+# never reaches a delete.
 local_exit() {
   status=$?
   trap - EXIT INT TERM HUP
-  if [ -n "${name:-}" ]; then
-    container delete --force "$name" > /dev/null 2>&1 ||
+  if [ -n "$name" ]; then
+    delete_server "$name" "$owner" ||
       say "could not remove $name; the next run removes it"
   fi
-  [ -n "${dir:-}" ] && rm -rf "$dir"
+  if [ -n "$dir" ]; then remove_run_dir "$dir"; fi
   exit "$status"
 }
 
@@ -239,11 +265,13 @@ cmd_local() {
   remove_stale
   wait_for_place
   worktree=$(printf '%s' "$root" | shasum -a 256 | cut -c 1-8)
+  name=
+  dir=
   trap local_exit EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP
-  dir=$(mktemp -d)
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/telemetry-test-postgres.XXXXXX")
   make_tls "$dir"
   superuser_password=$(openssl rand -hex 24)
   password=$(openssl rand -hex 24)
@@ -254,19 +282,19 @@ cmd_local() {
     port=$((10000 + $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 9000))
     name="telemetry-test-$worktree-$(openssl rand -hex 4)"
     # Speed settings for data that the run throws away.
-    if container run --detach --progress none --name "$name" \
+    if POSTGRES_PASSWORD=$superuser_password container run --detach --progress none --name "$name" \
         --platform linux/arm64 --cpus 2 --memory 1G \
-        --label "$label=$owner" --label "telemetry.worktree=$root" \
+        --label "$label=$owner" --label "$label.dir=$dir" --label "telemetry.worktree=$root" \
         --publish "127.0.0.1:$port:5432" \
         --tmpfs /var/lib/postgresql \
         --volume "$dir:/certs:ro" \
-        --env POSTGRES_PASSWORD="$superuser_password" \
+        --env POSTGRES_PASSWORD \
         --entrypoint sh "$image" -c "$(server_command "'*'" \
           -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=200)" \
         > "$log" 2>&1; then
       break
     fi
-    container delete --force "$name" > /dev/null 2>&1 || true
+    delete_server "$name" "$owner" || true
     if [ "$attempt" -ge 20 ] || ! grep -qi 'in use' "$log"; then
       cat "$log" >&2
       name=

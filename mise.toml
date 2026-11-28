@@ -146,6 +146,9 @@ run = [
   "sh -n ingest/entrypoint.sh",
   "sh -n scripts/sqlx-metadata.sh",
   "sh -n scripts/test-postgres.sh",
+  "sh -n scripts/test-postgres-test.sh",
+  # The clean-up rules of the test server script, with stub programs.
+  "sh scripts/test-postgres-test.sh",
   "sh -n scripts/image-check.sh",
   "sh -n scripts/image-check-web.sh",
   "sh -n scripts/contract-check.sh",
@@ -187,9 +190,9 @@ run = [
 
 [tasks.image-check]
 description = "Build the ingest image and the web image and check each running container (needs Docker; the CI job image-check runs it)"
-# STACK.md §3. The task needs Docker, so it runs in CI on linux/amd64. It pushes no image and uses no secret.
-# Each script has its own containers, ports, and cleanup. The task stops
-# at the first failure.
+# STACK.md §3. The task needs Docker, so it runs in CI on linux/amd64.
+# It pushes no image and uses no secret. Each script has its own
+# containers, ports, and cleanup. The task stops at the first failure.
 run = ["scripts/image-check.sh", "scripts/image-check-web.sh"]
 
 [tasks.deps]
